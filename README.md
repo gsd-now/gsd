@@ -4,7 +4,7 @@ A task queue and multiplexer for reliably getting shell scripts done.
 
 ## Overview
 
-GSD executes arbitrary shell scripts and deserializes their stdout. It is agnostic to what the script does - it could be a simple bash command, a Python script, or an invocation of `gsd_multiplexer submit` to dispatch work to a pool of persistent agents.
+GSD executes arbitrary shell scripts and deserializes their stdout. It is agnostic to what the script does - it could be a simple bash command, a Python script, or an invocation of `multiplexer submit` to dispatch work to a pool of persistent agents.
 
 The typical workflow is:
 1. Write a small Rust `main.rs` that defines your tasks and how they're processed
@@ -24,7 +24,7 @@ Tasks returned from `cleanup` are added back to the queue. Only script execution
 ## Example Usage
 
 ```rust
-use gsd_task_queue::{GsdTask, QueueItem, NoMoreTasks, ProcessQueueOptions, process_queue};
+use task_queue::{GsdTask, QueueItem, NoMoreTasks, ProcessQueueOptions, process_queue};
 use serde::Deserialize;
 use std::process::Command;
 
@@ -94,14 +94,14 @@ async fn main() {
 
 ## Multiplexer
 
-For long-running agent pools, use `gsd_multiplexer`:
+For long-running agent pools, use `multiplexer`:
 
 ```bash
 # Start the daemon (watches <root>/tasks/ and <root>/agents/)
-gsd_multiplexer daemon /path/to/root
+multiplexer daemon /path/to/root
 
 # Submit a task (from your script)
-gsd_multiplexer submit /path/to/root "task input here"
+multiplexer submit /path/to/root "task input here"
 ```
 
 See `MENTAL_MODEL.md` for details on the multiplexer protocol.

@@ -74,5 +74,5 @@ Config structure (rough sketch):
 ## Binary Naming
 
 Current plan:
-- `multiplexer` - low-level daemon (current `gsd_multiplexer` binary)
+- `multiplexer` - low-level daemon (current `multiplexer` binary)
 - `gsd` - high-level JSON-based orchestrator (future)

@@ -1,7 +1,7 @@
-//! CLI for the GSD multiplexer.
+//! CLI for the multiplexer.
 
 use clap::{Parser, Subcommand};
-use gsd_multiplexer::{stop, submit, Multiplexer};
+use multiplexer::{stop, submit, Multiplexer};
 use std::path::PathBuf;
 use std::process::ExitCode;
 

@@ -29,4 +29,4 @@ npx @gsd-now/multiplexer start ./workspace
 
 ## Agent Protocol
 
-See [AGENT_PROTOCOL.md](https://github.com/rbalicki2/gsd/blob/main/crates/gsd_multiplexer/AGENT_PROTOCOL.md) for how agents communicate with the daemon.
+See [AGENT_PROTOCOL.md](https://github.com/rbalicki2/gsd/blob/main/crates/multiplexer/AGENT_PROTOCOL.md) for how agents communicate with the daemon.

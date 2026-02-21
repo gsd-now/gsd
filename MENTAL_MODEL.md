@@ -2,7 +2,7 @@
 
 ## Task Queue
 
-The task queue executes arbitrary shell scripts and deserializes their stdout. It is agnostic to what the script does - it could be a simple bash command, a Python script, or an invocation of `gsd_multiplexer submit` to dispatch work to a pool of persistent agents.
+The task queue executes arbitrary shell scripts and deserializes their stdout. It is agnostic to what the script does - it could be a simple bash command, a Python script, or an invocation of `multiplexer submit` to dispatch work to a pool of persistent agents.
 
 ### Key Structs
 
@@ -62,14 +62,14 @@ Only script execution is async/parallel. Everything else (`start`, `cleanup`, qu
 
 ## Multiplexer
 
-The multiplexer (`gsd_multiplexer`) manages a pool of persistent worker agents. It is a CLI with two modes:
+The multiplexer (`multiplexer`) manages a pool of persistent worker agents. It is a CLI with two modes:
 
 ### CLI Modes
 
-#### `gsd_multiplexer daemon`
+#### `multiplexer daemon`
 Runs as a daemon, watching folders and dispatching tasks to available agents.
 
-#### `gsd_multiplexer submit <folder> <input>`
+#### `multiplexer submit <folder> <input>`
 Submits a task and blocks until the result is ready:
 - Generates random hash ID
 - Writes task to `{folder}/{hash}.input`

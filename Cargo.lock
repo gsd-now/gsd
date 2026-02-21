@@ -221,37 +221,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gsd_macro"
-version = "0.1.0"
-dependencies = [
- "convert_case",
- "deluxe",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "gsd_multiplexer"
-version = "0.1.0"
-dependencies = [
- "clap",
- "interprocess",
- "notify",
- "tokio",
-]
-
-[[package]]
-name = "gsd_task_queue"
-version = "0.1.0"
-dependencies = [
- "gsd_macro",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -407,6 +376,16 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "multiplexer"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "interprocess",
+ "notify",
+ "tokio",
 ]
 
 [[package]]
@@ -635,6 +614,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "task_queue"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "task_queue_macro",
+ "tokio",
+]
+
+[[package]]
+name = "task_queue_macro"
+version = "0.1.0"
+dependencies = [
+ "convert_case",
+ "deluxe",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 //! A task queue that executes shell commands and deserializes their output.
 
-pub use gsd_macro::GsdTask;
+pub use task_queue_macro::GsdTask;
 
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;

@@ -1,11 +1,11 @@
 [package]
-name = "gsd_macro"
+name = "task_queue_macro"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Derive macro for GSD task queue"
+description = "Derive macro for task queue"
 keywords = ["macro", "derive", "task-queue"]
 categories = ["development-tools::procedural-macro-helpers"]
 

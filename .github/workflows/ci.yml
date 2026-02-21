@@ -30,11 +30,11 @@ jobs:
           targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target x86_64-apple-darwin -p gsd_multiplexer
+        run: cargo build --release --target x86_64-apple-darwin -p multiplexer
       - uses: actions/upload-artifact@v4
         with:
           name: gsd-macos-x64
-          path: target/x86_64-apple-darwin/release/gsd_multiplexer
+          path: target/x86_64-apple-darwin/release/multiplexer
 
   build-macos-arm64:
     runs-on: macos-latest
@@ -45,11 +45,11 @@ jobs:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target aarch64-apple-darwin -p gsd_multiplexer
+        run: cargo build --release --target aarch64-apple-darwin -p multiplexer
       - uses: actions/upload-artifact@v4
         with:
           name: gsd-macos-arm64
-          path: target/aarch64-apple-darwin/release/gsd_multiplexer
+          path: target/aarch64-apple-darwin/release/multiplexer
 
   build-linux-x64:
     runs-on: ubuntu-latest
@@ -62,11 +62,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target x86_64-unknown-linux-musl -p gsd_multiplexer
+        run: cargo build --release --target x86_64-unknown-linux-musl -p multiplexer
       - uses: actions/upload-artifact@v4
         with:
           name: gsd-linux-x64
-          path: target/x86_64-unknown-linux-musl/release/gsd_multiplexer
+          path: target/x86_64-unknown-linux-musl/release/multiplexer
 
   build-linux-arm64:
     runs-on: ubuntu-latest
@@ -79,11 +79,11 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cross build --release --target aarch64-unknown-linux-musl -p gsd_multiplexer
+        run: cross build --release --target aarch64-unknown-linux-musl -p multiplexer
       - uses: actions/upload-artifact@v4
         with:
           name: gsd-linux-arm64
-          path: target/aarch64-unknown-linux-musl/release/gsd_multiplexer
+          path: target/aarch64-unknown-linux-musl/release/multiplexer
 
   build-windows-x64:
     runs-on: windows-latest
@@ -94,11 +94,11 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target x86_64-pc-windows-msvc -p gsd_multiplexer
+        run: cargo build --release --target x86_64-pc-windows-msvc -p multiplexer
       - uses: actions/upload-artifact@v4
         with:
           name: gsd-win-x64
-          path: target/x86_64-pc-windows-msvc/release/gsd_multiplexer.exe
+          path: target/x86_64-pc-windows-msvc/release/multiplexer.exe
 
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
@@ -147,10 +147,10 @@ jobs:
 
       - name: Make binaries executable
         run: |
-          chmod +x libs/gsd-multiplexer/artifacts/macos-x64/gsd_multiplexer
-          chmod +x libs/gsd-multiplexer/artifacts/macos-arm64/gsd_multiplexer
-          chmod +x libs/gsd-multiplexer/artifacts/linux-x64/gsd_multiplexer
-          chmod +x libs/gsd-multiplexer/artifacts/linux-arm64/gsd_multiplexer
+          chmod +x libs/gsd-multiplexer/artifacts/macos-x64/multiplexer
+          chmod +x libs/gsd-multiplexer/artifacts/macos-arm64/multiplexer
+          chmod +x libs/gsd-multiplexer/artifacts/linux-x64/multiplexer
+          chmod +x libs/gsd-multiplexer/artifacts/linux-arm64/multiplexer
 
       - name: Set version for main branch
         if: "!startsWith(github.ref, 'refs/tags/v')"

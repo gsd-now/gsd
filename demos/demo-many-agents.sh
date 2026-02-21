@@ -14,9 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT=$(mktemp -d)
 
 # Build the binary first
-cargo build -p gsd_multiplexer
+cargo build -p multiplexer
 
-MULTIPLEXER="${MULTIPLEXER:-cargo run -p gsd_multiplexer --}"
+MULTIPLEXER="${MULTIPLEXER:-cargo run -p multiplexer --}"
 
 echo "=== Demo: Multiple Agents, Many Tasks ==="
 echo "Working directory: $ROOT"
