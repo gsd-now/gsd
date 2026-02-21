@@ -21,6 +21,9 @@ enum Command {
     Start {
         /// Root directory for the multiplexer
         root: PathBuf,
+        /// Enable verbose logging
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Stop a running multiplexer server
     Stop {
@@ -42,8 +45,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Start { root } => {
-            let mut multiplexer = match Multiplexer::new(&root) {
+        Command::Start { root, verbose } => {
+            let mut multiplexer = match Multiplexer::new(&root, verbose) {
                 Ok(m) => m,
                 Err(e) => {
                     eprintln!("Failed to start: {e}");

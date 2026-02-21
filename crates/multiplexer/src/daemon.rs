@@ -21,6 +21,7 @@ pub struct Multiplexer {
     socket_path: PathBuf,
     agents: HashMap<String, AgentState>,
     pending_tasks: VecDeque<PendingTask>,
+    verbose: bool,
 }
 
 struct PendingTask {
@@ -36,7 +37,7 @@ enum AgentState {
 
 impl Multiplexer {
     /// Create a new multiplexer for the given root folder.
-    pub fn new(root: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new(root: impl AsRef<Path>, verbose: bool) -> io::Result<Self> {
         let root = root.as_ref().to_path_buf();
         let agents_folder = root.join(AGENTS_DIR);
         let lock_path = root.join(LOCK_FILE);
@@ -58,11 +59,18 @@ impl Multiplexer {
             socket_path,
             agents: HashMap::new(),
             pending_tasks: VecDeque::new(),
+            verbose,
         };
 
         multiplexer.scan_existing_agents()?;
 
         Ok(multiplexer)
+    }
+
+    fn log(&self, msg: &str) {
+        if self.verbose {
+            eprintln!("[daemon] {msg}");
+        }
     }
 
     /// Run the multiplexer event loop.
@@ -170,7 +178,12 @@ impl Multiplexer {
             Err(_) => return Ok(()),
         };
 
-        eprintln!("[daemon] task received ({} bytes)", content.len());
+        eprintln!(
+            "[daemon] task received ({} bytes), {} pending, {} agents",
+            content.len(),
+            self.pending_tasks.len(),
+            self.agents.len()
+        );
         self.pending_tasks.push_back(PendingTask {
             content,
             response_stream: stream,
@@ -180,8 +193,11 @@ impl Multiplexer {
     }
 
     fn handle_fs_event(&mut self, event: Event) -> io::Result<()> {
+        self.log(&format!("fs event: {:?} paths={:?}", event.kind, event.paths));
+
         for path in &event.paths {
             if !path.starts_with(&self.agents_folder) {
+                self.log(&format!("  skipping (not in agents folder): {}", path.display()));
                 continue;
             }
 
@@ -202,6 +218,8 @@ impl Multiplexer {
                 continue;
             }
 
+            self.log(&format!("  agent_id={agent_id} components={}", components.len()));
+
             match components.len() {
                 1 => self.handle_agent_folder_event(&event, agent_id),
                 2 => {
@@ -219,6 +237,12 @@ impl Multiplexer {
 
     fn handle_agent_folder_event(&mut self, event: &Event, agent_id: &str) {
         let agent_folder = self.agents_folder.join(agent_id);
+
+        self.log(&format!(
+            "  folder event: agent={agent_id} kind={:?} is_dir={}",
+            event.kind,
+            agent_folder.is_dir()
+        ));
 
         if matches!(event.kind, EventKind::Remove(_)) {
             self.unregister_agent(agent_id);
