@@ -53,11 +53,15 @@ A folder is either a **HashMap** or a **Struct**:
 
 **Never mix these.** A folder of demos should only contain demos, not utilities. Put utilities elsewhere (e.g., `scripts/`).
 
+**No redundant prefixes in HashMap folders.** Files in a HashMap folder already have context from the folder name. Don't prefix every file with the folder's purpose:
+- `demos/many-agents.sh` ✓ (not `demos/demo-many-agents.sh`)
+- `crates/multiplexer/` ✓ (not `crates/multiplexer-crate/`)
+
 ## Script dependencies
 
 Scripts that are expected to be run directly by users should know about their dependencies and build them if necessary. For example:
 
-- `crates/multiplexer/demos/demo-single-basic.sh` runs `cargo build -p multiplexer` because users run it directly
+- `crates/multiplexer/demos/single-basic.sh` runs `cargo build -p multiplexer` because users run it directly
 - `crates/multiplexer/scripts/echo-agent.sh` does NOT build anything - it's a utility called by other scripts that have already built the binary
 
 The rule: if a script is an entry point (user runs it), it handles its own dependencies. If it's a utility (called by other scripts), it assumes dependencies are already built.
