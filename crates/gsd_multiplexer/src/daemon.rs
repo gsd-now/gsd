@@ -2,12 +2,10 @@
 
 use crate::constants::{AGENTS_DIR, LOCK_FILE, NEXT_TASK_FILE, OUTPUT_FILE, SOCKET_NAME};
 use crate::lock::acquire_lock;
-use interprocess::local_socket::{
-    prelude::*, GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
-};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -25,13 +23,13 @@ pub struct Multiplexer {
 
 struct PendingTask {
     content: String,
-    response_stream: Stream,
+    response_stream: UnixStream,
 }
 
 #[derive(Debug)]
 enum AgentState {
     Available,
-    Busy { response_stream: Stream },
+    Busy { response_stream: UnixStream },
 }
 
 impl Multiplexer {
@@ -47,7 +45,6 @@ impl Multiplexer {
 
         acquire_lock(&lock_path)?;
 
-        // Clean up stale socket file on Unix
         if socket_path.exists() {
             fs::remove_file(&socket_path)?;
         }
@@ -67,20 +64,8 @@ impl Multiplexer {
 
     /// Run the multiplexer event loop.
     pub fn run(&mut self) -> io::Result<()> {
-        let name = self
-            .socket_path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_sync()
-            .map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e))?;
-
-        listener
-            .set_nonblocking(ListenerNonblockingMode::Accept)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let listener = UnixListener::bind(&self.socket_path)?;
+        listener.set_nonblocking(true)?;
 
         let (fs_tx, fs_rx) = mpsc::channel();
 
@@ -105,12 +90,12 @@ impl Multiplexer {
 
     fn event_loop(
         &mut self,
-        listener: Listener,
+        listener: UnixListener,
         fs_rx: mpsc::Receiver<Event>,
     ) -> io::Result<()> {
         loop {
             match listener.accept() {
-                Ok(stream) => self.handle_submit(stream)?,
+                Ok((stream, _)) => self.handle_submit(stream)?,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
@@ -151,8 +136,8 @@ impl Multiplexer {
         }
     }
 
-    fn handle_submit(&mut self, stream: Stream) -> io::Result<()> {
-        let mut reader = BufReader::new(&stream);
+    fn handle_submit(&mut self, stream: UnixStream) -> io::Result<()> {
+        let mut reader = BufReader::new(stream.try_clone()?);
 
         let mut len_line = String::new();
         reader.read_line(&mut len_line)?;
@@ -282,7 +267,7 @@ impl Multiplexer {
         Ok(())
     }
 
-    fn send_response(&self, mut stream: Stream, output: &str) -> io::Result<()> {
+    fn send_response(&self, mut stream: UnixStream, output: &str) -> io::Result<()> {
         writeln!(stream, "{}", output.len())?;
         stream.write_all(output.as_bytes())?;
         stream.flush()?;
