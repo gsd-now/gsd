@@ -37,7 +37,7 @@ sleep 0.5
 
 # Start ONE agent with slow response time
 echo "Starting single agent (1 second per task)..."
-"$SCRIPT_DIR/agent.sh" "$ROOT" "only-agent" 1.0 &
+"$SCRIPT_DIR/../scripts/agent.sh" "$ROOT" "only-agent" 1.0 &
 AGENT_PID=$!
 sleep 0.3
 

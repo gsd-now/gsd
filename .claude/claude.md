@@ -33,3 +33,18 @@ Your singular mission is creating S-tier libraries where:
 - Prefer small, atomic commits
 - **NEVER amend commits that have been pushed** - always check `git log origin/master` vs `git log` before amending
 - If a commit has been pushed, make changes as a new commit instead
+
+## Directory structure philosophy
+
+A folder is either a **HashMap** or a **Struct**:
+
+- **HashMap folder**: All items have the same "type" or purpose. Like a collection.
+  - `agents/` - each subfolder is an agent
+  - `demos/` - each file is a demo script
+  - `crates/` - each subfolder is a crate
+
+- **Struct folder**: Each item is a named, well-known key with a specific purpose.
+  - `src/` with `lib.rs`, `main.rs`, `constants.rs`
+  - `.github/` with `workflows/`, `CODEOWNERS`
+
+**Never mix these.** A folder of demos should only contain demos, not utilities. Put utilities elsewhere (e.g., `scripts/`).
