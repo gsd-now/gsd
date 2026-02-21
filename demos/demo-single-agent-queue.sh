@@ -12,6 +12,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT=$(mktemp -d)
+
+# Build the binary first
+cargo build -p gsd_multiplexer
+
 MULTIPLEXER="${MULTIPLEXER:-cargo run -p gsd_multiplexer --}"
 
 echo "=== Demo: Single Agent Queue ==="

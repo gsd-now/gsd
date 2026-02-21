@@ -16,7 +16,7 @@ pub fn submit(root: impl AsRef<Path>, input: &str) -> io::Result<String> {
         .to_fs_name::<GenericFilePath>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-    let mut stream: Stream =
+    let mut stream =
         Stream::connect(name).map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
     writeln!(stream, "{}", input.len())?;
     stream.write_all(input.as_bytes())?;
