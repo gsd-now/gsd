@@ -52,3 +52,14 @@ A folder is either a **HashMap** or a **Struct**:
   - `.github/` with `workflows/`, `CODEOWNERS`
 
 **Never mix these.** A folder of demos should only contain demos, not utilities. Put utilities elsewhere (e.g., `scripts/`).
+
+## Dependency hygiene
+
+Use `cargo-udeps` to check for unused dependencies:
+
+```bash
+cargo install cargo-udeps --locked
+cargo +nightly udeps --all-targets
+```
+
+**Note:** `cargo-udeps` only checks individual crates, not workspace-level dependencies. After running it, also manually verify that every entry in `[workspace.dependencies]` in the root `Cargo.toml` is actually used by at least one crate. Remove any unused workspace dependencies.
