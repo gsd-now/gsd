@@ -57,8 +57,8 @@ A folder is either a **HashMap** or a **Struct**:
 
 Scripts that are expected to be run directly by users should know about their dependencies and build them if necessary. For example:
 
-- `demos/demo-single-basic.sh` runs `cargo build -p multiplexer` because users run it directly
-- `scripts/echo-agent.sh` does NOT build anything - it's a utility called by other scripts that have already built the binary
+- `crates/multiplexer/demos/demo-single-basic.sh` runs `cargo build -p multiplexer` because users run it directly
+- `crates/multiplexer/scripts/echo-agent.sh` does NOT build anything - it's a utility called by other scripts that have already built the binary
 
 The rule: if a script is an entry point (user runs it), it handles its own dependencies. If it's a utility (called by other scripts), it assumes dependencies are already built.
 
