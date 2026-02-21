@@ -34,6 +34,10 @@ Your singular mission is creating S-tier libraries where:
 - **NEVER amend commits that have been pushed** - always check `git log origin/master` vs `git log` before amending
 - If a commit has been pushed, make changes as a new commit instead
 
+## Cross-platform support
+
+Jevin cares deeply about cross-platform support. **Never remove functionality just because it can't be tested in the current environment.** If something can't be tested (e.g., due to sandbox restrictions), tell the user instead of silently degrading the codebase.
+
 ## Directory structure philosophy
 
 A folder is either a **HashMap** or a **Struct**:
