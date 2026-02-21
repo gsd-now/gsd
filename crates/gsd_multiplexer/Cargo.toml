@@ -1,0 +1,19 @@
+[package]
+name = "gsd_multiplexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notify = { workspace = true }
+tokio = { workspace = true }
+
+[[bin]]
+name = "gsd_multiplexer"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
