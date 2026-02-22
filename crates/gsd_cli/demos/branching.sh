@@ -51,7 +51,7 @@ sleep 0.3
 # Run GSD
 echo ""
 echo "Running GSD with branching config..."
-$GSD run "$SCRIPT_DIR/../configs/branching.json" \
+$GSD run "$SCRIPT_DIR/../../gsd_config/configs/branching.json" \
     --root "$ROOT" \
     --initial '[{"kind": "Decide", "value": {}}]'
 

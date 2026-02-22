@@ -53,7 +53,7 @@ sleep 0.3
 # Run GSD
 echo ""
 echo "Running GSD with simple config..."
-$GSD run "$SCRIPT_DIR/../configs/simple.json" \
+$GSD run "$SCRIPT_DIR/../../gsd_config/configs/simple.json" \
     --root "$ROOT" \
     --initial '[{"kind": "Start", "value": {}}]'
 
