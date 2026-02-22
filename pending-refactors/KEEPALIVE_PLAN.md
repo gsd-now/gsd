@@ -15,27 +15,16 @@ When an agent (like Claude) first connects, we send a dummy "ping" task that for
 
 ### Periodic Keepalive
 
-Periodically send ping tasks to verify agents are still alive and responsive. If an agent fails to respond within a timeout, mark it as dead and reassign its in-flight work.
+Periodically send ping tasks to **idle** agents to verify they're still alive and responsive. This only happens when an agent has no task in progress - the purpose is to keep agents from sleeping and to detect agents that have disconnected.
 
-## Current State (Heartbeats)
+**Key distinction from heartbeats:** Keepalives are sent *to* idle agents, not *from* busy agents. There is no in-flight work to worry about during a keepalive - if an agent fails to respond, we simply deregister it.
 
-```rust
-// Agent periodically touches a file
-agent_pool heartbeat --pool X --name Y  // touches agents/<name>/heartbeat
+If an agent fails to respond within the timeout:
+1. Log a warning
+2. Remove the agent's directory (deregister)
+3. The agent is no longer part of the pool
 
-// Daemon checks mtime of heartbeat file
-fn check_heartbeat_timeouts(&mut self) {
-    let mtime = fs::metadata(&heartbeat_path).and_then(|m| m.modified());
-    if mtime is stale { /* mark task as failed */ }
-}
-```
-
-**Problems:**
-- Agent must remember to send heartbeats during long tasks
-- Heartbeats only matter during task execution, not for initial connection
-- Doesn't help with the approval problem
-
-## Target State (Keepalives)
+## Target State
 
 ```rust
 pub struct DaemonConfig {
@@ -238,24 +227,25 @@ fn check_periodic_keepalives(&mut self) {
 
 When a keepalive task times out:
 1. Log warning
-2. Remove agent from pool
-3. If agent had a real task in-flight, requeue it
+2. Remove agent directory (deregister)
+3. Remove agent from internal state
+
+Since keepalives only happen to idle agents, there's no in-flight work to worry about.
 
 ```rust
 fn handle_keepalive_timeout(&mut self, agent_id: &str) {
-    warn!(agent_id, "keepalive timeout, removing agent");
-    if let Some(agent) = self.agents.remove(agent_id) {
-        if let Some(in_flight) = agent.in_flight {
-            // Requeue the task if it wasn't a keepalive
-            if !in_flight.is_keepalive {
-                self.pending.push_front(in_flight.task);
-            }
-        }
-    }
+    warn!(agent_id, "keepalive timeout, deregistering agent");
+
+    // Remove the agent directory
+    let agent_dir = self.agents_dir.join(agent_id);
+    let _ = fs::remove_dir_all(&agent_dir);
+
+    // Remove from internal state
+    self.agents.remove(agent_id);
 }
 ```
 
-**Commit:** `feat(agent_pool): handle keepalive timeout and requeue tasks`
+**Commit:** `feat(agent_pool): deregister agent on keepalive timeout`
 
 ---
 
@@ -279,23 +269,7 @@ fi
 
 ---
 
-### Task 8: Deprecate heartbeat mechanism
-
-**Files:**
-- `crates/agent_pool/src/daemon.rs`
-- `crates/agent_pool/src/main.rs`
-- `crates/agent_pool/AGENT_PROTOCOL.md`
-
-1. Mark `heartbeat_timeout` config as deprecated
-2. Add deprecation warning in CLI
-3. Update docs to recommend keepalives instead
-4. Keep heartbeat code working for backward compatibility
-
-**Commit:** `chore(agent_pool): deprecate heartbeat in favor of keepalive`
-
----
-
-### Task 9: Add tests for keepalive behavior
+### Task 8: Add tests for keepalive behavior
 
 **Files:** `crates/agent_pool/tests/keepalive.rs`
 
@@ -321,7 +295,8 @@ Test cases:
 | 5 | Periodic keepalive | 2 |
 | 6 | Timeout handling | 4, 5 |
 | 7 | Update command-agent.sh | 1 |
-| 8 | Deprecate heartbeat | 4, 5, 6 |
-| 9 | Add tests | 4, 5, 6 |
+| 8 | Add tests | 4, 5, 6 |
 
 Tasks 1, 2, 7 can be done in parallel. Tasks 4, 5 can be done in parallel after 2. The goal is small, atomic commits that each leave the system in a working state.
+
+**Note:** Heartbeat mechanism was already removed in a prior commit.
