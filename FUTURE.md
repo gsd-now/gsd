@@ -223,6 +223,41 @@ Why not:
 
 If differentiation is needed, consider running multiple `agent_pool` instances, one per agent type, and routing tasks appropriately at submission time.
 
+## Step Cleanup/Post-Processing
+
+Steps might want to run cleanup actions after completion, regardless of which next step is chosen. Use cases:
+
+- Commit changes after each step
+- Run linters/formatters after code modifications
+- Log metrics or telemetry
+- Release resources or locks
+
+### Potential Approaches
+
+**Option 1: `on_complete` field**
+```json
+{
+  "name": "Implement",
+  "on_complete": "./scripts/lint-and-format.sh",
+  "next": ["Test", "Done"]
+}
+```
+
+**Option 2: Lifecycle hooks**
+```json
+{
+  "hooks": {
+    "after_step": "./scripts/cleanup.sh"
+  },
+  "steps": [...]
+}
+```
+
+**Option 3: Leave to agents**
+Agents can include cleanup in their response logic. Simpler but requires agent awareness.
+
+Not yet decided - need more use cases to understand the right abstraction.
+
 ## Hung Agent Detection
 
 Agents can hang (infinite loops, deadlocks, waiting on unavailable resources). The daemon should detect this and handle it gracefully:
