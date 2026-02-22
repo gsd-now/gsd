@@ -7,7 +7,7 @@
 mod common;
 
 use common::{AgentPoolHandle, GsdTestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir};
-use gsd_json::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -77,7 +77,7 @@ fn branch_to_path_a() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     let kinds: Vec<String> = processed
@@ -124,7 +124,7 @@ fn branch_to_path_b() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     let kinds: Vec<String> = processed
@@ -190,7 +190,7 @@ fn fan_out_multiple_tasks() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     agent.stop();
 

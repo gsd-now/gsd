@@ -6,7 +6,7 @@
 #![expect(clippy::print_stderr)]
 
 use clap::{Parser, Subcommand};
-use gsd_json::{CompiledSchemas, Config, RunnerConfig, Task, generate_full_docs, run};
+use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task, generate_full_docs, run};
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -136,7 +136,13 @@ fn main() -> io::Result<()> {
 fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
     let path = PathBuf::from(input);
     if path.exists() {
-        let cfg = Config::load(&path)?;
+        let content = std::fs::read_to_string(&path)?;
+        let cfg: Config = serde_json::from_str(&content).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid config JSON: {e}"),
+            )
+        })?;
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         Ok((cfg, dir.to_path_buf()))
     } else {

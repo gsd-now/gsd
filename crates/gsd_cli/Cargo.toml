@@ -10,7 +10,7 @@ keywords = ["cli", "task", "orchestrator", "state-machine"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-gsd_json = { path = "../gsd_json" }
+gsd_config = { path = "../gsd_config" }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }

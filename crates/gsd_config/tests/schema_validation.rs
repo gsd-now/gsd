@@ -6,7 +6,7 @@
 mod common;
 
 use common::{AgentPoolHandle, GsdTestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir};
-use gsd_json::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -84,7 +84,7 @@ fn valid_schema_passes() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Input and Output
@@ -120,7 +120,7 @@ fn invalid_initial_task_skipped() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Invalid task should be skipped
@@ -190,7 +190,7 @@ fn invalid_response_causes_retry() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Initial + 2 retries = 3 attempts

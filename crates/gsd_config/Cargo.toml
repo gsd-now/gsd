@@ -1,12 +1,12 @@
 [package]
-name = "gsd_json"
+name = "gsd_config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "JSON-based task orchestrator library for state machine workflows"
-keywords = ["task", "orchestrator", "state-machine", "json", "agent"]
+description = "Declarative config-based task orchestrator library"
+keywords = ["task", "orchestrator", "state-machine", "config", "agent"]
 categories = ["development-tools"]
 
 [dependencies]

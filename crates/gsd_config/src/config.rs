@@ -1,11 +1,10 @@
-//! Configuration parsing for GSD.
+//! Configuration types for GSD.
 //!
-//! The config file defines a state machine with steps, schemas, and transitions.
+//! Defines the state machine with steps, schemas, and transitions.
+//! These types are serialization-format agnostic (use serde).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
-use std::{fs, io};
 
 /// Top-level GSD configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,16 +139,6 @@ pub enum SchemaRef {
 }
 
 impl Config {
-    /// Load config from a JSON file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file can't be read or contains invalid JSON.
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let content = fs::read_to_string(path)?;
-        serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
     /// Build a map of step name to step for efficient lookup.
     #[must_use]
     pub fn step_map(&self) -> HashMap<&str, &Step> {

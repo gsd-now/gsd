@@ -7,7 +7,7 @@
 mod common;
 
 use common::{AgentPoolHandle, GsdTestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir};
-use gsd_json::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,7 +74,7 @@ fn invalid_transition_causes_retry() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Original + 1 retry = 2 attempts
@@ -113,7 +113,7 @@ fn unknown_step_causes_retry() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Original + 1 retry = 2 attempts
@@ -176,7 +176,7 @@ fn recovery_after_invalid_then_valid() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     // Start (fail) + Start (success) + Middle + End = 4

@@ -1,13 +1,15 @@
-# gsd_json
+# gsd_config
 
-JSON-based task orchestrator that sits on top of `agent_pool`.
+Declarative task orchestrator that sits on top of `agent_pool`.
 
 ## Overview
 
-Define task state machines via JSON config:
+Define task state machines via declarative config:
 - Validates tasks against JSON schemas at runtime
 - Generates markdown documentation for agents
 - Handles timeouts and retries with per-step options
+
+The config format is serialization-agnostic (uses serde). The CLI handles parsing from JSON (other formats could be added).
 
 ## Config Format
 

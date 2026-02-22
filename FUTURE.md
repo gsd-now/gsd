@@ -161,7 +161,7 @@ Need timeout support for tasks. Considerations:
 
 ## Granular Retry Options
 
-**Status: Implemented** in `crates/gsd_json/src/config.rs`.
+**Status: Implemented** in `crates/gsd_config/src/config.rs`.
 
 Global options `retry_on_timeout` and `retry_on_invalid_response` (both default `true`) can be overridden per-step via `StepOptions`. Use `EffectiveOptions::resolve()` to merge.
 
@@ -176,7 +176,7 @@ For sandboxed environments where Unix sockets are blocked, implement file-based 
 
 ## GSD JSON Runner
 
-**Status: Implemented** in `crates/gsd_json/` (library) and `crates/gsd_cli/` (binary).
+**Status: Implemented** in `crates/gsd_config/` (library) and `crates/gsd_cli/` (binary).
 
 The `gsd` binary accepts JSON configuration:
 
@@ -186,7 +186,7 @@ gsd docs config.json
 gsd validate config.json
 ```
 
-See `crates/gsd_json/DESIGN.md` for full documentation.
+See `crates/gsd_config/README.md` for full documentation.
 
 ## Binary vs Library Mode
 

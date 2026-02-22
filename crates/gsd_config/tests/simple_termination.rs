@@ -6,7 +6,7 @@
 mod common;
 
 use common::{AgentPoolHandle, GsdTestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir};
-use gsd_json::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -54,7 +54,7 @@ fn single_step_terminates() {
         }],
     };
 
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     let processed = agent.stop();
     assert_eq!(processed.len(), 1);
@@ -80,7 +80,7 @@ fn empty_initial_tasks_does_nothing() {
     };
 
     // Should complete immediately without error
-    gsd_json::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
     cleanup_test_dir(&format!("{TEST_DIR}_empty"));
 }
