@@ -1,5 +1,19 @@
 # To-Dos and Future Directions
 
+## Flaky Test: sequential_tasks_same_agent
+
+The test `crates/agent_pool/tests/single_agent_queue.rs::sequential_tasks_same_agent` is flaky. It bypasses the daemon and manually writes to task.json/response.json, which creates race conditions between the test's file operations and the TestAgent's polling loop.
+
+Options:
+1. **Use proper synchronization** - Have TestAgent signal when it's ready for the next task
+2. **Use the daemon** - Rewrite to use AgentPoolHandle instead of manual file protocol
+3. **Add retry logic** - Poll for the expected response instead of asserting after fixed sleep
+4. **Delete the test** - The same behavior is tested via the daemon in other tests
+
+The test is brittle by design (testing raw file protocol) so option 2 or 4 may be best.
+
+---
+
 ## Agent --continue Flag
 
 When an agent starts with a specific ID via `get_task --name <ID>`, we might want to distinguish between:
