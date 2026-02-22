@@ -350,9 +350,9 @@ Rules:
 
 The default step should probably require `value_schema` to either be absent or accept an empty object.
 
-## Agent Health Checks (Keepalives)
+## Agent Health Checks
 
-**Status: Planned** - see `pending-refactors/KEEPALIVE_PLAN.md`.
+**Status: Planned** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
 
 Replacing file-based heartbeats with task-based keepalives (ping-pong). Benefits:
 - Initial keepalive gets tool-use approvals out of the way
