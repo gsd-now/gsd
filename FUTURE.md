@@ -107,36 +107,9 @@ Need timeout support for tasks. Considerations:
 
 ## Granular Retry Options
 
-Currently `max_retries` is a single number. Need more granular control:
+**Status: Implemented** in `crates/gsd_json/src/config.rs`.
 
-**Global (fallback) options:**
-```json
-{
-  "options": {
-    "max_retries": 3,
-    "retry_on_timeout": true,
-    "retry_on_invalid_result": true
-  }
-}
-```
-
-**Per-step overrides:**
-```json
-{
-  "name": "ExpensiveStep",
-  "options": {
-    "max_retries": 1,
-    "retry_on_invalid_result": false
-  }
-}
-```
-
-Retry triggers to distinguish:
-- **Timeout**: Agent didn't respond in time
-- **Invalid result**: Agent returned wrong transition or malformed response
-- **Failure**: Agent process crashed or returned error
-
-Each should be independently configurable with per-step overrides.
+Global options `retry_on_timeout` and `retry_on_invalid_response` (both default `true`) can be overridden per-step via `StepOptions`. Use `EffectiveOptions::resolve()` to merge.
 
 ## No-IPC Mode
 
