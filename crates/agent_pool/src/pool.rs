@@ -1,13 +1,17 @@
 //! Pool ID management.
 //!
-//! Pools live in `/tmp/gsd/<id>/` with short, memorable IDs.
+//! Pools live in `<temp>/gsd/<id>/` with short, memorable IDs.
+//! On Unix: `/tmp/gsd/<id>/`
+//! On Windows: `%TEMP%\gsd\<id>\`
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-/// Base directory for all pools.
-const POOLS_BASE: &str = "/tmp/gsd";
+/// Get the base directory for all pools.
+fn pools_base() -> PathBuf {
+    std::env::temp_dir().join("gsd")
+}
 
 /// Length of generated pool IDs.
 const ID_LENGTH: usize = 8;
@@ -47,7 +51,7 @@ pub fn generate_id() -> String {
 /// Get the path for a pool ID.
 #[must_use]
 pub fn id_to_path(id: &str) -> PathBuf {
-    PathBuf::from(POOLS_BASE).join(id)
+    pools_base().join(id)
 }
 
 /// Information about a pool.
@@ -67,7 +71,7 @@ pub struct PoolInfo {
 ///
 /// Returns an error if the pools directory cannot be read.
 pub fn list_pools() -> io::Result<Vec<PoolInfo>> {
-    let base = PathBuf::from(POOLS_BASE);
+    let base = pools_base();
 
     if !base.exists() {
         return Ok(Vec::new());
