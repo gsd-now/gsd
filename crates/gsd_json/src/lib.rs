@@ -48,7 +48,7 @@ pub mod docs;
 pub mod runner;
 pub mod schema;
 
-pub use config::{Config, ConfigError, Options, SchemaRef, Step};
+pub use config::{Config, ConfigError, EffectiveOptions, Options, SchemaRef, Step, StepOptions};
 pub use docs::{generate_full_docs, generate_step_docs};
 pub use runner::{RunnerConfig, run};
 pub use schema::{CompiledSchemas, ResponseValidationError, Task, ValidationError};

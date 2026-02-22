@@ -20,16 +20,39 @@ pub struct Config {
 }
 
 /// Runtime options for task execution.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Options {
     /// Timeout in seconds for each task (None = no timeout).
     #[serde(default)]
     pub timeout: Option<u64>,
 
-    /// Maximum retries for timed-out tasks (default: 0).
+    /// Maximum retries per task (default: 0).
     #[serde(default)]
     pub max_retries: u32,
+
+    /// Whether to retry when agent times out (default: true).
+    #[serde(default = "default_true")]
+    pub retry_on_timeout: bool,
+
+    /// Whether to retry when agent returns invalid response (default: true).
+    #[serde(default = "default_true")]
+    pub retry_on_invalid_response: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            max_retries: 0,
+            retry_on_timeout: true,
+            retry_on_invalid_response: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A step in the state machine.
@@ -51,6 +74,59 @@ pub struct Step {
     /// Valid next step names (empty = terminal step).
     #[serde(default)]
     pub next: Vec<String>,
+
+    /// Per-step options that override global options.
+    #[serde(default)]
+    pub options: StepOptions,
+}
+
+/// Per-step options that override global defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepOptions {
+    /// Timeout in seconds for this step (overrides global).
+    #[serde(default)]
+    pub timeout: Option<u64>,
+
+    /// Maximum retries for this step (overrides global).
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+
+    /// Whether to retry on timeout for this step (overrides global).
+    #[serde(default)]
+    pub retry_on_timeout: Option<bool>,
+
+    /// Whether to retry on invalid response for this step (overrides global).
+    #[serde(default)]
+    pub retry_on_invalid_response: Option<bool>,
+}
+
+/// Resolved options for a step (global defaults merged with per-step overrides).
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveOptions {
+    /// Timeout in seconds.
+    pub timeout: Option<u64>,
+    /// Maximum retries.
+    pub max_retries: u32,
+    /// Whether to retry on timeout.
+    pub retry_on_timeout: bool,
+    /// Whether to retry on invalid response.
+    pub retry_on_invalid_response: bool,
+}
+
+impl EffectiveOptions {
+    /// Merge global options with step-specific overrides.
+    #[must_use]
+    pub fn resolve(global: &Options, step: &StepOptions) -> Self {
+        Self {
+            timeout: step.timeout.or(global.timeout),
+            max_retries: step.max_retries.unwrap_or(global.max_retries),
+            retry_on_timeout: step.retry_on_timeout.unwrap_or(global.retry_on_timeout),
+            retry_on_invalid_response: step
+                .retry_on_invalid_response
+                .unwrap_or(global.retry_on_invalid_response),
+        }
+    }
 }
 
 /// Reference to a JSON Schema (inline or external file).
@@ -221,5 +297,82 @@ mod tests {
         let result = config.validate();
         assert!(result.is_err());
         assert!(matches!(result, Err(ConfigError::DuplicateStepNames)));
+    }
+
+    #[test]
+    fn retry_options_default_to_true() {
+        let json = r#"{"steps": []}"#;
+        let config: Config = serde_json::from_str(json).expect("parse failed");
+
+        assert!(config.options.retry_on_timeout);
+        assert!(config.options.retry_on_invalid_response);
+    }
+
+    #[test]
+    fn retry_options_can_be_disabled() {
+        let json = r#"{
+            "options": {
+                "retry_on_timeout": false,
+                "retry_on_invalid_response": false
+            },
+            "steps": []
+        }"#;
+
+        let config: Config = serde_json::from_str(json).expect("parse failed");
+        assert!(!config.options.retry_on_timeout);
+        assert!(!config.options.retry_on_invalid_response);
+    }
+
+    #[test]
+    fn per_step_options_override_global() {
+        let json = r#"{
+            "options": {
+                "timeout": 60,
+                "max_retries": 3,
+                "retry_on_timeout": true
+            },
+            "steps": [{
+                "name": "ExpensiveStep",
+                "next": [],
+                "options": {
+                    "timeout": 300,
+                    "max_retries": 1,
+                    "retry_on_timeout": false
+                }
+            }]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let step = &config.steps[0];
+        let effective = EffectiveOptions::resolve(&config.options, &step.options);
+
+        assert_eq!(effective.timeout, Some(300));
+        assert_eq!(effective.max_retries, 1);
+        assert!(!effective.retry_on_timeout);
+        // retry_on_invalid_response not overridden, uses global default
+        assert!(effective.retry_on_invalid_response);
+    }
+
+    #[test]
+    fn effective_options_uses_global_when_step_not_set() {
+        let json = r#"{
+            "options": {
+                "timeout": 60,
+                "max_retries": 5
+            },
+            "steps": [{
+                "name": "BasicStep",
+                "next": []
+            }]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let step = &config.steps[0];
+        let effective = EffectiveOptions::resolve(&config.options, &step.options);
+
+        assert_eq!(effective.timeout, Some(60));
+        assert_eq!(effective.max_retries, 5);
+        assert!(effective.retry_on_timeout);
+        assert!(effective.retry_on_invalid_response);
     }
 }

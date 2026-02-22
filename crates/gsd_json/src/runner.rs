@@ -2,15 +2,26 @@
 //!
 //! Executes tasks through `agent_pool`, validating transitions and handling timeouts.
 
-use crate::config::Config;
+use crate::config::{Config, EffectiveOptions};
 use crate::docs::generate_step_docs;
 use crate::schema::{CompiledSchemas, Task, validate_response};
-use agent_pool::{Response, ResponseKind};
+use agent_pool::{NotProcessedReason, Response, ResponseKind};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::Path;
 use std::process::Command;
 use tracing::{debug, error, info, warn};
+
+/// Why a task failed and needs retry consideration.
+#[derive(Debug, Clone, Copy)]
+enum FailureKind {
+    /// Agent timed out or wasn't processed.
+    Timeout,
+    /// Agent returned invalid response (bad transition, malformed JSON).
+    InvalidResponse,
+    /// Submit failed (I/O error).
+    SubmitError,
+}
 
 /// Runner configuration.
 pub struct RunnerConfig<'a> {
@@ -93,20 +104,21 @@ fn process_task(
         return;
     }
 
+    let effective = EffectiveOptions::resolve(&config.options, &step.options);
     let docs = generate_step_docs(step, config);
-    let payload = build_agent_payload(task, &docs, config.options.timeout);
+    let payload = build_agent_payload(task, &docs, effective.timeout);
 
     info!(kind = task.kind, "submitting task");
     debug!(payload = %payload, "task payload");
 
-    let result = submit_with_timeout(agent_pool_root, &payload, config.options.timeout);
+    let result = submit_with_timeout(agent_pool_root, &payload, effective.timeout);
 
     handle_submit_result(
         result,
         task.clone(),
         step,
         schemas,
-        config.options.max_retries,
+        &effective,
         queue,
         retry_counts,
     );
@@ -117,25 +129,17 @@ fn handle_submit_result(
     task: Task,
     step: &crate::config::Step,
     schemas: &CompiledSchemas,
-    max_retries: u32,
+    effective: &EffectiveOptions,
     queue: &mut VecDeque<Task>,
     retry_counts: &mut HashMap<String, u32>,
 ) {
     match result {
         Ok(response) => {
-            handle_response(
-                response,
-                task,
-                step,
-                schemas,
-                max_retries,
-                queue,
-                retry_counts,
-            );
+            handle_response(response, task, step, schemas, effective, queue, retry_counts);
         }
         Err(e) => {
-            error!(kind = task.kind, error = %e, "submit failed, requeuing");
-            requeue_with_retry(queue, retry_counts, task, max_retries);
+            error!(kind = task.kind, error = %e, "submit failed");
+            requeue_with_retry(queue, retry_counts, task, effective, FailureKind::SubmitError);
         }
     }
 }
@@ -145,7 +149,7 @@ fn handle_response(
     task: Task,
     step: &crate::config::Step,
     schemas: &CompiledSchemas,
-    max_retries: u32,
+    effective: &EffectiveOptions,
     queue: &mut VecDeque<Task>,
     retry_counts: &mut HashMap<String, u32>,
 ) {
@@ -167,13 +171,25 @@ fn handle_response(
                         }
                     }
                     Err(e) => {
-                        warn!(kind = task.kind, error = %e, "invalid response, requeuing task");
-                        requeue_with_retry(queue, retry_counts, task, max_retries);
+                        warn!(kind = task.kind, error = %e, "invalid response");
+                        requeue_with_retry(
+                            queue,
+                            retry_counts,
+                            task,
+                            effective,
+                            FailureKind::InvalidResponse,
+                        );
                     }
                 },
                 Err(e) => {
-                    warn!(kind = task.kind, error = %e, "failed to parse response JSON, requeuing");
-                    requeue_with_retry(queue, retry_counts, task, max_retries);
+                    warn!(kind = task.kind, error = %e, "failed to parse response JSON");
+                    requeue_with_retry(
+                        queue,
+                        retry_counts,
+                        task,
+                        effective,
+                        FailureKind::InvalidResponse,
+                    );
                 }
             }
         }
@@ -181,8 +197,12 @@ fn handle_response(
             let reason = response
                 .reason
                 .map_or_else(|| "unknown".to_string(), |r| format!("{r:?}"));
-            warn!(kind = task.kind, reason, "task not processed, requeuing");
-            requeue_with_retry(queue, retry_counts, task, max_retries);
+            let failure_kind = match response.reason {
+                Some(NotProcessedReason::Timeout) => FailureKind::Timeout,
+                _ => FailureKind::Timeout, // Shutdown also treated as timeout for retry purposes
+            };
+            warn!(kind = task.kind, reason, "task not processed");
+            requeue_with_retry(queue, retry_counts, task, effective, failure_kind);
         }
     }
 }
@@ -216,8 +236,25 @@ fn requeue_with_retry(
     queue: &mut VecDeque<Task>,
     retry_counts: &mut HashMap<String, u32>,
     task: Task,
-    max_retries: u32,
+    effective: &EffectiveOptions,
+    failure_kind: FailureKind,
 ) {
+    // Check if retry is allowed for this failure type
+    let retry_allowed = match failure_kind {
+        FailureKind::Timeout => effective.retry_on_timeout,
+        FailureKind::InvalidResponse => effective.retry_on_invalid_response,
+        FailureKind::SubmitError => true, // Always retry submit errors
+    };
+
+    if !retry_allowed {
+        warn!(
+            kind = task.kind,
+            failure = ?failure_kind,
+            "retry disabled for this failure type, dropping task"
+        );
+        return;
+    }
+
     let task_key = format!(
         "{}:{}",
         task.kind,
@@ -226,11 +263,12 @@ fn requeue_with_retry(
     let count = retry_counts.entry(task_key).or_insert(0);
     *count += 1;
 
-    if *count <= max_retries {
+    if *count <= effective.max_retries {
         info!(
             kind = task.kind,
             retry = *count,
-            max = max_retries,
+            max = effective.max_retries,
+            failure = ?failure_kind,
             "requeuing task"
         );
         queue.push_back(task);
