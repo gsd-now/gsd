@@ -234,6 +234,14 @@ impl AgentPoolHandle {
             handle: Some(handle),
         }
     }
+
+    /// Start the agent pool daemon with custom configuration.
+    pub fn start_with_config(root: &Path, config: agent_pool::DaemonConfig) -> Self {
+        let handle = agent_pool::spawn_with_config(root, config).expect("Failed to start daemon");
+        Self {
+            handle: Some(handle),
+        }
+    }
 }
 
 impl Drop for AgentPoolHandle {
