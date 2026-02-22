@@ -31,6 +31,18 @@ Use your **Write tool** (not bash) to write your response to `response_file`. Th
 
 **Important:** Always use the Write file tool, not bash commands like `echo`. Bash file operations may trigger permission prompts that interrupt the workflow.
 
+## Heartbeats (optional)
+
+If the pool is configured with heartbeat timeout, you should periodically signal that you're still working on long tasks:
+
+```bash
+agent_pool heartbeat --pool <POOL_ID> --name <YOUR_NAME>
+```
+
+Call this every 30-60 seconds during long-running work. If you don't send heartbeats and the timeout expires, your task will be marked as failed.
+
+Pools without heartbeat configuration don't require this - check with your orchestrator.
+
 ## Getting the next task
 
 Call `get_task` again. It will wait for the next task.
