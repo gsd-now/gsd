@@ -3,10 +3,11 @@
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
+#![expect(clippy::panic)]
 
 mod common;
 
-use agent_pool::{AGENTS_DIR, RESPONSE_FILE, Response, TASK_FILE};
+use agent_pool::{AGENTS_DIR, RESPONSE_FILE, Response, TASK_FILE, submit_file};
 use common::{AgentPoolHandle, TestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir};
 use std::fs;
 use std::thread;
@@ -62,4 +63,37 @@ fn file_protocol_basic() {
 
     let _ = agent.stop();
     cleanup_test_dir(&format!("{TEST_DIR}_file_protocol"));
+}
+
+/// Test file-based submission (for sandboxed environments).
+/// This tests the full round-trip through the daemon using file IPC.
+#[test]
+fn file_based_submit() {
+    let root = setup_test_dir(&format!("{TEST_DIR}_file_submit"));
+
+    // Start daemon - file-based submit works even when socket IPC is blocked
+    // because it only uses file I/O
+    if !is_ipc_available(&root) {
+        eprintln!("SKIP: IPC not available (daemon needs it internally)");
+        cleanup_test_dir(&format!("{TEST_DIR}_file_submit"));
+        return;
+    }
+
+    let _pool = AgentPoolHandle::start(&root);
+    let agent = TestAgent::echo(&root, "agent-1", Duration::from_millis(10));
+
+    // Give agent time to register
+    thread::sleep(Duration::from_millis(200));
+
+    // Submit using file-based protocol
+    let response = submit_file(&root, "Hello via file!").expect("File submit failed");
+    let Response::Processed { stdout, .. } = response else {
+        panic!("Expected Processed response, got {response:?}");
+    };
+    assert_eq!(stdout.trim(), "Hello via file! [processed]");
+
+    let processed = agent.stop();
+    assert_eq!(processed, vec!["Hello via file!"]);
+
+    cleanup_test_dir(&format!("{TEST_DIR}_file_submit"));
 }

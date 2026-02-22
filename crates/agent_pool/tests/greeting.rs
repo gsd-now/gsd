@@ -3,6 +3,7 @@
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
+#![expect(clippy::panic)]
 
 mod common;
 

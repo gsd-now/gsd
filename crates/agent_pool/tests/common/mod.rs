@@ -3,7 +3,6 @@
 // Test utilities can be more relaxed
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
-#![expect(clippy::collapsible_if)]
 
 use agent_pool::{AGENTS_DIR, RESPONSE_FILE, TASK_FILE};
 use std::fs;
@@ -106,12 +105,9 @@ impl TestAgent {
             while running_clone.load(Ordering::SeqCst) {
                 // Check for task file
                 if task_file.exists() && !response_file.exists() {
-                    let task = match fs::read_to_string(&task_file) {
-                        Ok(t) => t,
-                        Err(_) => {
-                            thread::sleep(Duration::from_millis(10));
-                            continue;
-                        }
+                    let Ok(task) = fs::read_to_string(&task_file) else {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
                     };
 
                     thread::sleep(processing_delay);

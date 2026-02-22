@@ -54,7 +54,7 @@ pub enum Response {
 impl Response {
     /// Create a successful response with the agent's output.
     #[must_use]
-    pub fn processed(stdout: String) -> Self {
+    pub const fn processed(stdout: String) -> Self {
         Self::Processed {
             stdout,
             stderr: None,

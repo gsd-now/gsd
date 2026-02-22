@@ -3,6 +3,7 @@
 //! Defines the task queue with steps, schemas, and transitions.
 //! These types are serialization-format agnostic (use serde).
 
+use crate::types::StepName;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,20 +69,55 @@ const fn default_true() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Step {
     /// Step name (e.g., `Analyze`, `Implement`).
-    pub name: String,
+    pub name: StepName,
 
     /// JSON Schema for validating the step's value payload.
     /// None means any JSON value is accepted.
     #[serde(default)]
     pub value_schema: Option<SchemaRef>,
 
+    /// Shell command to run before the action.
+    ///
+    /// Receives the task value JSON on stdin, must output modified task value JSON on stdout.
+    /// If the command fails (non-zero exit), the task is treated as failed and the post
+    /// hook (if any) is called with `{kind: "PreHookError", ...}`.
+    #[serde(default)]
+    pub pre: Option<String>,
+
     /// How this step processes tasks.
     #[serde(default)]
     pub action: Action,
 
+    /// Shell command to run after the action completes.
+    ///
+    /// Receives result JSON on stdin with structure:
+    /// - `{kind: "Success", input: <value>, output: <agent_output>, next: [...]}`
+    /// - `{kind: "Timeout", input: <value>}`
+    /// - `{kind: "Error", input: <value>, error: "..."}`
+    /// - `{kind: "PreHookError", input: <value>, error: "..."}`
+    ///
+    /// Must output modified result JSON on stdout. Can modify the `next` array to
+    /// filter, add, or transform the tasks that will be spawned.
+    ///
+    /// Runs even on timeout or error. Post hook failures trigger retry policy.
+    #[serde(default)]
+    pub post: Option<String>,
+
     /// Valid next step names (empty = terminal step).
     #[serde(default)]
-    pub next: Vec<String>,
+    pub next: Vec<StepName>,
+
+    /// Shell command to run after ALL tasks spawned by this step (and their
+    /// descendants) have completed.
+    ///
+    /// Receives the original task value on stdin. Outputs next tasks on stdout.
+    /// Useful for cleanup, aggregation, or triggering follow-up work after a
+    /// fan-out completes.
+    ///
+    /// Runs even if some descendants failed. Failures are logged but don't
+    /// prevent the workflow from continuing.
+    #[serde(default, rename = "finally")]
+    pub finally_hook: Option<String>,
 
     /// Per-step options that override global options.
     #[serde(default)]
@@ -249,14 +285,14 @@ impl Config {
     /// Returns an error describing any validation failures.
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Find duplicate names
-        let mut seen = HashMap::new();
+        let mut seen: HashMap<&str, usize> = HashMap::new();
         for name in self.steps.iter().map(|s| &s.name) {
-            *seen.entry(name.as_str()).or_insert(0usize) += 1;
+            *seen.entry(name.as_str()).or_insert(0) += 1;
         }
-        let duplicates: Vec<String> = seen
+        let duplicates: Vec<StepName> = seen
             .into_iter()
             .filter(|(_, count)| *count > 1)
-            .map(|(name, _)| name.to_string())
+            .map(|(name, _)| StepName::new(name))
             .collect();
 
         if !duplicates.is_empty() {
@@ -264,7 +300,7 @@ impl Config {
         }
 
         // Check all next references are valid
-        let step_names: std::collections::HashSet<_> =
+        let step_names: std::collections::HashSet<&str> =
             self.steps.iter().map(|s| s.name.as_str()).collect();
 
         for step in &self.steps {
@@ -288,14 +324,14 @@ pub enum ConfigError {
     /// Two or more steps have the same name.
     DuplicateStepNames {
         /// The step names that appear more than once.
-        names: Vec<String>,
+        names: Vec<StepName>,
     },
     /// A step references a non-existent next step.
     InvalidNextStep {
         /// The step containing the invalid reference.
-        from: String,
+        from: StepName,
         /// The referenced step that doesn't exist.
-        to: String,
+        to: StepName,
     },
 }
 
@@ -303,7 +339,8 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateStepNames { names } => {
-                write!(f, "duplicate step names: {}", names.join(", "))
+                let names_str: Vec<&str> = names.iter().map(StepName::as_str).collect();
+                write!(f, "duplicate step names: {}", names_str.join(", "))
             }
             Self::InvalidNextStep { from, to } => {
                 write!(f, "step '{from}' references non-existent step '{to}'")

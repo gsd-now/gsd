@@ -20,10 +20,12 @@
 pub mod config;
 mod docs;
 mod runner;
+mod types;
 mod value_schema;
 
 // Public API - only what external users need
-pub use config::Config;
+pub use config::{Action, Config};
 pub use docs::generate_full_docs;
 pub use runner::{RunnerConfig, TaskOutcome, TaskResult, TaskRunner, run};
+pub use types::StepName;
 pub use value_schema::{CompiledSchemas, Task};

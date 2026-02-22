@@ -103,26 +103,35 @@ pub fn list_pools() -> io::Result<Vec<PoolInfo>> {
     Ok(pools)
 }
 
-/// Check if a pool is running by testing if its socket is connectable.
+/// Check if a pool is running by verifying the lock file PID is alive.
 #[cfg(unix)]
 fn is_pool_running(pool_path: &std::path::Path) -> bool {
-    use std::os::unix::net::UnixStream;
+    use std::fs;
 
-    let socket_path = pool_path.join(crate::constants::SOCKET_NAME);
+    let lock_path = pool_path.join(crate::constants::LOCK_FILE);
 
-    if !socket_path.exists() {
+    let Ok(pid_str) = fs::read_to_string(&lock_path) else {
         return false;
-    }
+    };
 
-    // Try to connect - if successful, pool is running
-    UnixStream::connect(&socket_path).is_ok()
+    let Ok(pid) = pid_str.trim().parse::<u32>() else {
+        return false;
+    };
+
+    // Check if the process is still alive using kill -0
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Check if a pool is running (Windows stub - always returns false).
 #[cfg(not(unix))]
 fn is_pool_running(_pool_path: &std::path::Path) -> bool {
-    // On Windows, we can't easily check if the named pipe is active
-    // without more complex logic. For now, assume not running.
+    // On Windows, we'd need different logic to check process status.
     false
 }
 

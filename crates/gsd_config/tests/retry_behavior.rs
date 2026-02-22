@@ -1,11 +1,11 @@
 //! Tests for retry behavior with different configuration options.
 //!
-//! These tests verify that retry_on_timeout, retry_on_invalid_response,
-//! and max_retries work correctly.
+//! These tests verify that `retry_on_timeout`, `retry_on_invalid_response`,
+//! and `max_retries` work correctly.
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
-#![expect(clippy::unwrap_used)]
+#![expect(clippy::doc_markdown)]
 
 mod common;
 

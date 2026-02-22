@@ -7,6 +7,7 @@
 use agent_pool::{
     AGENTS_DIR, HEARTBEAT_FILE, RESPONSE_FILE, TASK_FILE,
     cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool, run, stop, submit,
+    submit_file,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -70,9 +71,12 @@ enum Command {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
-        /// Task input to send
-        #[arg(long)]
-        input: String,
+        /// Task input as inline JSON (uses socket protocol)
+        #[arg(long, conflicts_with = "file")]
+        input: Option<String>,
+        /// Path to file containing task input JSON (uses file protocol, works in sandboxes)
+        #[arg(long, conflicts_with = "input")]
+        file: Option<PathBuf>,
     },
     /// List all pools
     List,
@@ -129,11 +133,12 @@ fn init_tracing(level: LogLevel) {
     };
 
     tracing_subscriber::registry()
-        .with(fmt::layer().without_time().with_target(false))
+        .with(fmt::layer().with_target(false))
         .with(filter)
         .init();
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -189,9 +194,30 @@ fn main() -> ExitCode {
             }
             eprintln!("Server stopped");
         }
-        Command::SubmitTask { pool, input } => {
+        Command::SubmitTask { pool, input, file } => {
             let root = resolve_pool(&pool);
-            match submit(&root, &input) {
+
+            // --input uses socket protocol, --file uses file protocol
+            let result = match (input, file) {
+                (Some(task_input), None) => submit(&root, &task_input),
+                (None, Some(path)) => {
+                    let task_input = match fs::read_to_string(&path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            eprintln!("Failed to read file {}: {e}", path.display());
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                    submit_file(&root, &task_input)
+                }
+                (None, None) => {
+                    eprintln!("Either --input or --file must be provided");
+                    return ExitCode::FAILURE;
+                }
+                (Some(_), Some(_)) => unreachable!("clap prevents this"),
+            };
+
+            match result {
                 Ok(response) => {
                     // Output structured JSON response
                     match serde_json::to_string(&response) {
@@ -257,12 +283,10 @@ fn main() -> ExitCode {
             let root = resolve_pool(&pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
-            // Remove the agent directory
-            if agent_dir.exists() {
-                if let Err(e) = fs::remove_dir_all(&agent_dir) {
-                    eprintln!("Failed to remove agent directory: {e}");
-                    return ExitCode::FAILURE;
-                }
+            // Remove the agent directory if it exists
+            if agent_dir.exists() && let Err(e) = fs::remove_dir_all(&agent_dir) {
+                eprintln!("Failed to remove agent directory: {e}");
+                return ExitCode::FAILURE;
             }
 
             eprintln!("Deregistered agent '{name}'");
@@ -293,6 +317,9 @@ fn main() -> ExitCode {
                     };
 
                     // Parse content as JSON if possible, otherwise wrap as string
+                    // Note: must use unwrap_or_else because `content` is borrowed in from_str
+                    // and moved into String on failure
+                    #[allow(clippy::unnecessary_lazy_evaluations)]
                     let content_json: serde_json::Value = serde_json::from_str(&content)
                         .unwrap_or_else(|_| serde_json::Value::String(content));
 

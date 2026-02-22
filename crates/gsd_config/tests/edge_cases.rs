@@ -2,7 +2,7 @@
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
-#![expect(clippy::unwrap_used)]
+#![expect(clippy::doc_markdown)]
 
 mod common;
 

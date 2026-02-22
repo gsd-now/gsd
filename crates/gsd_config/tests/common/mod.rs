@@ -3,7 +3,6 @@
 // Test utilities can be more relaxed
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
-#![expect(clippy::collapsible_if)]
 
 use agent_pool::{AGENTS_DIR, RESPONSE_FILE, TASK_FILE};
 use std::fs;
@@ -111,12 +110,9 @@ impl GsdTestAgent {
             while running_clone.load(Ordering::SeqCst) {
                 // Check for task file
                 if task_file.exists() && !response_file.exists() {
-                    let payload = match fs::read_to_string(&task_file) {
-                        Ok(p) => p,
-                        Err(_) => {
-                            thread::sleep(Duration::from_millis(10));
-                            continue;
-                        }
+                    let Ok(payload) = fs::read_to_string(&task_file) else {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
                     };
 
                     thread::sleep(processing_delay);
@@ -172,19 +168,18 @@ impl GsdTestAgent {
 
         Self::start(root, agent_id, processing_delay, move |payload| {
             // Parse the kind from the payload
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(kind) = parsed
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload)
+                && let Some(kind) = parsed
                     .get("task")
                     .and_then(|t| t.get("kind"))
                     .and_then(|k| k.as_str())
-                {
-                    for (from, to) in &transitions {
-                        if kind == from {
-                            if to.is_empty() {
-                                return "[]".to_string();
-                            }
-                            return format!(r#"[{{"kind": "{to}", "value": {{}}}}]"#);
+            {
+                for (from, to) in &transitions {
+                    if kind == from {
+                        if to.is_empty() {
+                            return "[]".to_string();
                         }
+                        return format!(r#"[{{"kind": "{to}", "value": {{}}}}]"#);
                     }
                 }
             }

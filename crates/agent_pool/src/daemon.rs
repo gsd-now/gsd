@@ -25,9 +25,12 @@
 //! beyond the configured timeout, the task is marked as `NotProcessed` with
 //! reason `HeartbeatTimeout`.
 
-use crate::constants::{AGENTS_DIR, HEARTBEAT_FILE, LOCK_FILE, RESPONSE_FILE, SOCKET_NAME, TASK_FILE};
+use crate::constants::{
+    AGENTS_DIR, HEARTBEAT_FILE, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE,
+};
 use crate::lock::acquire_lock;
 use crate::response::{NotProcessedReason, Response};
+use crate::submit_file::{PENDING_RESPONSE_FILE, PENDING_TASK_FILE};
 use interprocess::local_socket::{
     GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
 };
@@ -47,27 +50,18 @@ use tracing::{debug, info, trace, warn};
 // =============================================================================
 
 /// Configuration for the agent pool daemon.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DaemonConfig {
     /// Heartbeat timeout in seconds. If an agent hasn't updated its heartbeat
     /// file within this duration, the task is considered timed out.
-    /// Set to `None` to disable heartbeat checking.
+    /// Set to `None` to disable heartbeat checking (default).
     pub heartbeat_timeout: Option<Duration>,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            // Default: heartbeats disabled for backward compatibility
-            heartbeat_timeout: None,
-        }
-    }
 }
 
 impl DaemonConfig {
     /// Create a config with heartbeat checking enabled.
     #[must_use]
-    pub fn with_heartbeat_timeout(timeout: Duration) -> Self {
+    pub const fn with_heartbeat_timeout(timeout: Duration) -> Self {
         Self {
             heartbeat_timeout: Some(timeout),
         }
@@ -75,7 +69,7 @@ impl DaemonConfig {
 
     /// Create a config with heartbeat checking disabled.
     #[must_use]
-    pub fn without_heartbeats() -> Self {
+    pub const fn without_heartbeats() -> Self {
         Self {
             heartbeat_timeout: None,
         }
@@ -198,6 +192,10 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
     let signals = DaemonSignals::new();
     let signals_clone = signals.clone();
 
+    // Create pending directory for file-based submissions
+    let pending_dir = root.join(PENDING_DIR);
+    fs::create_dir_all(&pending_dir)?;
+
     let thread = thread::spawn(move || {
         let _lock = lock;
         let _cleanup = SocketCleanup(socket_path.clone());
@@ -205,7 +203,7 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
 
         info!(socket = %socket_path.display(), "listening");
 
-        let mut state = PoolState::new(agents_dir, config);
+        let mut state = PoolState::new(&root, config);
         state.scan_agents()?;
 
         event_loop(&listener, &fs_events, &mut state, &signals_clone)
@@ -234,15 +232,19 @@ pub fn run(root: impl AsRef<Path>) -> io::Result<Infallible> {
 ///
 /// Returns an error if the lock can't be acquired or an I/O error occurs.
 pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Result<Infallible> {
-    let root = root.as_ref();
+    let root = root.as_ref().to_path_buf();
 
-    fs::create_dir_all(root)?;
+    fs::create_dir_all(&root)?;
 
     let lock_path = root.join(LOCK_FILE);
     let _lock = acquire_lock(&lock_path)?;
 
     let agents_dir = root.join(AGENTS_DIR);
     fs::create_dir_all(&agents_dir)?;
+
+    // Create pending directory for file-based submissions
+    let pending_dir = root.join(PENDING_DIR);
+    fs::create_dir_all(&pending_dir)?;
 
     let socket_path = root.join(SOCKET_NAME);
     if socket_path.exists() {
@@ -257,7 +259,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     info!(socket = %socket_path.display(), "listening");
 
-    let mut state = PoolState::new(agents_dir, config);
+    let mut state = PoolState::new(&root, config);
     state.scan_agents()?;
 
     let signals = DaemonSignals::new();
@@ -271,6 +273,14 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 // Pool State
 // =============================================================================
 
+/// Where to send the response when a task completes.
+enum ResponseTarget {
+    /// Send via Unix socket (standard mode).
+    Socket(Stream),
+    /// Write to file (for sandboxed environments).
+    File(PathBuf),
+}
+
 /// State for a single agent.
 struct AgentState {
     /// If busy, holds the stream to respond to when task completes.
@@ -279,8 +289,9 @@ struct AgentState {
 
 /// A task that has been dispatched but not yet completed.
 struct InFlightTask {
-    respond_to: Stream,
-    dispatched_at: Instant,
+    respond_to: ResponseTarget,
+    /// When the task was dispatched (for heartbeat timeout calculation).
+    dispatched_at: SystemTime,
 }
 
 impl AgentState {
@@ -296,6 +307,7 @@ impl AgentState {
 /// Runtime state of the agent pool.
 struct PoolState {
     agents_dir: PathBuf,
+    pending_dir: PathBuf,
     agents: HashMap<String, AgentState>,
     pending: VecDeque<Task>,
     config: DaemonConfig,
@@ -303,13 +315,16 @@ struct PoolState {
 
 struct Task {
     content: String,
-    respond_to: Stream,
+    respond_to: ResponseTarget,
 }
 
 impl PoolState {
-    fn new(agents_dir: PathBuf, config: DaemonConfig) -> Self {
+    fn new(root: &Path, config: DaemonConfig) -> Self {
+        let agents_dir = root.join(AGENTS_DIR);
+        let pending_dir = root.join(PENDING_DIR);
         Self {
             agents_dir,
+            pending_dir,
             agents: HashMap::new(),
             pending: VecDeque::new(),
             config,
@@ -317,14 +332,75 @@ impl PoolState {
     }
 
     fn scan_agents(&mut self) -> io::Result<()> {
+        // Collect current directories
+        let mut current_dirs = std::collections::HashSet::new();
         for entry in fs::read_dir(&self.agents_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir()
                 && let Some(name) = entry.file_name().to_str()
             {
+                current_dirs.insert(name.to_string());
                 self.register(name);
             }
         }
+
+        // Remove agents whose directories no longer exist
+        let stale: Vec<_> = self
+            .agents
+            .keys()
+            .filter(|id| !current_dirs.contains(*id))
+            .cloned()
+            .collect();
+        for id in stale {
+            debug!(agent_id = %id, "removing stale agent during scan");
+            self.unregister(&id);
+        }
+
+        Ok(())
+    }
+
+    /// Scan the pending directory for file-based submissions.
+    fn scan_pending(&mut self) -> io::Result<()> {
+        if !self.pending_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(&self.pending_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let task_path = entry.path().join(PENDING_TASK_FILE);
+            let response_path = entry.path().join(PENDING_RESPONSE_FILE);
+
+            // Only process if task.json exists and response.json doesn't
+            if task_path.exists() && !response_path.exists() {
+                // Read task content
+                let content = match fs::read_to_string(&task_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(path = %task_path.display(), error = %e, "failed to read pending task");
+                        continue;
+                    }
+                };
+
+                // Delete task.json to mark as picked up
+                if let Err(e) = fs::remove_file(&task_path) {
+                    warn!(path = %task_path.display(), error = %e, "failed to remove pending task file");
+                    continue;
+                }
+
+                info!(submission = %entry.file_name().to_string_lossy(), "file-based task received");
+
+                let task = Task {
+                    content,
+                    respond_to: ResponseTarget::File(response_path),
+                };
+                self.pending.push_back(task);
+            }
+        }
+
         Ok(())
     }
 
@@ -345,8 +421,20 @@ impl PoolState {
 
         for agent_id in busy {
             let response_path = self.agents_dir.join(&agent_id).join(RESPONSE_FILE);
-            if response_path.exists() {
-                self.complete_task(&agent_id, &response_path)?;
+            // Check if response file exists - use metadata to get better error info
+            let exists = match fs::metadata(&response_path) {
+                Ok(_) => true,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+                Err(e) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("failed to check response file {}: {e}", response_path.display()),
+                    ));
+                }
+            };
+            if exists {
+                self.complete_task(&agent_id, &response_path)
+                    .map_err(|e| io::Error::new(e.kind(), format!("complete_task for {agent_id} failed: {e}")))?;
             }
         }
         Ok(())
@@ -364,15 +452,12 @@ impl PoolState {
             .filter_map(|(id, agent)| {
                 let in_flight = agent.in_flight.as_ref()?;
 
-                // Check heartbeat file mtime
+                // Check heartbeat file mtime (falls back to dispatch time if no heartbeat file)
                 let heartbeat_path = self.agents_dir.join(id).join(HEARTBEAT_FILE);
                 let mtime = fs::metadata(&heartbeat_path)
                     .and_then(|m| m.modified())
                     .ok()
-                    // If no heartbeat file, use dispatch time as baseline
-                    .unwrap_or_else(|| {
-                        SystemTime::UNIX_EPOCH + Duration::from_secs(in_flight.dispatched_at.elapsed().as_secs())
-                    });
+                    .unwrap_or(in_flight.dispatched_at);
 
                 let age = now.duration_since(mtime).unwrap_or(Duration::MAX);
                 if age > timeout {
@@ -433,6 +518,7 @@ impl PoolState {
             agents = self.agents.len(),
             "task received"
         );
+        debug!(content = %task.content, "task content");
         self.pending.push_back(task);
     }
 
@@ -446,11 +532,29 @@ impl PoolState {
         Ok(())
     }
 
-    fn find_available_agent(&self) -> Option<String> {
-        self.agents
+    fn find_available_agent(&mut self) -> Option<String> {
+        // Find an available agent with a valid directory
+        let candidate = self
+            .agents
             .iter()
-            .find(|(_, a)| a.is_available())
-            .map(|(id, _)| id.clone())
+            .find(|(id, a)| a.is_available() && self.agents_dir.join(id).is_dir())
+            .map(|(id, _)| id.clone());
+
+        // Clean up any stale agents (available but directory missing)
+        if candidate.is_none() {
+            let stale: Vec<_> = self
+                .agents
+                .iter()
+                .filter(|(id, a)| a.is_available() && !self.agents_dir.join(id).is_dir())
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in stale {
+                warn!(agent_id = %id, "removing stale agent (directory missing)");
+                self.agents.remove(&id);
+            }
+        }
+
+        candidate
     }
 
     fn dispatch_to(&mut self, agent_id: &str, task: Task) -> io::Result<()> {
@@ -459,6 +563,7 @@ impl PoolState {
         };
 
         let task_path = self.agents_dir.join(agent_id).join(TASK_FILE);
+        debug!(agent_id, path = %task_path.display(), bytes = task.content.len(), "writing task file");
         fs::write(&task_path, &task.content)?;
 
         // Initialize heartbeat file so agents have a baseline
@@ -470,7 +575,7 @@ impl PoolState {
         info!(agent_id, "task dispatched");
         agent.in_flight = Some(InFlightTask {
             respond_to: task.respond_to,
-            dispatched_at: Instant::now(),
+            dispatched_at: SystemTime::now(),
         });
         Ok(())
     }
@@ -518,7 +623,10 @@ fn event_loop(
     state: &mut PoolState,
     signals: &DaemonSignals,
 ) -> io::Result<()> {
-    let scan_interval = Duration::from_millis(200);
+    // How long to block waiting for fs events before checking other sources
+    let poll_timeout = Duration::from_millis(100);
+    // How often to run periodic scans (agents, outputs, pending, heartbeats)
+    let scan_interval = Duration::from_millis(500);
     let mut last_scan = Instant::now();
 
     loop {
@@ -530,44 +638,71 @@ fn event_loop(
             return drain_and_shutdown(fs_events, state);
         }
 
+        // Check for socket-based task submissions (non-blocking)
         if let Some(task) = accept_task(listener)? {
             state.enqueue(task);
         }
 
-        while let Ok(event) = fs_events.try_recv() {
-            handle_fs_event(&event, state)?;
+        // Block waiting for fs events (with timeout)
+        match fs_events.recv_timeout(poll_timeout) {
+            Ok(event) => {
+                handle_fs_event(&event, state)
+                    .map_err(|e| io::Error::new(e.kind(), format!("fs event handling failed: {e}")))?;
+                // Drain any additional queued events
+                while let Ok(event) = fs_events.try_recv() {
+                    handle_fs_event(&event, state)
+                        .map_err(|e| io::Error::new(e.kind(), format!("fs event handling failed: {e}")))?;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // No fs events, continue to periodic scans
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other("fs event channel disconnected"));
+            }
         }
 
+        // Periodic scans for things FSEvents might miss
         if last_scan.elapsed() >= scan_interval {
-            state.scan_agents()?;
-            state.scan_outputs()?;
-            state.check_heartbeat_timeouts()?;
+            state.scan_agents()
+                .map_err(|e| io::Error::new(e.kind(), format!("scan_agents failed: {e}")))?;
+            state.scan_outputs()
+                .map_err(|e| io::Error::new(e.kind(), format!("scan_outputs failed: {e}")))?;
+            state.scan_pending()
+                .map_err(|e| io::Error::new(e.kind(), format!("scan_pending failed: {e}")))?;
+            state.check_heartbeat_timeouts()
+                .map_err(|e| io::Error::new(e.kind(), format!("heartbeat check failed: {e}")))?;
             last_scan = Instant::now();
         }
 
+        // Dispatch any pending tasks to available agents
         if !signals.is_paused() {
-            state.dispatch_pending()?;
+            state.dispatch_pending()
+                .map_err(|e| io::Error::new(e.kind(), format!("dispatch_pending failed: {e}")))?;
         }
-
-        thread::sleep(Duration::from_millis(10));
     }
 }
 
 fn drain_and_shutdown(fs_events: &mpsc::Receiver<Event>, state: &mut PoolState) -> io::Result<()> {
-    let scan_interval = Duration::from_millis(100);
-    let mut last_scan = Instant::now();
+    let poll_timeout = Duration::from_millis(100);
 
     while state.in_flight_count() > 0 {
-        while let Ok(event) = fs_events.try_recv() {
-            handle_fs_event(&event, state)?;
+        // Block waiting for fs events (with timeout)
+        match fs_events.recv_timeout(poll_timeout) {
+            Ok(event) => {
+                handle_fs_event(&event, state)?;
+                while let Ok(event) = fs_events.try_recv() {
+                    handle_fs_event(&event, state)?;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Scan for outputs that FSEvents might have missed
+                state.scan_outputs()?;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
         }
-
-        if last_scan.elapsed() >= scan_interval {
-            state.scan_outputs()?;
-            last_scan = Instant::now();
-        }
-
-        thread::sleep(Duration::from_millis(10));
     }
 
     info!("shutdown complete");
@@ -578,7 +713,7 @@ fn accept_task(listener: &Listener) -> io::Result<Option<Task>> {
     match listener.accept() {
         Ok(stream) => read_task(stream),
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(e) => Err(e),
+        Err(e) => Err(io::Error::new(e.kind(), format!("socket accept failed: {e}"))),
     }
 }
 
@@ -602,16 +737,35 @@ fn read_task(stream: Stream) -> io::Result<Option<Task>> {
 
     Ok(Some(Task {
         content,
-        respond_to: stream,
+        respond_to: ResponseTarget::Socket(stream),
     }))
 }
 
-fn send_response(mut stream: Stream, response: &Response) -> io::Result<()> {
+fn send_response(target: ResponseTarget, response: &Response) -> io::Result<()> {
     let json = serde_json::to_string(response)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    writeln!(stream, "{}", json.len())?;
-    stream.write_all(json.as_bytes())?;
-    stream.flush()
+
+    match target {
+        ResponseTarget::Socket(mut stream) => {
+            writeln!(stream, "{}", json.len())?;
+            stream.write_all(json.as_bytes())?;
+            stream.flush()
+        }
+        ResponseTarget::File(path) => {
+            // Ensure parent directory exists (submitter may have been killed)
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    warn!(path = %path.display(), "submission directory gone, submitter likely died");
+                    return Ok(()); // Submitter is gone, nothing to do
+                }
+            }
+            fs::write(&path, &json).map_err(|e| {
+                io::Error::new(e.kind(), format!("failed to write response to {}: {e}", path.display()))
+            })?;
+            debug!(path = %path.display(), "wrote file-based response");
+            Ok(())
+        }
+    }
 }
 
 // =============================================================================

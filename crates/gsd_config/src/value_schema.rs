@@ -3,6 +3,7 @@
 //! Loads schemas from config (inline or file) and validates task payloads.
 
 use crate::config::{Config, SchemaRef, Step};
+use crate::types::StepName;
 use jsonschema::Validator;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use std::{fs, io};
 /// Compiled schemas for all steps in a config.
 pub struct CompiledSchemas {
     /// Map of step name to compiled validator.
-    validators: HashMap<String, Option<Validator>>,
+    validators: HashMap<StepName, Option<Validator>>,
 }
 
 impl CompiledSchemas {
@@ -49,9 +50,9 @@ impl CompiledSchemas {
     /// # Errors
     ///
     /// Returns an error if the step doesn't exist or the value fails validation.
-    pub fn validate(&self, step_name: &str, value: &Value) -> Result<(), ValidationError> {
-        let Some(maybe_validator) = self.validators.get(step_name) else {
-            return Err(ValidationError::UnknownStep(step_name.to_string()));
+    pub fn validate(&self, step_name: &StepName, value: &Value) -> Result<(), ValidationError> {
+        let Some(maybe_validator) = self.validators.get(step_name.as_str()) else {
+            return Err(ValidationError::UnknownStep(step_name.clone()));
         };
 
         let Some(validator) = maybe_validator else {
@@ -68,7 +69,7 @@ impl CompiledSchemas {
                 .map(|e| e.to_string())
                 .collect();
             Err(ValidationError::SchemaViolation {
-                step: step_name.to_string(),
+                step: step_name.clone(),
                 errors,
             })
         }
@@ -84,11 +85,11 @@ fn compile_schema(schema: &Value) -> io::Result<Validator> {
 #[derive(Debug, Clone)]
 pub enum ValidationError {
     /// Referenced step doesn't exist.
-    UnknownStep(String),
+    UnknownStep(StepName),
     /// Value doesn't match the schema.
     SchemaViolation {
         /// The step whose schema was violated.
-        step: String,
+        step: StepName,
         /// List of validation errors.
         errors: Vec<String>,
     },
@@ -114,8 +115,9 @@ impl std::error::Error for ValidationError {}
 /// A task with its kind (step name) and value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Task {
-    /// The step/kind name.
-    pub kind: String,
+    /// The step name (serialized as "kind" for compatibility with agent responses).
+    #[serde(rename = "kind")]
+    pub step: StepName,
     /// The task payload.
     pub value: Value,
     /// Number of times this task has been retried (internal tracking, not serialized).
@@ -124,11 +126,11 @@ pub struct Task {
 }
 
 impl Task {
-    /// Create a new task with the given kind and value.
+    /// Create a new task with the given step name and value.
     #[must_use]
-    pub fn new(kind: impl Into<String>, value: Value) -> Self {
+    pub fn new(step: impl Into<StepName>, value: Value) -> Self {
         Self {
-            kind: kind.into(),
+            step: step.into(),
             value,
             retries: 0,
         }
@@ -166,17 +168,17 @@ pub fn validate_response(
         })?;
 
         // Check if this is a valid transition
-        if !current_step.next.contains(&task.kind) {
+        if !current_step.next.contains(&task.step) {
             return Err(ResponseValidationError::InvalidTransition {
                 from: current_step.name.clone(),
-                to: task.kind,
+                to: task.step,
                 valid: current_step.next.clone(),
             });
         }
 
         // Validate the value against the target step's schema
         schemas
-            .validate(&task.kind, &task.value)
+            .validate(&task.step, &task.value)
             .map_err(|e| ResponseValidationError::SchemaError { index: i, error: e })?;
 
         tasks.push(task);
@@ -197,14 +199,14 @@ pub enum ResponseValidationError {
         /// Parse error message.
         error: String,
     },
-    /// Task kind is not a valid transition from current step.
+    /// Task step is not a valid transition from current step.
     InvalidTransition {
         /// Current step name.
-        from: String,
+        from: StepName,
         /// Attempted next step.
-        to: String,
+        to: StepName,
         /// List of valid next steps.
-        valid: Vec<String>,
+        valid: Vec<StepName>,
     },
     /// Task value doesn't match target step's schema.
     SchemaError {
@@ -223,10 +225,11 @@ impl std::fmt::Display for ResponseValidationError {
                 write!(f, "task at index {index} has invalid format: {error}")
             }
             Self::InvalidTransition { from, to, valid } => {
+                let valid_str: Vec<&str> = valid.iter().map(StepName::as_str).collect();
                 write!(
                     f,
                     "invalid transition from '{from}' to '{to}' (valid: {})",
-                    valid.join(", ")
+                    valid_str.join(", ")
                 )
             }
             Self::SchemaError { index, error } => {
@@ -269,7 +272,7 @@ mod tests {
         let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
 
         let value = serde_json::json!({"x": 42});
-        assert!(schemas.validate("Start", &value).is_ok());
+        assert!(schemas.validate(&StepName::new("Start"), &value).is_ok());
     }
 
     #[test]
@@ -278,7 +281,7 @@ mod tests {
         let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
 
         let value = serde_json::json!({"x": "not a number"});
-        assert!(schemas.validate("Start", &value).is_err());
+        assert!(schemas.validate(&StepName::new("Start"), &value).is_err());
     }
 
     #[test]
@@ -288,7 +291,7 @@ mod tests {
 
         // End step has no schema
         let value = serde_json::json!({"anything": "goes"});
-        assert!(schemas.validate("End", &value).is_ok());
+        assert!(schemas.validate(&StepName::new("End"), &value).is_ok());
     }
 
     #[test]
@@ -303,7 +306,7 @@ mod tests {
 
         let tasks = validate_response(&response, step, &schemas).expect("should be valid");
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].kind, "End");
+        assert_eq!(tasks[0].step, "End");
     }
 
     #[test]

@@ -3,6 +3,9 @@
 /// Directory containing agent subdirectories.
 pub const AGENTS_DIR: &str = "agents";
 
+/// Directory for file-based task submissions (sandboxed environments).
+pub const PENDING_DIR: &str = "pending";
+
 /// Lock file for single-daemon enforcement.
 pub const LOCK_FILE: &str = "daemon.lock";
 

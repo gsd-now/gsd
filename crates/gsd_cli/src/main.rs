@@ -6,7 +6,7 @@
 #![expect(clippy::print_stderr)]
 
 use clap::{Parser, Subcommand};
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task, generate_full_docs, run};
+use gsd_config::{Action, CompiledSchemas, Config, RunnerConfig, Task, generate_full_docs, run};
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -52,6 +52,12 @@ enum Command {
 
     /// Validate a config
     Validate {
+        /// Config (JSON string or path to file)
+        config: String,
+    },
+
+    /// Generate DOT visualization of config (for `GraphViz`)
+    Graph {
         /// Config (JSON string or path to file)
         config: String,
     },
@@ -129,6 +135,14 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+
+        Command::Graph { config } => {
+            let (cfg, _) = parse_config(&config)?;
+            cfg.validate()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let dot = generate_graphviz(&cfg);
+            print!("{dot}");
+        }
     }
 
     Ok(())
@@ -184,7 +198,7 @@ fn init_tracing(log_file: Option<&PathBuf>) -> io::Result<()> {
     let filter =
         EnvFilter::from_default_env().add_directive("gsd=info".parse().unwrap_or_default());
 
-    let stderr_layer = fmt::layer().without_time().with_target(false);
+    let stderr_layer = fmt::layer().with_target(false);
 
     if let Some(path) = log_file {
         let file = File::create(path)?;
@@ -206,4 +220,100 @@ fn init_tracing(log_file: Option<&PathBuf>) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Generate DOT format visualization of the config (for `GraphViz`).
+fn generate_graphviz(config: &Config) -> String {
+    let mut lines = vec![
+        "digraph GSD {".to_string(),
+        "  rankdir=TB;".to_string(),
+        "  node [fontname=\"Helvetica\"];".to_string(),
+        "  edge [fontname=\"Helvetica\", fontsize=10];".to_string(),
+        String::new(),
+    ];
+
+    // Define nodes with attributes based on step type
+    for step in &config.steps {
+        let mut attrs: Vec<String> = vec![];
+
+        // Shape based on action type
+        match &step.action {
+            Action::Pool { .. } => attrs.push("shape=box".to_string()),
+            Action::Command { .. } => attrs.push("shape=diamond".to_string()),
+        }
+
+        // Terminal steps get double border
+        if step.next.is_empty() {
+            attrs.push("peripheries=2".to_string());
+        }
+
+        // Build label with hooks indicator
+        let mut label_parts = vec![step.name.to_string()];
+        let mut hooks = vec![];
+        if step.pre.is_some() {
+            hooks.push("pre");
+        }
+        if step.post.is_some() {
+            hooks.push("post");
+        }
+        if step.finally_hook.is_some() {
+            hooks.push("finally");
+        }
+        if !hooks.is_empty() {
+            label_parts.push(format!("[{}]", hooks.join(", ")));
+        }
+
+        let label = label_parts.join("\\n");
+        attrs.push(format!("label=\"{label}\""));
+
+        // Color based on action type
+        match &step.action {
+            Action::Pool { .. } => {
+                attrs.push("style=filled, fillcolor=\"#e3f2fd\"".to_string());
+            }
+            Action::Command { .. } => {
+                attrs.push("style=filled, fillcolor=\"#fff3e0\"".to_string());
+            }
+        }
+
+        lines.push(format!("  \"{}\" [{}];", step.name, attrs.join(", ")));
+    }
+
+    lines.push(String::new());
+
+    // Define edges
+    for step in &config.steps {
+        for next in &step.next {
+            lines.push(format!("  \"{}\" -> \"{next}\";", step.name));
+        }
+    }
+
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graphviz_basic() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "steps": [
+                    {"name": "Start", "next": ["Middle"]},
+                    {"name": "Middle", "next": ["End"]},
+                    {"name": "End", "next": []}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let dot = generate_graphviz(&config);
+        assert!(dot.contains("digraph GSD"));
+        assert!(dot.contains("\"Start\" -> \"Middle\""));
+        assert!(dot.contains("\"Middle\" -> \"End\""));
+        assert!(dot.contains("peripheries=2")); // End is terminal
+    }
 }

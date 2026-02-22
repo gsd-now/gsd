@@ -326,46 +326,20 @@ The default step should probably require `value_schema` to either be absent or a
 
 ## Agent Heartbeats
 
-Agents should periodically signal they're still alive while processing a task. Without heartbeats, the daemon can't distinguish between:
-- An agent working on a slow task
-- An agent that has crashed/hung
+**Status: Implemented** in `crates/agent_pool/src/daemon.rs`.
 
-### Proposed Design
+Agents can periodically signal they're still alive while processing long tasks. The daemon tracks heartbeat file mtime and times out tasks if heartbeats go stale.
 
-**Agent side**: While processing a task, periodically touch a heartbeat file or send a heartbeat signal:
+**Agent side**: Use the CLI command while processing:
 ```bash
-# File-based
-touch agents/my-agent/heartbeat
-
-# Or via CLI
-agent_pool heartbeat --pool /tmp/pool
+agent_pool heartbeat --pool <POOL_ID> --name <YOUR_NAME>
 ```
 
-**Daemon side**: Track last heartbeat time per in-flight agent. If heartbeat stale beyond threshold:
-1. Mark task as `NotProcessed { reason: AgentUnresponsive }`
-2. Respond to submitter
-3. Optionally deregister agent
+**Daemon side**: Configure via `DaemonConfig::with_heartbeat_timeout(duration)`. If heartbeat file mtime becomes stale beyond the timeout, the task is marked as `NotProcessed { reason: HeartbeatTimeout }`.
 
-### Configuration
+Heartbeats are optional and disabled by default (`DaemonConfig::default()` or `DaemonConfig::without_heartbeats()`). Pools without heartbeat configuration don't require agents to send heartbeats.
 
-```json
-{
-  "options": {
-    "heartbeat_interval": 30,
-    "heartbeat_timeout": 90
-  }
-}
-```
-
-- `heartbeat_interval`: Expected time between heartbeats (seconds)
-- `heartbeat_timeout`: Time without heartbeat before agent considered dead (typically 2-3x interval)
-
-### Open Questions
-
-- Should heartbeats be optional (backward compatible) or required?
-- Should the daemon auto-restart agents or just remove them?
-- How should agents know the expected heartbeat interval?
-- Should heartbeat carry progress info (e.g., "50% done")?
+See `AGENT_PROTOCOL.md` for agent-side documentation.
 
 ## Full Socket-Based Protocol
 

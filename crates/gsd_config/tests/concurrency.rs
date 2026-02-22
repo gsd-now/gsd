@@ -1,11 +1,12 @@
 //! Tests for concurrent task execution.
 //!
-//! These tests verify that the TaskRunner actually submits tasks concurrently
+//! These tests verify that the `TaskRunner` actually submits tasks concurrently
 //! and that multiple agents can process work in parallel.
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
 #![expect(clippy::unwrap_used)]
+#![expect(clippy::doc_markdown)]
 
 mod common;
 
@@ -83,8 +84,7 @@ fn tasks_execute_in_parallel() {
     // Use 400ms as threshold - well under sequential time, allows for overhead
     assert!(
         elapsed < Duration::from_millis(400),
-        "Tasks took {:?}, expected < 400ms for parallel execution",
-        elapsed
+        "Tasks took {elapsed:?}, expected < 400ms for parallel execution"
     );
 
     cleanup_test_dir(TEST_DIR);
@@ -158,8 +158,7 @@ fn work_distributed_across_agents() {
 
     assert!(
         agents_with_work >= 2,
-        "Expected at least 2 agents to receive work, but only {} did",
-        agents_with_work
+        "Expected at least 2 agents to receive work, but only {agents_with_work} did"
     );
 
     cleanup_test_dir(&format!("{TEST_DIR}_distribution"));
@@ -182,14 +181,13 @@ fn max_concurrency_limits_parallel_tasks() {
     let concurrent = Arc::new(AtomicUsize::new(0));
     let max_observed = Arc::new(AtomicUsize::new(0));
 
-    let concurrent_clone = concurrent.clone();
     let max_clone = max_observed.clone();
 
     let delay = Duration::from_millis(50);
 
     // Single agent that tracks concurrency
     let _agent = GsdTestAgent::start(&root, "tracker", delay, move |_| {
-        let current = concurrent_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Update max if higher
         let mut max = max_clone.load(Ordering::SeqCst);
@@ -202,7 +200,7 @@ fn max_concurrency_limits_parallel_tasks() {
 
         // Simulate work
         thread::sleep(Duration::from_millis(20));
-        concurrent_clone.fetch_sub(1, Ordering::SeqCst);
+        concurrent.fetch_sub(1, Ordering::SeqCst);
 
         "[]".to_string()
     });
@@ -384,18 +382,21 @@ fn nested_fan_out() {
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
-    let kinds = processed_kinds.lock().unwrap();
-    let kind_set: HashSet<_> = kinds.iter().collect();
+    {
+        let kinds = processed_kinds.lock().unwrap();
+        let kind_set: HashSet<_> = kinds.iter().collect();
 
-    // Should have processed: Root, Branch1, Branch2, Leaf1A, Leaf1B, Leaf2A, Leaf2B
-    assert!(kind_set.contains(&"Root".to_string()));
-    assert!(kind_set.contains(&"Branch1".to_string()));
-    assert!(kind_set.contains(&"Branch2".to_string()));
-    assert!(kind_set.contains(&"Leaf1A".to_string()));
-    assert!(kind_set.contains(&"Leaf1B".to_string()));
-    assert!(kind_set.contains(&"Leaf2A".to_string()));
-    assert!(kind_set.contains(&"Leaf2B".to_string()));
-    assert_eq!(kinds.len(), 7, "Should process exactly 7 tasks");
+        // Should have processed: Root, Branch1, Branch2, Leaf1A, Leaf1B, Leaf2A, Leaf2B
+        assert!(kind_set.contains(&"Root".to_string()));
+        assert!(kind_set.contains(&"Branch1".to_string()));
+        assert!(kind_set.contains(&"Branch2".to_string()));
+        assert!(kind_set.contains(&"Leaf1A".to_string()));
+        assert!(kind_set.contains(&"Leaf1B".to_string()));
+        assert!(kind_set.contains(&"Leaf2A".to_string()));
+        assert!(kind_set.contains(&"Leaf2B".to_string()));
+        assert_eq!(kinds.len(), 7, "Should process exactly 7 tasks");
+        drop(kinds);
+    }
 
     cleanup_test_dir(&format!("{TEST_DIR}_nested"));
 }

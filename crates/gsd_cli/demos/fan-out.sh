@@ -60,6 +60,8 @@ if [ -n "$EXISTING_POOL" ]; then
 
     echo ""
     echo "=== Success! ==="
+    echo ""
+    echo "View workflow graph: $SCRIPT_DIR/../../gsd_config/configs/fan-out.dot"
 else
     # Create demo pool
     ROOT=$(mktemp -d)
@@ -122,4 +124,6 @@ else
     echo ""
     echo "=== Success! ==="
     echo "Processed $NUM_WORKERS tasks with $NUM_AGENTS agents in ${ELAPSED}s"
+    echo ""
+    echo "View workflow graph: $SCRIPT_DIR/../../gsd_config/configs/fan-out.dot"
 fi

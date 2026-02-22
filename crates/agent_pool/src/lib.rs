@@ -35,10 +35,14 @@ mod pool;
 mod response;
 mod stop;
 mod submit;
+mod submit_file;
+mod types;
 
-pub use constants::{AGENTS_DIR, HEARTBEAT_FILE, RESPONSE_FILE, TASK_FILE};
+pub use constants::{AGENTS_DIR, HEARTBEAT_FILE, PENDING_DIR, RESPONSE_FILE, TASK_FILE};
 pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_with_config};
 pub use pool::{PoolInfo, cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool};
 pub use response::{NotProcessedReason, Response, ResponseKind};
 pub use stop::stop;
 pub use submit::submit;
+pub use submit_file::{cleanup_submission, submit_file};
+pub use types::{AgentId, PoolId};

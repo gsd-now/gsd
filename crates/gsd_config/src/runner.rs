@@ -8,8 +8,10 @@
 
 use crate::config::{Action, Config, EffectiveOptions, Step};
 use crate::docs::generate_step_docs;
+use crate::types::StepName;
 use crate::value_schema::{CompiledSchemas, Task, validate_response};
 use agent_pool::Response;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
 use std::path::Path;
@@ -17,6 +19,43 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use tracing::{debug, error, info, warn};
+
+/// Input/output for post hooks.
+///
+/// Post hooks receive this JSON on stdin and must output (possibly modified)
+/// JSON on stdout. The `next` array can be filtered, added to, or transformed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum PostHookInput {
+    /// The action completed successfully.
+    Success {
+        /// The input value (possibly modified by pre hook).
+        input: serde_json::Value,
+        /// The agent's output.
+        output: serde_json::Value,
+        /// Tasks spawned by this completion. Post hook can modify this.
+        next: Vec<Task>,
+    },
+    /// The action timed out.
+    Timeout {
+        /// The input value (possibly modified by pre hook).
+        input: serde_json::Value,
+    },
+    /// The action failed with an error.
+    Error {
+        /// The input value (possibly modified by pre hook).
+        input: serde_json::Value,
+        /// Error message.
+        error: String,
+    },
+    /// The pre hook failed.
+    PreHookError {
+        /// The original input value (before pre hook).
+        input: serde_json::Value,
+        /// Error message from pre hook.
+        error: String,
+    },
+}
 
 /// Runner configuration.
 pub struct RunnerConfig<'a> {
@@ -71,30 +110,64 @@ pub enum TaskResult {
 /// ```text
 /// let mut runner = TaskRunner::new(&config, &schemas, runner_config)?;
 /// while let Some(outcome) = runner.next() {
-///     println!("Task {} -> {:?}", outcome.task.kind, outcome.result);
+///     println!("Task {} -> {:?}", outcome.task.step, outcome.result);
 /// }
 /// ```
 pub struct TaskRunner<'a> {
     config: &'a Config,
     schemas: &'a CompiledSchemas,
     step_map: HashMap<&'a str, &'a Step>,
-    queue: VecDeque<Task>,
+    queue: VecDeque<QueuedTask>,
     agent_pool_root: &'a Path,
     max_concurrency: usize,
     in_flight: usize,
     tx: mpsc::Sender<InFlightResult>,
     rx: mpsc::Receiver<InFlightResult>,
+    /// Counter for assigning unique task IDs.
+    next_task_id: u64,
+    /// Tracks pending descendants for tasks with `finally` hooks.
+    /// Key: origin task ID, Value: (pending count, original value, finally command)
+    finally_tracking: HashMap<u64, FinallyState>,
+}
+
+/// Internal task wrapper with lineage tracking.
+struct QueuedTask {
+    task: Task,
+    /// Unique ID for this task instance.
+    id: u64,
+    /// If this task descended from a task with `finally`, tracks that origin.
+    origin_id: Option<u64>,
+}
+
+/// State for tracking when a `finally` hook should run.
+struct FinallyState {
+    /// Number of descendants still pending (in queue or in flight).
+    pending_count: usize,
+    /// The original task's value (input to finally hook).
+    original_value: serde_json::Value,
+    /// The finally hook command.
+    finally_command: String,
 }
 
 struct InFlightResult {
     task: Task,
-    step_name: String,
+    task_id: u64,
+    origin_id: Option<u64>,
+    step_name: StepName,
+    /// The value passed to the action (possibly modified by pre hook).
+    effective_value: serde_json::Value,
     result: SubmitResult,
+    /// Post hook command to run after processing (if any).
+    post_hook: Option<String>,
+    /// Finally hook for this step (if any) - used when spawning children.
+    finally_hook: Option<String>,
 }
 
 enum SubmitResult {
     Pool(io::Result<Response>),
     Command(io::Result<String>),
+    /// Pre hook failed before the action could run.
+    PreHookError(String),
 }
 
 impl<'a> TaskRunner<'a> {
@@ -112,26 +185,40 @@ impl<'a> TaskRunner<'a> {
             call_wake_script(script)?;
         }
 
-        let max_concurrency = config
-            .options
-            .max_concurrency
-            .map(|n| n as usize)
-            .unwrap_or(usize::MAX);
+        let max_concurrency = config.options.max_concurrency.unwrap_or(usize::MAX);
 
         info!(tasks = runner_config.initial_tasks.len(), "starting task queue");
 
         let (tx, rx) = mpsc::channel();
 
+        // Wrap initial tasks with IDs (no origin since they're root tasks)
+        let mut next_task_id = 0u64;
+        let queue: VecDeque<QueuedTask> = runner_config
+            .initial_tasks
+            .into_iter()
+            .map(|task| {
+                let id = next_task_id;
+                next_task_id += 1;
+                QueuedTask {
+                    task,
+                    id,
+                    origin_id: None,
+                }
+            })
+            .collect();
+
         Ok(Self {
             config,
             schemas,
             step_map: config.step_map(),
-            queue: runner_config.initial_tasks.into(),
+            queue,
             agent_pool_root: runner_config.agent_pool_root,
             max_concurrency,
             in_flight: 0,
             tx,
             rx,
+            next_task_id,
+            finally_tracking: HashMap::new(),
         })
     }
 
@@ -165,62 +252,124 @@ impl<'a> TaskRunner<'a> {
         self.queue.is_empty() && self.in_flight == 0
     }
 
+    #[allow(clippy::too_many_lines)]
     fn submit_pending(&mut self) {
         while self.in_flight < self.max_concurrency {
-            let Some(task) = self.queue.pop_front() else {
+            let Some(queued) = self.queue.pop_front() else {
                 break;
             };
 
-            let Some(step) = self.step_map.get(task.kind.as_str()) else {
-                error!(kind = task.kind, "unknown step, skipping task");
+            let QueuedTask { task, id: task_id, origin_id } = queued;
+
+            let Some(step) = self.step_map.get(task.step.as_str()) else {
+                error!(step = %task.step, "unknown step, skipping task");
+                // Decrement origin tracking if this task was being tracked
+                self.decrement_origin(origin_id);
                 continue;
             };
 
-            if let Err(e) = self.schemas.validate(&task.kind, &task.value) {
-                error!(kind = task.kind, error = %e, "task validation failed, skipping");
+            if let Err(e) = self.schemas.validate(&task.step, &task.value) {
+                error!(step = %task.step, error = %e, "task validation failed, skipping");
+                self.decrement_origin(origin_id);
                 continue;
             }
 
             let effective = EffectiveOptions::resolve(&self.config.options, &step.options);
             let step_name = step.name.clone();
+            let pre_hook = step.pre.clone();
+            let post_hook = step.post.clone();
+            let finally_hook = step.finally_hook.clone();
 
             match &step.action {
                 Action::Pool { .. } => {
                     let docs = generate_step_docs(step, self.config);
-                    let payload = build_agent_payload(&task, &docs, effective.timeout);
+                    let timeout = effective.timeout;
                     let root = self.agent_pool_root.to_path_buf();
                     let tx = self.tx.clone();
+                    let original_value = task.value.clone();
 
-                    info!(kind = task.kind, "submitting task to pool");
-                    debug!(payload = %payload, "task payload");
+                    info!(step = %task.step, "submitting task to pool");
 
                     thread::spawn(move || {
+                        // Run pre hook if present
+                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = tx.send(InFlightResult {
+                                    task,
+                                    task_id,
+                                    origin_id,
+                                    step_name,
+                                    effective_value: original_value,
+                                    result: SubmitResult::PreHookError(e),
+                                    post_hook,
+                                    finally_hook,
+                                });
+                                return;
+                            }
+                        };
+
+                        // Build payload with (possibly modified) value
+                        let payload = build_agent_payload_with_value(&step_name, &effective_value, &docs, timeout);
+                        debug!(payload = %payload, "task payload");
+
                         let result = agent_pool::submit(&root, &payload);
                         let _ = tx.send(InFlightResult {
                             task,
+                            task_id,
+                            origin_id,
                             step_name,
+                            effective_value,
                             result: SubmitResult::Pool(result),
+                            post_hook,
+                            finally_hook,
                         });
                     });
                     self.in_flight += 1;
                 }
                 Action::Command { script } => {
-                    let task_json = serde_json::to_string(&serde_json::json!({
-                        "kind": task.kind,
-                        "value": task.value,
-                    }))
-                    .unwrap_or_default();
                     let script = script.clone();
                     let tx = self.tx.clone();
+                    let original_value = task.value.clone();
+                    let task_step = task.step.clone();
 
-                    info!(kind = task.kind, script = %script, "executing command");
+                    info!(step = %task.step, script = %script, "executing command");
 
                     thread::spawn(move || {
+                        // Run pre hook if present
+                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = tx.send(InFlightResult {
+                                    task,
+                                    task_id,
+                                    origin_id,
+                                    step_name,
+                                    effective_value: original_value,
+                                    result: SubmitResult::PreHookError(e),
+                                    post_hook,
+                                    finally_hook,
+                                });
+                                return;
+                            }
+                        };
+
+                        let task_json = serde_json::to_string(&serde_json::json!({
+                            "kind": task_step,
+                            "value": effective_value,
+                        }))
+                        .unwrap_or_default();
+
                         let result = run_command_action(&script, &task_json);
                         let _ = tx.send(InFlightResult {
                             task,
+                            task_id,
+                            origin_id,
                             step_name,
+                            effective_value,
                             result: SubmitResult::Command(result),
+                            post_hook,
+                            finally_hook,
                         });
                     });
                     self.in_flight += 1;
@@ -229,8 +378,91 @@ impl<'a> TaskRunner<'a> {
         }
     }
 
+    /// Decrement the pending count for an origin and run finally if done.
+    fn decrement_origin(&mut self, origin_id: Option<u64>) {
+        let Some(oid) = origin_id else { return };
+
+        let should_run_finally = if let Some(state) = self.finally_tracking.get_mut(&oid) {
+            state.pending_count = state.pending_count.saturating_sub(1);
+            state.pending_count == 0
+        } else {
+            false
+        };
+
+        if should_run_finally
+            && let Some(state) = self.finally_tracking.remove(&oid)
+        {
+            self.run_finally_hook(state);
+        }
+    }
+
+    /// Run a finally hook and queue any resulting tasks.
+    #[allow(clippy::needless_pass_by_value)] // We own state from HashMap removal
+    fn run_finally_hook(&mut self, state: FinallyState) {
+        info!(command = %state.finally_command, "running finally hook");
+
+        let input_json = serde_json::to_string(&state.original_value).unwrap_or_default();
+
+        let result = Command::new("sh")
+            .arg("-c")
+            .arg(&state.finally_command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(input_json.as_bytes());
+                }
+                child.wait_with_output()
+            });
+
+        match result {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                match serde_json::from_str::<Vec<Task>>(&stdout) {
+                    Ok(tasks) => {
+                        info!(count = tasks.len(), "finally hook spawned tasks");
+                        for task in tasks {
+                            let id = self.next_task_id;
+                            self.next_task_id += 1;
+                            self.queue.push_back(QueuedTask {
+                                task,
+                                id,
+                                origin_id: None, // Finally tasks don't inherit origin
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "finally hook output is not valid JSON (ignored)");
+                    }
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(
+                    status = %output.status,
+                    stderr = %stderr.trim(),
+                    "finally hook failed (ignored)"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "finally hook failed to run (ignored)");
+            }
+        }
+    }
+
     fn process_result(&mut self, inflight: InFlightResult) -> TaskOutcome {
-        let InFlightResult { task, step_name, result } = inflight;
+        let InFlightResult {
+            task,
+            task_id,
+            origin_id,
+            step_name,
+            effective_value,
+            result,
+            post_hook,
+            finally_hook,
+        } = inflight;
 
         let Some(step) = self.step_map.get(step_name.as_str()) else {
             return TaskOutcome {
@@ -243,28 +475,103 @@ impl<'a> TaskRunner<'a> {
 
         let effective = EffectiveOptions::resolve(&self.config.options, &step.options);
 
-        let (task_result, new_tasks) = match result {
+        let (task_result, new_tasks, post_input) = match result {
             SubmitResult::Pool(Ok(response)) => {
-                process_pool_response(response, &task, step, self.schemas, &effective)
+                process_pool_response(response, &task, &effective_value, step, self.schemas, &effective)
             }
             SubmitResult::Pool(Err(e)) => {
-                error!(kind = task.kind, error = %e, "submit failed");
-                process_retry(&task, &effective, FailureKind::SubmitError)
+                error!(step = %task.step, error = %e, "submit failed");
+                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let post_input = PostHookInput::Error {
+                    input: effective_value.clone(),
+                    error: e.to_string(),
+                };
+                (result, tasks, post_input)
             }
             SubmitResult::Command(Ok(stdout)) => {
-                process_command_response(&stdout, &task, step, self.schemas, &effective)
+                process_command_response(&stdout, &task, &effective_value, step, self.schemas, &effective)
             }
             SubmitResult::Command(Err(e)) => {
-                error!(kind = task.kind, error = %e, "command failed");
-                process_retry(&task, &effective, FailureKind::SubmitError)
+                error!(step = %task.step, error = %e, "command failed");
+                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let post_input = PostHookInput::Error {
+                    input: effective_value.clone(),
+                    error: e.to_string(),
+                };
+                (result, tasks, post_input)
+            }
+            SubmitResult::PreHookError(e) => {
+                error!(step = %task.step, error = %e, "pre hook failed");
+                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let post_input = PostHookInput::PreHookError {
+                    input: task.value.clone(),
+                    error: e,
+                };
+                (result, tasks, post_input)
             }
         };
 
-        for new_task in &new_tasks {
-            self.queue.push_back(new_task.clone());
+        // Run post hook synchronously - it can modify the next tasks
+        let (final_result, final_tasks) = if let Some(hook) = post_hook {
+            match run_post_hook(&hook, &post_input) {
+                Ok(modified) => {
+                    // Extract next tasks from post hook output
+                    let tasks = extract_next_tasks(&modified);
+                    (task_result, tasks)
+                }
+                Err(e) => {
+                    // Post hook failed - trigger retry
+                    warn!(step = %task.step, error = %e, "post hook failed");
+                    process_retry(&task, &effective, FailureKind::SubmitError)
+                }
+            }
+        } else {
+            (task_result, new_tasks)
+        };
+
+        // Determine origin_id for new tasks:
+        // - If this task has a finally hook and spawns children, they get this task's ID
+        // - Otherwise, children inherit the parent's origin_id
+        let child_origin_id = if finally_hook.is_some() && !final_tasks.is_empty() {
+            // Set up finally tracking for this task
+            self.finally_tracking.insert(
+                task_id,
+                FinallyState {
+                    pending_count: final_tasks.len(),
+                    original_value: effective_value,
+                    finally_command: finally_hook.unwrap_or_default(),
+                },
+            );
+            Some(task_id)
+        } else {
+            origin_id
+        };
+
+        // Queue new tasks with proper origin tracking
+        for new_task in final_tasks {
+            let id = self.next_task_id;
+            self.next_task_id += 1;
+            self.queue.push_back(QueuedTask {
+                task: new_task,
+                id,
+                origin_id: child_origin_id,
+            });
         }
 
-        TaskOutcome { task, result: task_result }
+        // This task is done - decrement its origin's pending count
+        self.decrement_origin(origin_id);
+
+        TaskOutcome { task, result: final_result }
+    }
+}
+
+/// Extract next tasks from a post hook result.
+fn extract_next_tasks(input: &PostHookInput) -> Vec<Task> {
+    match input {
+        PostHookInput::Success { next, .. } => next.clone(),
+        PostHookInput::Timeout { .. }
+        | PostHookInput::Error { .. }
+        | PostHookInput::PreHookError { .. } => vec![],
     }
 }
 
@@ -295,33 +602,23 @@ pub fn run(
 fn process_pool_response(
     response: Response,
     task: &Task,
+    effective_value: &serde_json::Value,
     step: &Step,
     schemas: &CompiledSchemas,
     effective: &EffectiveOptions,
-) -> (TaskResult, Vec<Task>) {
+) -> (TaskResult, Vec<Task>, PostHookInput) {
     match response {
         Response::Processed { stdout, .. } => {
             debug!(stdout = %stdout, "agent response");
-            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                Ok(value) => match validate_response(&value, step, schemas) {
-                    Ok(new_tasks) => {
-                        info!(from = task.kind, new_tasks = new_tasks.len(), "task completed");
-                        (TaskResult::Completed { new_tasks: new_tasks.clone() }, new_tasks)
-                    }
-                    Err(e) => {
-                        warn!(kind = task.kind, error = %e, "invalid response");
-                        process_retry(task, effective, FailureKind::InvalidResponse)
-                    }
-                },
-                Err(e) => {
-                    warn!(kind = task.kind, error = %e, "failed to parse response JSON");
-                    process_retry(task, effective, FailureKind::InvalidResponse)
-                }
-            }
+            process_stdout(&stdout, task, effective_value, step, schemas, effective)
         }
         Response::NotProcessed { reason } => {
-            warn!(kind = task.kind, ?reason, "task outcome unknown");
-            process_retry(task, effective, FailureKind::Timeout)
+            warn!(step = %task.step, ?reason, "task outcome unknown");
+            let (result, tasks) = process_retry(task, effective, FailureKind::Timeout);
+            let post_input = PostHookInput::Timeout {
+                input: effective_value.clone(),
+            };
+            (result, tasks, post_input)
         }
     }
 }
@@ -329,25 +626,53 @@ fn process_pool_response(
 fn process_command_response(
     stdout: &str,
     task: &Task,
+    effective_value: &serde_json::Value,
     step: &Step,
     schemas: &CompiledSchemas,
     effective: &EffectiveOptions,
-) -> (TaskResult, Vec<Task>) {
+) -> (TaskResult, Vec<Task>, PostHookInput) {
     debug!(stdout = %stdout, "command output");
+    process_stdout(stdout, task, effective_value, step, schemas, effective)
+}
+
+/// Process stdout from either pool or command action.
+fn process_stdout(
+    stdout: &str,
+    task: &Task,
+    effective_value: &serde_json::Value,
+    step: &Step,
+    schemas: &CompiledSchemas,
+    effective: &EffectiveOptions,
+) -> (TaskResult, Vec<Task>, PostHookInput) {
     match serde_json::from_str::<serde_json::Value>(stdout) {
-        Ok(value) => match validate_response(&value, step, schemas) {
+        Ok(output_value) => match validate_response(&output_value, step, schemas) {
             Ok(new_tasks) => {
-                info!(from = task.kind, new_tasks = new_tasks.len(), "command completed");
-                (TaskResult::Completed { new_tasks: new_tasks.clone() }, new_tasks)
+                info!(from = %task.step, new_tasks = new_tasks.len(), "task completed");
+                let post_input = PostHookInput::Success {
+                    input: effective_value.clone(),
+                    output: output_value,
+                    next: new_tasks.clone(),
+                };
+                (TaskResult::Completed { new_tasks: new_tasks.clone() }, new_tasks, post_input)
             }
             Err(e) => {
-                warn!(kind = task.kind, error = %e, "invalid command response");
-                process_retry(task, effective, FailureKind::InvalidResponse)
+                warn!(step = %task.step, error = %e, "invalid response");
+                let (result, tasks) = process_retry(task, effective, FailureKind::InvalidResponse);
+                let post_input = PostHookInput::Error {
+                    input: effective_value.clone(),
+                    error: e.to_string(),
+                };
+                (result, tasks, post_input)
             }
         },
         Err(e) => {
-            warn!(kind = task.kind, error = %e, "failed to parse command output JSON");
-            process_retry(task, effective, FailureKind::InvalidResponse)
+            warn!(step = %task.step, error = %e, "failed to parse response JSON");
+            let (result, tasks) = process_retry(task, effective, FailureKind::InvalidResponse);
+            let post_input = PostHookInput::Error {
+                input: effective_value.clone(),
+                error: format!("failed to parse response JSON: {e}"),
+            };
+            (result, tasks, post_input)
         }
     }
 }
@@ -360,7 +685,7 @@ fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: Failur
     };
 
     if !retry_allowed {
-        warn!(kind = task.kind, failure = ?failure_kind, "retry disabled, dropping task");
+        warn!(step = %task.step, failure = ?failure_kind, "retry disabled, dropping task");
         return (TaskResult::Dropped { reason: format!("retry disabled for {failure_kind:?}") }, vec![]);
     }
 
@@ -369,7 +694,7 @@ fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: Failur
 
     if retry_task.retries <= effective.max_retries {
         info!(
-            kind = task.kind,
+            step = %task.step,
             retry = retry_task.retries,
             max = effective.max_retries,
             failure = ?failure_kind,
@@ -377,7 +702,7 @@ fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: Failur
         );
         (TaskResult::Requeued { reason: format!("{failure_kind:?}"), retry_count: retry_task.retries }, vec![retry_task])
     } else {
-        error!(kind = task.kind, retries = retry_task.retries, "max retries exceeded, dropping task");
+        error!(step = %task.step, retries = retry_task.retries, "max retries exceeded, dropping task");
         (TaskResult::Dropped { reason: format!("max retries ({}) exceeded", effective.max_retries) }, vec![])
     }
 }
@@ -390,17 +715,6 @@ fn call_wake_script(script: &str) -> io::Result<()> {
     } else {
         Err(io::Error::other(format!("wake script failed with status: {status}")))
     }
-}
-
-fn build_agent_payload(task: &Task, docs: &str, timeout: Option<u64>) -> String {
-    let mut payload = serde_json::json!({
-        "task": { "kind": task.kind, "value": task.value },
-        "instructions": docs,
-    });
-    if let Some(t) = timeout {
-        payload["timeout_seconds"] = serde_json::json!(t);
-    }
-    serde_json::to_string(&payload).unwrap_or_default()
 }
 
 fn run_command_action(script: &str, task_json: &str) -> io::Result<String> {
@@ -425,6 +739,135 @@ fn run_command_action(script: &str, task_json: &str) -> io::Result<String> {
     }
 }
 
+/// Run a pre hook if present, returning the (possibly modified) value.
+fn run_pre_hook(
+    hook: Option<&String>,
+    value: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(script) = hook else {
+        return Ok(value.clone());
+    };
+
+    info!(script = %script, "running pre hook");
+
+    let input = serde_json::to_string(value).unwrap_or_default();
+
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("failed to spawn pre hook: {e}")),
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("pre hook failed: {e}")),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "pre hook exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(e) => return Err(format!("pre hook output is not valid UTF-8: {e}")),
+    };
+
+    match serde_json::from_str(&stdout) {
+        Ok(v) => {
+            debug!("pre hook transformed value");
+            Ok(v)
+        }
+        Err(e) => Err(format!("pre hook output is not valid JSON: {e}")),
+    }
+}
+
+/// Run a post hook synchronously and return the (possibly modified) result.
+///
+/// Post hooks can modify the `next` array to filter, add, or transform tasks.
+fn run_post_hook(
+    script: &str,
+    input: &PostHookInput,
+) -> Result<PostHookInput, String> {
+    info!(script = %script, kind = ?std::mem::discriminant(input), "running post hook");
+
+    let input_json = serde_json::to_string(&input).unwrap_or_default();
+
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("failed to spawn post hook: {e}")),
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input_json.as_bytes());
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("post hook failed: {e}")),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "post hook exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(e) => return Err(format!("post hook output is not valid UTF-8: {e}")),
+    };
+
+    match serde_json::from_str(&stdout) {
+        Ok(modified) => {
+            debug!(script = %script, "post hook completed");
+            Ok(modified)
+        }
+        Err(e) => Err(format!("post hook output is not valid JSON: {e}")),
+    }
+}
+
+/// Build agent payload with a specific value (used when pre hook modifies the value).
+fn build_agent_payload_with_value(
+    step_name: &StepName,
+    value: &serde_json::Value,
+    docs: &str,
+    timeout: Option<u64>,
+) -> String {
+    let mut payload = serde_json::json!({
+        "task": { "kind": step_name, "value": value },
+        "instructions": docs,
+    });
+    if let Some(t) = timeout {
+        payload["timeout_seconds"] = serde_json::json!(t);
+    }
+    serde_json::to_string(&payload).unwrap_or_default()
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
@@ -432,10 +875,11 @@ mod tests {
 
     #[test]
     fn build_payload_includes_task_and_docs() {
-        let task = Task::new("Test", serde_json::json!({"x": 1}));
+        let step_name = StepName::new("Test");
+        let value = serde_json::json!({"x": 1});
         let docs = "# Test Step";
 
-        let payload = build_agent_payload(&task, docs, Some(60));
+        let payload = build_agent_payload_with_value(&step_name, &value, docs, Some(60));
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
 
         assert_eq!(parsed["task"]["kind"], "Test");

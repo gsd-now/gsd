@@ -55,6 +55,8 @@ if [ -n "$EXISTING_POOL" ]; then
 
     echo ""
     echo "=== Success! ==="
+    echo ""
+    echo "View workflow graph: $SCRIPT_DIR/../../gsd_config/configs/linear.dot"
 else
     # Create demo pool
     ROOT=$(mktemp -d)
@@ -94,4 +96,6 @@ else
 
     echo ""
     echo "=== Success! ==="
+    echo ""
+    echo "View workflow graph: $SCRIPT_DIR/../../gsd_config/configs/linear.dot"
 fi
