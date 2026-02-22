@@ -17,6 +17,3 @@ pub const TASK_FILE: &str = "task.json";
 
 /// Stable filename for agent response.
 pub const RESPONSE_FILE: &str = "response.json";
-
-/// Stable filename for agent heartbeat.
-pub const HEARTBEAT_FILE: &str = "heartbeat";

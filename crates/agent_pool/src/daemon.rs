@@ -17,19 +17,12 @@
 //! // ... submit tasks ...
 //! handle.shutdown()?;  // Gracefully stops the daemon
 //! ```
-//!
-//! # Heartbeats
-//!
-//! When enabled, agents must periodically touch a `heartbeat` file in their
-//! directory to signal they're still alive. If the file's mtime becomes stale
-//! beyond the configured timeout, the task is marked as `NotProcessed` with
-//! reason `HeartbeatTimeout`.
 
 use crate::constants::{
-    AGENTS_DIR, HEARTBEAT_FILE, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE,
+    AGENTS_DIR, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE,
 };
 use crate::lock::acquire_lock;
-use crate::response::{NotProcessedReason, Response};
+use crate::response::Response;
 use crate::submit_file::{PENDING_RESPONSE_FILE, PENDING_TASK_FILE};
 use interprocess::local_socket::{
     GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
@@ -41,7 +34,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::{fs, io, thread};
 use tracing::{debug, info, trace, warn};
 
@@ -52,28 +45,7 @@ use tracing::{debug, info, trace, warn};
 /// Configuration for the agent pool daemon.
 #[derive(Debug, Clone, Default)]
 pub struct DaemonConfig {
-    /// Heartbeat timeout in seconds. If an agent hasn't updated its heartbeat
-    /// file within this duration, the task is considered timed out.
-    /// Set to `None` to disable heartbeat checking (default).
-    pub heartbeat_timeout: Option<Duration>,
-}
-
-impl DaemonConfig {
-    /// Create a config with heartbeat checking enabled.
-    #[must_use]
-    pub const fn with_heartbeat_timeout(timeout: Duration) -> Self {
-        Self {
-            heartbeat_timeout: Some(timeout),
-        }
-    }
-
-    /// Create a config with heartbeat checking disabled.
-    #[must_use]
-    pub const fn without_heartbeats() -> Self {
-        Self {
-            heartbeat_timeout: None,
-        }
-    }
+    // Reserved for future configuration options (e.g., keepalive settings)
 }
 
 // =============================================================================
@@ -290,8 +262,6 @@ struct AgentState {
 /// A task that has been dispatched but not yet completed.
 struct InFlightTask {
     respond_to: ResponseTarget,
-    /// When the task was dispatched (for heartbeat timeout calculation).
-    dispatched_at: SystemTime,
 }
 
 impl AgentState {
@@ -310,6 +280,7 @@ struct PoolState {
     pending_dir: PathBuf,
     agents: HashMap<String, AgentState>,
     pending: VecDeque<Task>,
+    #[expect(dead_code, reason = "will be used for keepalive config")]
     config: DaemonConfig,
 }
 
@@ -440,64 +411,6 @@ impl PoolState {
         Ok(())
     }
 
-    fn check_heartbeat_timeouts(&mut self) -> io::Result<()> {
-        let Some(timeout) = self.config.heartbeat_timeout else {
-            return Ok(());
-        };
-
-        let now = SystemTime::now();
-        let timed_out: Vec<_> = self
-            .agents
-            .iter()
-            .filter_map(|(id, agent)| {
-                let in_flight = agent.in_flight.as_ref()?;
-
-                // Check heartbeat file mtime (falls back to dispatch time if no heartbeat file)
-                let heartbeat_path = self.agents_dir.join(id).join(HEARTBEAT_FILE);
-                let mtime = fs::metadata(&heartbeat_path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .unwrap_or(in_flight.dispatched_at);
-
-                let age = now.duration_since(mtime).unwrap_or(Duration::MAX);
-                if age > timeout {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for agent_id in timed_out {
-            warn!(agent_id, "heartbeat timeout, marking task as not processed");
-            self.timeout_task(&agent_id)?;
-        }
-
-        Ok(())
-    }
-
-    fn timeout_task(&mut self, agent_id: &str) -> io::Result<()> {
-        let Some(agent) = self.agents.get_mut(agent_id) else {
-            return Ok(());
-        };
-
-        let Some(in_flight) = agent.in_flight.take() else {
-            return Ok(());
-        };
-
-        // Clean up task files
-        let agent_dir = self.agents_dir.join(agent_id);
-        let _ = fs::remove_file(agent_dir.join(TASK_FILE));
-        let _ = fs::remove_file(agent_dir.join(RESPONSE_FILE));
-        let _ = fs::remove_file(agent_dir.join(HEARTBEAT_FILE));
-
-        let response = Response::not_processed(NotProcessedReason::HeartbeatTimeout);
-        send_response(in_flight.respond_to, &response)?;
-
-        info!(agent_id, "task timed out due to heartbeat");
-        Ok(())
-    }
-
     fn register(&mut self, agent_id: &str) {
         if !self.agents.contains_key(agent_id) {
             info!(agent_id, "agent registered");
@@ -566,16 +479,9 @@ impl PoolState {
         debug!(agent_id, path = %task_path.display(), bytes = task.content.len(), "writing task file");
         fs::write(&task_path, &task.content)?;
 
-        // Initialize heartbeat file so agents have a baseline
-        if self.config.heartbeat_timeout.is_some() {
-            let heartbeat_path = self.agents_dir.join(agent_id).join(HEARTBEAT_FILE);
-            let _ = fs::write(&heartbeat_path, "");
-        }
-
         info!(agent_id, "task dispatched");
         agent.in_flight = Some(InFlightTask {
             respond_to: task.respond_to,
-            dispatched_at: SystemTime::now(),
         });
         Ok(())
     }
@@ -603,7 +509,6 @@ impl PoolState {
         let agent_dir = self.agents_dir.join(agent_id);
         let _ = fs::remove_file(agent_dir.join(TASK_FILE));
         let _ = fs::remove_file(response_path);
-        let _ = fs::remove_file(agent_dir.join(HEARTBEAT_FILE));
 
         let response = Response::processed(output);
         send_response(in_flight.respond_to, &response)?;
@@ -670,8 +575,6 @@ fn event_loop(
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_outputs failed: {e}")))?;
             state.scan_pending()
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_pending failed: {e}")))?;
-            state.check_heartbeat_timeouts()
-                .map_err(|e| io::Error::new(e.kind(), format!("heartbeat check failed: {e}")))?;
             last_scan = Instant::now();
         }
 

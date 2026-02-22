@@ -5,7 +5,7 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, HEARTBEAT_FILE, RESPONSE_FILE, TASK_FILE,
+    AGENTS_DIR, RESPONSE_FILE, TASK_FILE,
     cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool, run, stop, submit,
     submit_file,
 };
@@ -104,15 +104,6 @@ enum Command {
     /// Wait for and return the next task (for agents)
     #[command(name = "get_task")]
     GetTask {
-        /// Pool ID or path
-        #[arg(long)]
-        pool: String,
-        /// Agent name
-        #[arg(long)]
-        name: String,
-    },
-    /// Send a heartbeat to indicate the agent is still alive
-    Heartbeat {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
@@ -339,16 +330,6 @@ fn main() -> ExitCode {
 
                 // No task yet, wait and try again
                 thread::sleep(Duration::from_millis(100));
-            }
-        }
-        Command::Heartbeat { pool, name } => {
-            let root = resolve_pool(&pool);
-            let heartbeat_path = root.join(AGENTS_DIR).join(&name).join(HEARTBEAT_FILE);
-
-            // Touch the heartbeat file (create or update mtime)
-            if let Err(e) = fs::write(&heartbeat_path, "") {
-                eprintln!("Failed to write heartbeat: {e}");
-                return ExitCode::FAILURE;
             }
         }
     }
