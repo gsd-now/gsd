@@ -1,5 +1,5 @@
 #!/bin/bash
-# Demo: Simple single-step GSD state machine
+# Demo: Simple single-step GSD task queue
 #
 # This demonstrates the basic GSD protocol:
 # 1. Start the agent pool
@@ -23,7 +23,7 @@ echo ""
 AGENT_POOL="${AGENT_POOL:-$WORKSPACE_ROOT/target/debug/agent_pool}"
 GSD="${GSD:-$WORKSPACE_ROOT/target/debug/gsd}"
 
-echo "=== Demo: Simple Single-Step State Machine ==="
+echo "=== Demo: Simple Single-Step Task Queue ==="
 echo "Working directory: $ROOT"
 echo ""
 

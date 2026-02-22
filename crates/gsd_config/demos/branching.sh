@@ -1,7 +1,7 @@
 #!/bin/bash
-# Demo: Branching GSD state machine
+# Demo: Branching GSD task queue
 #
-# This demonstrates a branching state machine:
+# This demonstrates a branching task queue:
 # Decide -> PathA or PathB -> Done
 #
 # The agent always chooses PathA in this demo.
@@ -21,7 +21,7 @@ echo ""
 AGENT_POOL="${AGENT_POOL:-$WORKSPACE_ROOT/target/debug/agent_pool}"
 GSD="${GSD:-$WORKSPACE_ROOT/target/debug/gsd}"
 
-echo "=== Demo: Branching State Machine ==="
+echo "=== Demo: Branching Task Queue ==="
 echo "Working directory: $ROOT"
 echo ""
 

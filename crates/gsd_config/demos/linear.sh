@@ -1,7 +1,7 @@
 #!/bin/bash
-# Demo: Linear three-step GSD state machine
+# Demo: Linear three-step GSD task queue
 #
-# This demonstrates a linear state machine:
+# This demonstrates a linear task queue:
 # Start -> Middle -> End
 #
 # The agent follows the transition map exactly.
@@ -21,7 +21,7 @@ echo ""
 AGENT_POOL="${AGENT_POOL:-$WORKSPACE_ROOT/target/debug/agent_pool}"
 GSD="${GSD:-$WORKSPACE_ROOT/target/debug/gsd}"
 
-echo "=== Demo: Linear State Machine (Start -> Middle -> End) ==="
+echo "=== Demo: Linear Task Queue (Start -> Middle -> End) ==="
 echo "Working directory: $ROOT"
 echo ""
 

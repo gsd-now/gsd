@@ -22,10 +22,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the state machine
+    /// Run the task queue
     Run {
         /// Config (JSON string or path to file)
         config: String,
+
+        /// Initial tasks (JSON string or path to file) - required
+        #[arg(long)]
+        initial: String,
 
         /// Agent pool root directory (default: temp directory)
         #[arg(long)]
@@ -34,10 +38,6 @@ enum Command {
         /// Wake script to call before starting
         #[arg(long)]
         wake: Option<String>,
-
-        /// Initial tasks (JSON string or path to file)
-        #[arg(long)]
-        initial: Option<String>,
 
         /// Log file path (logs emitted in addition to stderr)
         #[arg(long)]
@@ -63,9 +63,9 @@ fn main() -> io::Result<()> {
     match cli.command {
         Command::Run {
             config,
+            initial,
             root,
             wake,
-            initial,
             log_file,
         } => {
             // Initialize tracing with optional log file
@@ -78,7 +78,7 @@ fn main() -> io::Result<()> {
             let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
 
             // Parse initial tasks
-            let initial_tasks = parse_initial_tasks(initial)?;
+            let initial_tasks = parse_initial_tasks(&initial)?;
 
             // Determine agent_pool root
             let pool_root = root.unwrap_or_else(|| {
@@ -157,19 +157,15 @@ fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
     }
 }
 
-fn parse_initial_tasks(initial: Option<String>) -> io::Result<Vec<Task>> {
-    let Some(s) = initial else {
-        return Ok(Vec::new());
-    };
-
+fn parse_initial_tasks(initial: &str) -> io::Result<Vec<Task>> {
     // Check if it's a file path
     let json_str = {
-        let path = PathBuf::from(&s);
+        let path = PathBuf::from(initial);
         if path.exists() {
             std::fs::read_to_string(path)?
         } else {
             // Assume it's inline JSON
-            s
+            initial.to_string()
         }
     };
 

@@ -1,4 +1,4 @@
-//! Tests for branching state machines (one step -> multiple possible next steps).
+//! Tests for branching task queues (one step -> multiple possible next steps).
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
@@ -71,11 +71,8 @@ fn branch_to_path_a() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Decide".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -118,11 +115,8 @@ fn branch_to_path_b() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Decide".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -184,11 +178,8 @@ fn fan_out_multiple_tasks() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Decide".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 

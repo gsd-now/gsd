@@ -1,4 +1,4 @@
-//! Tests for invalid state machine transitions.
+//! Tests for invalid task queue transitions.
 
 #![expect(clippy::print_stderr)]
 #![expect(clippy::expect_used)]
@@ -68,11 +68,8 @@ fn invalid_transition_causes_retry() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Start".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -107,11 +104,8 @@ fn unknown_step_causes_retry() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Start".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -170,11 +164,8 @@ fn recovery_after_invalid_then_valid() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Start".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
