@@ -10,6 +10,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// JSON Schema reference for editor validation (ignored at runtime).
+    #[serde(rename = "$schema", default, skip_serializing)]
+    pub schema_ref: Option<String>,
+
     /// Runtime options.
     #[serde(default)]
     pub options: Options,
