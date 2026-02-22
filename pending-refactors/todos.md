@@ -352,13 +352,39 @@ The default step should probably require `value_schema` to either be absent or a
 
 ## Agent Health Checks
 
-**Status: Planned** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
+**Status: Implemented** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
 
-Replacing file-based heartbeats with task-based keepalives (ping-pong). Benefits:
-- Initial keepalive gets tool-use approvals out of the way
-- Periodic keepalives to idle agents detect disconnected agents
-- No special agent code needed beyond following task instructions
+Task-based ping-pong health checks. Benefits:
+- Initial health check gets tool-use approvals out of the way
+- Periodic health checks to idle agents detect disconnected agents
 - Agents can recover from timeout by simply calling `get_task` again
+
+### Improvement: Hide Health Checks from Agents
+
+Currently agents (shell scripts, test agents) need to check the task `kind` and handle `HealthCheck` specially. This leaks implementation details.
+
+**Better approach**: `get_task` CLI should handle health checks internally:
+
+```bash
+# Current: agent must check kind and respond
+task=$(agent_pool get_task --pool $POOL --name $NAME)
+kind=$(echo "$task" | jq -r '.kind')
+if [ "$kind" = "HealthCheck" ]; then
+    echo "{}" > "$(echo "$task" | jq -r '.response_file')"
+    # loop again for next task...
+fi
+
+# Better: get_task handles health checks automatically
+# Only returns when there's a real Task
+task=$(agent_pool get_task --pool $POOL --name $NAME)
+# task.kind is always "Task", health checks handled internally
+```
+
+Implementation:
+- `get_task` polls for task.json
+- If kind is "HealthCheck", write "{}" to response.json and continue polling
+- Only return to agent when kind is "Task"
+- Agent never sees health checks at all
 
 ## Typestate Pattern for State Transitions
 
