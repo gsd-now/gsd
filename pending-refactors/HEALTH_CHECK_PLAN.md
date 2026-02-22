@@ -216,17 +216,17 @@ The daemon writes this envelope; `get_task` passes through the `kind` field.
 
 | Status | Task | Description |
 |--------|------|-------------|
-| [ ] | 1 | Add `InFlight::HealthCheck` variant (compiler will force `complete()` update) |
-| [ ] | 2 | Add health check config to `DaemonConfig` |
-| [ ] | 3 | Add CLI flags for health check config |
+| [x] | 1 | Add `InFlight::HealthCheck` variant (compiler will force `complete()` update) |
+| [x] | 2 | Add health check config to `DaemonConfig` |
+| [x] | 3 | Add CLI flags for health check config |
 | [x] | 4 | Task envelope format with `kind` field |
-| [ ] | 5 | Add `dispatch_health_check()` (Idle → Busy(HealthCheck) transition) |
-| [ ] | 6 | Update `register()` to send initial health check |
-| [ ] | 7 | Add `last_activity` tracking to `AgentState` |
-| [ ] | 8 | Add periodic health check dispatch (idle agents only) |
-| [ ] | 9 | Add health check timeout handling (Busy(HealthCheck) → deregistered) |
-| [ ] | 10 | Update shell scripts to handle HealthCheck kind |
-| [ ] | 11 | Update demos |
+| [x] | 5 | Add `dispatch_health_check()` (Idle → Busy(HealthCheck) transition) |
+| [x] | 6 | Update `register()` to send initial health check |
+| [x] | 7 | Add `last_activity` tracking to `AgentState` |
+| [x] | 8 | Add periodic health check dispatch (idle agents only) |
+| [x] | 9 | Add health check timeout handling (Busy(HealthCheck) → deregistered) |
+| [x] | 10 | Update shell scripts to handle HealthCheck kind |
+| [x] | 11 | Update demos (no changes needed - health checks off by default) |
 | [ ] | 12 | Add tests |
 
 ---
