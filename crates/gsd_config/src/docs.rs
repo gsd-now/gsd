@@ -47,7 +47,7 @@ pub fn generate_step_docs(step: &Step, config: &Config) -> String {
                 writeln!(doc).ok();
 
                 // Show schema info
-                match &next_step.schema {
+                match &next_step.value_schema {
                     None => {
                         writeln!(doc, "Accepts any JSON value.").ok();
                         writeln!(doc).ok();
@@ -90,7 +90,7 @@ pub fn generate_step_docs(step: &Step, config: &Config) -> String {
 pub fn generate_full_docs(config: &Config) -> String {
     let mut doc = String::new();
 
-    writeln!(doc, "# GSD State Machine Documentation").ok();
+    writeln!(doc, "# GSD Task Queue Documentation").ok();
     writeln!(doc).ok();
 
     // Options summary
@@ -204,7 +204,7 @@ mod tests {
         .unwrap();
 
         let docs = generate_full_docs(&config);
-        assert!(docs.contains("GSD State Machine Documentation"));
+        assert!(docs.contains("GSD Task Queue Documentation"));
         assert!(docs.contains("Timeout"));
         assert!(docs.contains("60"));
         assert!(docs.contains("Max Retries"));

@@ -1,6 +1,6 @@
 //! Configuration types for GSD.
 //!
-//! Defines the state machine with steps, schemas, and transitions.
+//! Defines the task queue with steps, schemas, and transitions.
 //! These types are serialization-format agnostic (use serde).
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub struct Config {
     #[serde(default)]
     pub options: Options,
 
-    /// Step definitions forming the state machine.
+    /// Step definitions forming the task queue.
     pub steps: Vec<Step>,
 }
 
@@ -34,6 +34,10 @@ pub struct Options {
     #[serde(default)]
     pub max_retries: u32,
 
+    /// Maximum concurrent tasks (None = unlimited).
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
+
     /// Whether to retry when agent times out (default: true).
     #[serde(default = "default_true")]
     pub retry_on_timeout: bool,
@@ -48,6 +52,7 @@ impl Default for Options {
         Self {
             timeout: None,
             max_retries: 0,
+            max_concurrency: None,
             retry_on_timeout: true,
             retry_on_invalid_response: true,
         }
@@ -58,17 +63,17 @@ fn default_true() -> bool {
     true
 }
 
-/// A step in the state machine.
+/// A step in the task queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
     /// Step name (e.g., `Analyze`, `Implement`).
     pub name: String,
 
-    /// JSON Schema for the step's value payload.
+    /// JSON Schema for validating the step's value payload.
     /// None means any JSON value is accepted.
     #[serde(default)]
-    pub schema: Option<SchemaRef>,
+    pub value_schema: Option<SchemaRef>,
 
     /// Markdown instructions shown to agents.
     #[serde(default)]
@@ -152,22 +157,32 @@ impl Config {
     /// Validate the config for internal consistency.
     ///
     /// Checks:
-    /// - All `next` references point to existing steps
     /// - Step names are unique
+    /// - All `next` references point to existing steps
     ///
     /// # Errors
     ///
     /// Returns an error describing any validation failures.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let step_names: std::collections::HashSet<_> =
-            self.steps.iter().map(|s| s.name.as_str()).collect();
+        // Find duplicate names
+        let mut seen = HashMap::new();
+        for name in self.steps.iter().map(|s| &s.name) {
+            *seen.entry(name.as_str()).or_insert(0usize) += 1;
+        }
+        let duplicates: Vec<String> = seen
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(name, _)| name.to_string())
+            .collect();
 
-        // Check for duplicate names
-        if step_names.len() != self.steps.len() {
-            return Err(ConfigError::DuplicateStepNames);
+        if !duplicates.is_empty() {
+            return Err(ConfigError::DuplicateStepNames { names: duplicates });
         }
 
         // Check all next references are valid
+        let step_names: std::collections::HashSet<_> =
+            self.steps.iter().map(|s| s.name.as_str()).collect();
+
         for step in &self.steps {
             for next in &step.next {
                 if !step_names.contains(next.as_str()) {
@@ -187,7 +202,10 @@ impl Config {
 #[derive(Debug, Clone)]
 pub enum ConfigError {
     /// Two or more steps have the same name.
-    DuplicateStepNames,
+    DuplicateStepNames {
+        /// The step names that appear more than once.
+        names: Vec<String>,
+    },
     /// A step references a non-existent next step.
     InvalidNextStep {
         /// The step containing the invalid reference.
@@ -200,7 +218,9 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DuplicateStepNames => write!(f, "duplicate step names in config"),
+            Self::DuplicateStepNames { names } => {
+                write!(f, "duplicate step names: {}", names.join(", "))
+            }
             Self::InvalidNextStep { from, to } => {
                 write!(f, "step '{from}' references non-existent step '{to}'")
             }
@@ -239,7 +259,7 @@ mod tests {
             "steps": [
                 {
                     "name": "Analyze",
-                    "schema": {"kind": "Inline", "value": {"type": "object"}},
+                    "value_schema": {"kind": "Inline", "value": {"type": "object"}},
                     "instructions": "Analyze the input.",
                     "next": ["Done"]
                 },
@@ -289,7 +309,10 @@ mod tests {
         let config: Config = serde_json::from_str(json).expect("parse failed");
         let result = config.validate();
         assert!(result.is_err());
-        assert!(matches!(result, Err(ConfigError::DuplicateStepNames)));
+        assert!(matches!(
+            result,
+            Err(ConfigError::DuplicateStepNames { names }) if names == vec!["Start"]
+        ));
     }
 
     #[test]

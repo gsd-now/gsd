@@ -22,7 +22,7 @@ fn config_with_schema() -> Config {
             "steps": [
                 {
                     "name": "Input",
-                    "schema": {
+                    "value_schema": {
                         "kind": "Inline",
                         "value": {
                             "type": "object",
@@ -36,7 +36,7 @@ fn config_with_schema() -> Config {
                 },
                 {
                     "name": "Output",
-                    "schema": {
+                    "value_schema": {
                         "kind": "Inline",
                         "value": {
                             "type": "object",
@@ -78,11 +78,8 @@ fn valid_schema_passes() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Input".to_string(),
-            value: serde_json::json!({"count": 5}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Input", serde_json::json!({"count": 5}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -113,12 +110,9 @@ fn invalid_initial_task_skipped() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Input".to_string(),
-            // Missing required "count" field
-            value: serde_json::json!({}),
-        }],
-    };
+        // Missing required "count" field
+        initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
@@ -157,7 +151,7 @@ fn invalid_response_causes_retry() {
             "steps": [
                 {
                     "name": "Input",
-                    "schema": {
+                    "value_schema": {
                         "kind": "Inline",
                         "value": {"type": "object"}
                     },
@@ -165,7 +159,7 @@ fn invalid_response_causes_retry() {
                 },
                 {
                     "name": "Output",
-                    "schema": {
+                    "value_schema": {
                         "kind": "Inline",
                         "value": {
                             "type": "object",
@@ -184,11 +178,8 @@ fn invalid_response_causes_retry() {
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         wake_script: None,
-        initial_tasks: vec![Task {
-            kind: "Input".to_string(),
-            value: serde_json::json!({}),
-        }],
-    };
+        initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
+            };
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 

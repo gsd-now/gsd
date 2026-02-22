@@ -4,7 +4,7 @@ Declarative task orchestrator that sits on top of `agent_pool`.
 
 ## Overview
 
-Define task state machines via declarative config:
+Define task task queues via declarative config:
 - Validates tasks against JSON schemas at runtime
 - Generates markdown documentation for agents
 - Handles timeouts and retries with per-step options
@@ -24,7 +24,7 @@ The config format is serialization-agnostic (uses serde). The CLI handles parsin
   "steps": [
     {
       "name": "Analyze",
-      "schema": { "kind": "Inline", "value": { "type": "object" } },
+      "value_schema": { "kind": "Inline", "value": { "type": "object" } },
       "instructions": "Analyze the given file.",
       "next": ["Implement", "Done"]
     },
@@ -56,14 +56,15 @@ The config format is serialization-agnostic (uses serde). The CLI handles parsin
 
 - `timeout`: Seconds before a task times out (default: none)
 - `max_retries`: Max retry attempts (default: 0)
+- `max_concurrency`: Maximum concurrent tasks (default: unlimited)
 - `retry_on_timeout`: Whether to retry timed-out tasks (default: true)
 - `retry_on_invalid_response`: Whether to retry invalid responses (default: true)
 
 ### Step Fields
 
 - `name`: Step identifier
-- `schema`: JSON Schema for validation (optional)
-  - `null` or omitted → accepts any value
+- `value_schema`: JSON Schema for validating the task's `value` field (optional)
+  - Omitted → accepts any value
   - `{ "kind": "Inline", "value": {...} }` → inline schema
   - `{ "kind": "Link", "value": "path/to/schema.json" }` → external file
 - `instructions`: Markdown shown to agents

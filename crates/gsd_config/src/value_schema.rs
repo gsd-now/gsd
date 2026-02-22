@@ -25,7 +25,7 @@ impl CompiledSchemas {
         let mut validators = HashMap::new();
 
         for step in &config.steps {
-            let validator = match &step.schema {
+            let validator = match &step.value_schema {
                 None => None,
                 Some(SchemaRef::Inline(schema)) => Some(compile_schema(schema)?),
                 Some(SchemaRef::Link(path)) => {
@@ -118,6 +118,21 @@ pub struct Task {
     pub kind: String,
     /// The task payload.
     pub value: Value,
+    /// Number of times this task has been retried (internal tracking, not serialized).
+    #[serde(skip)]
+    pub(crate) retries: u32,
+}
+
+impl Task {
+    /// Create a new task with the given kind and value.
+    #[must_use]
+    pub fn new(kind: impl Into<String>, value: Value) -> Self {
+        Self {
+            kind: kind.into(),
+            value,
+            retries: 0,
+        }
+    }
 }
 
 /// Validate an agent's response against the config.
@@ -235,7 +250,7 @@ mod tests {
             "steps": [
                 {
                     "name": "Start",
-                    "schema": {"kind": "Inline", "value": {"type": "object", "properties": {"x": {"type": "number"}}}},
+                    "value_schema": {"kind": "Inline", "value": {"type": "object", "properties": {"x": {"type": "number"}}}},
                     "next": ["End"]
                 },
                 {

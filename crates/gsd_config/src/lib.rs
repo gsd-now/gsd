@@ -4,7 +4,7 @@
 //!
 //! # Overview
 //!
-//! Define task state machines via a declarative config. This crate:
+//! Define task workflows via a declarative config. This crate:
 //! - Validates tasks against JSON schemas
 //! - Generates markdown documentation for agents
 //! - Handles timeouts and retries with per-step options
@@ -18,11 +18,12 @@
 //! Agents return arrays of tasks as their response.
 
 pub mod config;
-pub mod docs;
-pub mod runner;
-pub mod schema;
+mod docs;
+mod runner;
+mod value_schema;
 
-pub use config::{Config, ConfigError, EffectiveOptions, Options, SchemaRef, Step, StepOptions};
-pub use docs::{generate_full_docs, generate_step_docs};
+// Public API - only what external users need
+pub use config::Config;
+pub use docs::generate_full_docs;
 pub use runner::{RunnerConfig, run};
-pub use schema::{CompiledSchemas, ResponseValidationError, Task, ValidationError};
+pub use value_schema::{CompiledSchemas, Task};

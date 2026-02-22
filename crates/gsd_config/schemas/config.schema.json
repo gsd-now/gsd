@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/rbalicki2/gsd/blob/master/crates/gsd_config/schemas/config.schema.json",
   "title": "GSD Config",
-  "description": "Configuration for GSD task orchestration state machines",
+  "description": "Configuration for GSD task orchestration task queues",
   "type": "object",
   "additionalProperties": false,
   "required": ["steps"],
@@ -16,7 +16,7 @@
     },
     "steps": {
       "type": "array",
-      "description": "Step definitions forming the state machine",
+      "description": "Step definitions forming the task queue",
       "items": {
         "$ref": "#/$defs/Step"
       }
@@ -48,6 +48,11 @@
           "type": "boolean",
           "default": true,
           "description": "Whether to retry when agent returns invalid response"
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum concurrent tasks (omit for unlimited)"
         }
       }
     },
@@ -78,7 +83,7 @@
     },
     "Step": {
       "type": "object",
-      "description": "A step in the state machine",
+      "description": "A step in the task queue",
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
@@ -86,7 +91,7 @@
           "type": "string",
           "description": "Step name (e.g., Analyze, Implement)"
         },
-        "schema": {
+        "value_schema": {
           "$ref": "#/$defs/SchemaRef",
           "description": "JSON Schema for the step's value payload (omit to accept any value)"
         },
