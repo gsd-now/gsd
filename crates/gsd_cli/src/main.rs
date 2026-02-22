@@ -22,10 +22,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the state machine with a config file
+    /// Run the state machine
     Run {
-        /// Path to the GSD config file
-        config: PathBuf,
+        /// Config (JSON string or path to file)
+        config: String,
 
         /// Agent pool root directory (default: temp directory)
         #[arg(long)]
@@ -35,7 +35,7 @@ enum Command {
         #[arg(long)]
         wake: Option<String>,
 
-        /// Initial tasks (JSON array string or path to file)
+        /// Initial tasks (JSON string or path to file)
         #[arg(long)]
         initial: Option<String>,
 
@@ -46,14 +46,14 @@ enum Command {
 
     /// Generate markdown documentation from config
     Docs {
-        /// Path to the GSD config file
-        config: PathBuf,
+        /// Config (JSON string or path to file)
+        config: String,
     },
 
-    /// Validate a config file
+    /// Validate a config
     Validate {
-        /// Path to the GSD config file
-        config: PathBuf,
+        /// Config (JSON string or path to file)
+        config: String,
     },
 }
 
@@ -70,12 +70,12 @@ fn main() -> io::Result<()> {
         } => {
             // Initialize tracing with optional log file
             init_tracing(log_file.as_ref())?;
-            let cfg = Config::load(&config)?;
+
+            let (cfg, config_dir) = parse_config(&config)?;
             cfg.validate()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            let config_dir = config.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let schemas = CompiledSchemas::compile(&cfg, config_dir)?;
+            let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
 
             // Parse initial tasks
             let initial_tasks = parse_initial_tasks(initial)?;
@@ -97,13 +97,13 @@ fn main() -> io::Result<()> {
         }
 
         Command::Docs { config } => {
-            let cfg = Config::load(&config)?;
+            let (cfg, _) = parse_config(&config)?;
             let docs = generate_full_docs(&cfg);
             print!("{docs}");
         }
 
         Command::Validate { config } => {
-            let cfg = Config::load(&config)?;
+            let (cfg, _) = parse_config(&config)?;
             match cfg.validate() {
                 Ok(()) => {
                     println!("Config is valid.");
@@ -129,6 +129,26 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse config from either inline JSON or a file path.
+/// Returns the config and the directory for resolving relative schema paths.
+fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
+    let path = PathBuf::from(input);
+    if path.exists() {
+        let cfg = Config::load(&path)?;
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        Ok((cfg, dir.to_path_buf()))
+    } else {
+        // Assume inline JSON
+        let cfg: Config = serde_json::from_str(input).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid config JSON: {e}"),
+            )
+        })?;
+        Ok((cfg, PathBuf::from(".")))
+    }
 }
 
 fn parse_initial_tasks(initial: Option<String>) -> io::Result<Vec<Task>> {
