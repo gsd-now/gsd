@@ -227,7 +227,8 @@ The daemon writes this envelope; `get_task` passes through the `kind` field.
 | [x] | 9 | Add health check timeout handling (Busy(HealthCheck) → deregistered) |
 | [x] | 10 | Update shell scripts to handle HealthCheck kind |
 | [x] | 11 | Update demos (no changes needed - health checks off by default) |
-| [ ] | 12 | Add tests |
+| [x] | 12 | Add tests |
+| [x] | 13 | Add --auto-health-check to get_task CLI (agents don't see health checks) |
 
 ---
 

@@ -352,39 +352,27 @@ The default step should probably require `value_schema` to either be absent or a
 
 ## Agent Health Checks
 
-**Status: Implemented** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
+**Status: COMPLETE** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
 
 Task-based ping-pong health checks. Benefits:
 - Initial health check gets tool-use approvals out of the way
 - Periodic health checks to idle agents detect disconnected agents
 - Agents can recover from timeout by simply calling `get_task` again
 
-### Improvement: Hide Health Checks from Agents
+### Improvement: Hide Health Checks from Agents ✓
 
-Currently agents (shell scripts, test agents) need to check the task `kind` and handle `HealthCheck` specially. This leaks implementation details.
+**Status: IMPLEMENTED**
 
-**Better approach**: `get_task` CLI should handle health checks internally:
+The `get_task` CLI now has `--auto-health-check` (default: true) which handles health checks internally. Agents never see HealthCheck tasks unless they explicitly disable this:
 
 ```bash
-# Current: agent must check kind and respond
+# Default: get_task handles health checks automatically
 task=$(agent_pool get_task --pool $POOL --name $NAME)
-kind=$(echo "$task" | jq -r '.kind')
-if [ "$kind" = "HealthCheck" ]; then
-    echo "{}" > "$(echo "$task" | jq -r '.response_file')"
-    # loop again for next task...
-fi
+# task.kind is always "Task"
 
-# Better: get_task handles health checks automatically
-# Only returns when there's a real Task
-task=$(agent_pool get_task --pool $POOL --name $NAME)
-# task.kind is always "Task", health checks handled internally
+# Opt-out: agent sees and handles health checks
+task=$(agent_pool get_task --pool $POOL --name $NAME --auto-health-check=false)
 ```
-
-Implementation:
-- `get_task` polls for task.json
-- If kind is "HealthCheck", write "{}" to response.json and continue polling
-- Only return to agent when kind is "Task"
-- Agent never sees health checks at all
 
 ## Typestate Pattern for State Transitions
 
