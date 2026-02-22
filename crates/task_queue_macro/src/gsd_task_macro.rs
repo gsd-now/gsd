@@ -1,69 +1,90 @@
+//! Implementation of the `GsdTask` derive macro.
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Error, Fields, parse_macro_input};
+use syn::{Data, DeriveInput, Error, Fields, Ident, Type, parse_macro_input};
 
-pub(crate) fn gsd_task_macro(item: TokenStream) -> TokenStream {
+/// Parsed variant info from the input enum.
+struct VariantInfo {
+    name: Ident,
+    inner_type: Type,
+}
+
+/// Parse enum variants, returning an error if any variant is malformed.
+fn parse_variants(data: &syn::DataEnum) -> Result<Vec<VariantInfo>, TokenStream> {
+    let mut variants = Vec::new();
+
+    for variant in &data.variants {
+        let Fields::Unnamed(fields) = &variant.fields else {
+            return Err(Error::new_spanned(
+                variant,
+                "GsdTask variants must be tuple variants with exactly one field",
+            )
+            .to_compile_error()
+            .into());
+        };
+
+        if fields.unnamed.len() != 1 {
+            return Err(Error::new_spanned(
+                variant,
+                "GsdTask variants must have exactly one field",
+            )
+            .to_compile_error()
+            .into());
+        }
+
+        variants.push(VariantInfo {
+            name: variant.ident.clone(),
+            inner_type: fields.unnamed[0].ty.clone(),
+        });
+    }
+
+    Ok(variants)
+}
+
+pub fn gsd_task_macro(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
 
-    let enum_data = match &input.data {
-        Data::Enum(data) => data,
-        _ => {
-            return Error::new_spanned(&input, "GsdTask can only be derived on enums")
-                .to_compile_error()
-                .into();
-        }
+    let Data::Enum(enum_data) = &input.data else {
+        return Error::new_spanned(&input, "GsdTask can only be derived on enums")
+            .to_compile_error()
+            .into();
+    };
+
+    let variants = match parse_variants(enum_data) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
 
     let enum_name = &input.ident;
-    let in_progress_enum_name = format_ident!("{}InProgress", enum_name);
+    let in_progress_enum_name = format_ident!("{enum_name}InProgress");
 
-    let mut variant_names = Vec::new();
-    let mut variant_types = Vec::new();
+    let variant_types: Vec<_> = variants.iter().map(|v| &v.inner_type).collect();
 
-    for variant in &enum_data.variants {
-        let variant_name = &variant.ident;
+    let in_progress_variants = variants.iter().map(|v| {
+        let name = &v.name;
+        let ty = &v.inner_type;
+        let doc = format!("In-progress state for [`{name}`].");
+        quote! {
+            #[doc = #doc]
+            #name(<#ty as QueueItem<Ctx>>::InProgress)
+        }
+    });
 
-        let inner_type = match &variant.fields {
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => &fields.unnamed[0].ty,
-            _ => {
-                return Error::new_spanned(
-                    variant,
-                    "GsdTask variants must be tuple variants with exactly one field",
-                )
-                .to_compile_error()
-                .into();
-            }
-        };
-
-        variant_names.push(variant_name.clone());
-        variant_types.push(inner_type.clone());
-    }
-
-    let in_progress_variants = variant_names
-        .iter()
-        .zip(variant_types.iter())
-        .map(|(name, ty)| {
-            let doc = format!("In-progress state for [`{name}`].");
-            quote! {
-                #[doc = #doc]
-                #name(<#ty as QueueItem<Ctx>>::InProgress)
-            }
-        });
-
-    let from_impls = variant_names
-        .iter()
-        .zip(variant_types.iter())
-        .map(|(name, ty)| {
-            quote! {
-                impl From<#ty> for #enum_name {
-                    fn from(item: #ty) -> Self {
-                        #enum_name::#name(item)
-                    }
+    let from_impls = variants.iter().map(|v| {
+        let name = &v.name;
+        let ty = &v.inner_type;
+        quote! {
+            impl From<#ty> for #enum_name {
+                fn from(item: #ty) -> Self {
+                    #enum_name::#name(item)
                 }
             }
-        });
+        }
+    });
 
-    let start_arms = variant_names.iter().map(|name| {
+    let start_arms = variants.iter().map(|v| {
+        let name = &v.name;
         quote! {
             #enum_name::#name(item) => {
                 let (ip, cmd) = item.start(ctx);
@@ -72,19 +93,19 @@ pub(crate) fn gsd_task_macro(item: TokenStream) -> TokenStream {
         }
     });
 
-    let cleanup_arms = variant_names
-        .iter()
-        .zip(variant_types.iter())
-        .map(|(name, ty)| {
-            quote! {
-                #in_progress_enum_name::#name(ip) => {
-                    <#ty as QueueItem<Ctx>>::cleanup(ip, result, ctx).into_tasks()
-                }
+    let process_arms = variants.iter().map(|v| {
+        let name = &v.name;
+        let ty = &v.inner_type;
+        quote! {
+            #in_progress_enum_name::#name(ip) => {
+                <#ty as QueueItem<Ctx>>::process(ip, result, ctx).into_tasks()
             }
-        });
+        }
+    });
 
     let in_progress_doc = format!("In-progress state for [`{enum_name}`].");
-    let output = quote! {
+
+    quote! {
         #[doc = #in_progress_doc]
         pub enum #in_progress_enum_name<Ctx>
         where
@@ -110,17 +131,16 @@ pub(crate) fn gsd_task_macro(item: TokenStream) -> TokenStream {
                 }
             }
 
-            fn cleanup(
+            fn process(
                 in_progress: Self::InProgress,
                 result: Result<Self::Response, ::serde_json::Error>,
                 ctx: &mut Ctx,
             ) -> Self::NextTasks {
                 match in_progress {
-                    #(#cleanup_arms),*
+                    #(#process_arms),*
                 }
             }
         }
-    };
-
-    output.into()
+    }
+    .into()
 }

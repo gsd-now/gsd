@@ -1,9 +1,12 @@
 //! Tests that the task queue respects max concurrency limits.
 
-use task_queue::{process_queue, NoMoreTasks, ProcessQueueOptions, QueueItem};
+#![allow(clippy::expect_used)]
+#![allow(clippy::needless_raw_string_hashes)]
+
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use task_queue::{NoMoreTasks, ProcessQueueOptions, QueueItem, process_queue};
 
 /// A task that tracks how many tasks are running concurrently.
 struct ConcurrencyTask {
@@ -13,7 +16,7 @@ struct ConcurrencyTask {
     max_observed: Arc<AtomicUsize>,
 }
 
-/// In-progress state that holds the counter for decrementing on cleanup.
+/// In-progress state that holds the counter for decrementing on process.
 struct ConcurrencyInProgress {
     /// Reference to the current count for decrementing when done.
     current_count: Arc<AtomicUsize>,
@@ -39,7 +42,7 @@ impl QueueItem<()> for ConcurrencyTask {
         )
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         _result: Result<Self::Response, serde_json::Error>,
         _ctx: &mut (),
@@ -64,9 +67,15 @@ async fn respects_max_concurrency() {
         })
         .collect();
 
-    process_queue(queue, &mut (), ProcessQueueOptions { max_concurrency: 3 })
-        .await
-        .expect("process_queue failed");
+    process_queue(
+        queue,
+        &mut (),
+        ProcessQueueOptions {
+            max_concurrency: Some(3),
+        },
+    )
+    .await
+    .expect("process_queue failed");
 
     let max = max_observed.load(Ordering::SeqCst);
     assert!(max <= 3, "max concurrent was {max}, expected at most 3");

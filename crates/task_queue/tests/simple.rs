@@ -1,8 +1,10 @@
 //! Tests for basic task queue functionality with JSON deserialization.
 
-use task_queue::{process_queue, NoMoreTasks, ProcessQueueOptions, QueueItem};
+#![allow(clippy::expect_used)]
+
 use serde::Deserialize;
 use std::process::Command;
+use task_queue::{NoMoreTasks, ProcessQueueOptions, QueueItem, process_queue};
 
 /// Response deserialized from the echo command's JSON output.
 #[derive(Deserialize)]
@@ -34,7 +36,7 @@ impl QueueItem<SimpleContext> for SimpleTask {
         ((), cmd)
     }
 
-    fn cleanup(
+    fn process(
         _in_progress: Self::InProgress,
         result: Result<Self::Response, serde_json::Error>,
         ctx: &mut SimpleContext,
@@ -52,9 +54,15 @@ async fn valid_json_gives_ok_result() {
         json_to_echo: r#"{"value": 42}"#.to_string(),
     }];
 
-    process_queue(queue, &mut ctx, ProcessQueueOptions { max_concurrency: 1 })
-        .await
-        .expect("process_queue failed");
+    process_queue(
+        queue,
+        &mut ctx,
+        ProcessQueueOptions {
+            max_concurrency: Some(1),
+        },
+    )
+    .await
+    .expect("process_queue failed");
 
     let result = ctx.result.expect("result should be set");
     let response = result.expect("should be Ok");
@@ -69,9 +77,15 @@ async fn invalid_json_gives_err_result() {
         json_to_echo: "not json at all".to_string(),
     }];
 
-    process_queue(queue, &mut ctx, ProcessQueueOptions { max_concurrency: 1 })
-        .await
-        .expect("process_queue failed");
+    process_queue(
+        queue,
+        &mut ctx,
+        ProcessQueueOptions {
+            max_concurrency: Some(1),
+        },
+    )
+    .await
+    .expect("process_queue failed");
 
     let result = ctx.result.expect("result should be set");
     assert!(result.is_err());

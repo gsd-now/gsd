@@ -3,9 +3,12 @@
 //! This test manually implements the Task enum dispatch logic to verify
 //! the pattern works correctly before using the derive macro.
 
-use task_queue::{process_queue, IntoTasks, NoMoreTasks, ProcessQueueOptions, QueueItem};
+#![allow(clippy::expect_used)]
+#![allow(clippy::use_self)]
+
 use std::collections::HashSet;
 use std::process::Command;
+use task_queue::{IntoTasks, NoMoreTasks, ProcessQueueOptions, QueueItem, process_queue};
 
 /// Test context tracking task lifecycle events.
 #[derive(Default)]
@@ -14,14 +17,14 @@ struct Context {
     collected: HashSet<String>,
     /// Number of Split tasks started.
     splits_started: usize,
-    /// Number of Split tasks cleaned up.
-    splits_cleaned_up: usize,
-    /// Number of Print tasks created by Split cleanup.
+    /// Number of Split tasks processed.
+    splits_processed: usize,
+    /// Number of Print tasks created by Split process.
     prints_created: usize,
     /// Number of Print tasks started.
     prints_started: usize,
-    /// Number of Print tasks cleaned up.
-    prints_cleaned_up: usize,
+    /// Number of Print tasks processed.
+    prints_processed: usize,
 }
 
 /// The top-level task enum wrapping all task types.
@@ -94,14 +97,14 @@ impl QueueItem<Context> for Task {
         }
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         result: Result<Self::Response, serde_json::Error>,
         ctx: &mut Context,
     ) -> Self::NextTasks {
         match in_progress {
-            TaskInProgress::Split(ip) => Split::cleanup(ip, result, ctx).into_tasks(),
-            TaskInProgress::Print(ip) => Print::cleanup(ip, result, ctx).into_tasks(),
+            TaskInProgress::Split(ip) => Split::process(ip, result, ctx).into_tasks(),
+            TaskInProgress::Print(ip) => Print::process(ip, result, ctx).into_tasks(),
         }
     }
 }
@@ -118,12 +121,12 @@ impl QueueItem<Context> for Split {
         (SplitInProgress { csv: self.csv }, cmd)
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         _result: Result<Self::Response, serde_json::Error>,
         ctx: &mut Context,
     ) -> Self::NextTasks {
-        ctx.splits_cleaned_up += 1;
+        ctx.splits_processed += 1;
         in_progress
             .csv
             .split(',')
@@ -149,12 +152,12 @@ impl QueueItem<Context> for Print {
         (PrintInProgress { value: self.value }, cmd)
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         _result: Result<Self::Response, serde_json::Error>,
         ctx: &mut Context,
     ) -> Self::NextTasks {
-        ctx.prints_cleaned_up += 1;
+        ctx.prints_processed += 1;
         ctx.collected.insert(in_progress.value);
         NoMoreTasks
     }
@@ -173,9 +176,15 @@ async fn split_then_print_collects_all_values() {
         }),
     ];
 
-    process_queue(queue, &mut ctx, ProcessQueueOptions { max_concurrency: 4 })
-        .await
-        .expect("process_queue failed");
+    process_queue(
+        queue,
+        &mut ctx,
+        ProcessQueueOptions {
+            max_concurrency: Some(4),
+        },
+    )
+    .await
+    .expect("process_queue failed");
 
     let expected: HashSet<String> = ["a", "b", "c", "d", "e", "f"]
         .iter()
@@ -184,8 +193,8 @@ async fn split_then_print_collects_all_values() {
 
     assert_eq!(ctx.collected, expected);
     assert_eq!(ctx.splits_started, 2);
-    assert_eq!(ctx.splits_cleaned_up, 2);
+    assert_eq!(ctx.splits_processed, 2);
     assert_eq!(ctx.prints_created, 6);
     assert_eq!(ctx.prints_started, 6);
-    assert_eq!(ctx.prints_cleaned_up, 6);
+    assert_eq!(ctx.prints_processed, 6);
 }

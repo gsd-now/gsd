@@ -1,11 +1,13 @@
-//! Tests for the GsdTask derive macro.
+//! Tests for the `GsdTask` derive macro.
 //!
-//! This is the same test as split_print.rs but uses `#[derive(GsdTask)]`
+//! This is the same test as `split_print.rs` but uses `#[derive(GsdTask)]`
 //! instead of manually implementing the Task enum dispatch.
 
-use task_queue::{process_queue, GsdTask, IntoTasks, NoMoreTasks, ProcessQueueOptions, QueueItem};
+#![allow(clippy::expect_used)]
+
 use std::collections::HashSet;
 use std::process::Command;
+use task_queue::{GsdTask, IntoTasks, NoMoreTasks, ProcessQueueOptions, QueueItem, process_queue};
 
 /// Test context tracking task lifecycle events.
 #[derive(Default)]
@@ -14,14 +16,14 @@ struct Context {
     collected: HashSet<String>,
     /// Number of Split tasks started.
     splits_started: usize,
-    /// Number of Split tasks cleaned up.
-    splits_cleaned_up: usize,
-    /// Number of Print tasks created by Split cleanup.
+    /// Number of Split tasks processed.
+    splits_processed: usize,
+    /// Number of Print tasks created by Split process.
     prints_created: usize,
     /// Number of Print tasks started.
     prints_started: usize,
-    /// Number of Print tasks cleaned up.
-    prints_cleaned_up: usize,
+    /// Number of Print tasks processed.
+    prints_processed: usize,
 }
 
 /// The top-level task enum using the derive macro.
@@ -69,12 +71,12 @@ impl QueueItem<Context> for Split {
         (SplitInProgress { csv: self.csv }, cmd)
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         _result: Result<Self::Response, serde_json::Error>,
         ctx: &mut Context,
     ) -> Self::NextTasks {
-        ctx.splits_cleaned_up += 1;
+        ctx.splits_processed += 1;
         in_progress
             .csv
             .split(',')
@@ -100,12 +102,12 @@ impl QueueItem<Context> for Print {
         (PrintInProgress { value: self.value }, cmd)
     }
 
-    fn cleanup(
+    fn process(
         in_progress: Self::InProgress,
         _result: Result<Self::Response, serde_json::Error>,
         ctx: &mut Context,
     ) -> Self::NextTasks {
-        ctx.prints_cleaned_up += 1;
+        ctx.prints_processed += 1;
         ctx.collected.insert(in_progress.value);
         NoMoreTasks
     }
@@ -124,9 +126,15 @@ async fn split_then_print_with_derive_macro() {
         }),
     ];
 
-    process_queue(queue, &mut ctx, ProcessQueueOptions { max_concurrency: 4 })
-        .await
-        .expect("process_queue failed");
+    process_queue(
+        queue,
+        &mut ctx,
+        ProcessQueueOptions {
+            max_concurrency: Some(4),
+        },
+    )
+    .await
+    .expect("process_queue failed");
 
     let expected: HashSet<String> = ["a", "b", "c", "d", "e", "f"]
         .iter()
@@ -135,8 +143,8 @@ async fn split_then_print_with_derive_macro() {
 
     assert_eq!(ctx.collected, expected);
     assert_eq!(ctx.splits_started, 2);
-    assert_eq!(ctx.splits_cleaned_up, 2);
+    assert_eq!(ctx.splits_processed, 2);
     assert_eq!(ctx.prints_created, 6);
     assert_eq!(ctx.prints_started, 6);
-    assert_eq!(ctx.prints_cleaned_up, 6);
+    assert_eq!(ctx.prints_processed, 6);
 }
