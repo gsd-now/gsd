@@ -600,8 +600,55 @@ impl PoolState {
 
         in_flight.complete(output)?;
 
+        // Update activity timestamp now that agent is idle
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.touch();
+        }
+
         info!(agent_id, "task completed");
         Ok(())
+    }
+
+    /// Check idle agents and dispatch health checks if stale.
+    fn check_periodic_health_checks(&mut self) -> io::Result<()> {
+        if !self.config.periodic_health_check {
+            return Ok(());
+        }
+
+        let interval = self.config.health_check_interval;
+        let stale: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|(_, a)| a.is_idle() && a.last_activity.elapsed() >= interval)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for agent_id in stale {
+            debug!(agent_id, "sending periodic health check");
+            let _ = self.dispatch_health_check(&agent_id);
+        }
+        Ok(())
+    }
+
+    /// Check for health check timeouts and deregister unresponsive agents.
+    fn check_health_check_timeouts(&mut self) {
+        let timeout = self.config.health_check_timeout;
+
+        let timed_out: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|(_, a)| {
+                matches!(a.status, AgentStatus::Busy(InFlight::HealthCheck))
+                    && a.last_activity.elapsed() >= timeout
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for agent_id in timed_out {
+            warn!(agent_id, "health check timeout, deregistering");
+            let _ = fs::remove_dir_all(self.agents_dir.join(&agent_id));
+            self.agents.remove(&agent_id);
+        }
     }
 }
 
@@ -662,6 +709,9 @@ fn event_loop(
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_outputs failed: {e}")))?;
             state.scan_pending()
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_pending failed: {e}")))?;
+            state.check_periodic_health_checks()
+                .map_err(|e| io::Error::new(e.kind(), format!("check_periodic_health_checks failed: {e}")))?;
+            state.check_health_check_timeouts();
             last_scan = Instant::now();
         }
 
