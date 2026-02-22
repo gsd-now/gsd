@@ -127,3 +127,48 @@ cargo +nightly udeps --all-targets
 
 **Note:** `cargo-udeps` only checks individual crates, not workspace-level dependencies. After running it, also manually verify that every entry in `[workspace.dependencies]` in the root `Cargo.toml` is actually used by at least one crate. Remove any unused workspace dependencies.
 
+## Planning large refactors
+
+Big refactors follow a two-phase process:
+
+### Phase 1: Architecture document
+
+Create a markdown file in `pending-refactors/` describing:
+- Motivation and goals
+- Current state (with line numbers and code snippets)
+- Proposed changes at the architectural level
+- Open questions and design decisions
+
+This document captures the *shape* of the refactor without getting into implementation details.
+
+### Phase 2: Practical task list
+
+Convert the architecture document into a concrete checklist:
+- Numbered tasks with checkboxes
+- Specific file locations and line numbers
+- Before/after code snippets
+- Dependencies between tasks
+
+### Extract independent work
+
+**Critical**: Throughout planning, actively identify changes that are independent of the main refactor. These should be:
+
+1. **Extracted** into their own small changes
+2. **Implemented immediately** while planning continues
+3. **Marked as done** in the plan
+
+Examples of independent work:
+- Format changes that don't affect behavior
+- Removing dead code
+- Adding new enum variants (before using them)
+- Refactoring internal structure (typestate patterns, etc.)
+
+The goal: by the time you start the "real" refactor, as much preliminary work as possible is already done. The remaining changes are the irreducible core that must happen together.
+
+### Why this matters
+
+- Smaller PRs are easier to review
+- Independent changes can be tested in isolation
+- If the main refactor is abandoned, the preliminary work still has value
+- Reduces risk by making each change smaller
+

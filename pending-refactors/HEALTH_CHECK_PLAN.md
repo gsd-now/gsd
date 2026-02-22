@@ -12,11 +12,176 @@ When an agent first connects, we send a health check that forces it through the 
 
 Periodically send health checks to **idle** agents to verify they're still alive. If an agent fails to respond within the timeout, we deregister it. Agents can recover by calling `get_task` again.
 
+---
+
+## State Machine
+
+### Agent States
+
+```
+                    ┌─────────────────────────────────────┐
+                    │                                     │
+                    ▼                                     │
+    ┌───────────────────────────────┐                    │
+    │             Idle              │                    │
+    │  (available for work)         │                    │
+    └───────────────────────────────┘                    │
+           │                │                            │
+           │ dispatch_to()  │ dispatch_health_check()    │
+           │                │                            │
+           ▼                ▼                            │
+    ┌──────────────┐  ┌──────────────┐                   │
+    │ Busy(Task)   │  │ Busy(Health) │                   │
+    │              │  │              │                   │
+    └──────────────┘  └──────────────┘                   │
+           │                │         │                  │
+           │ complete()     │         │ timeout          │
+           │                │         │                  │
+           ▼                ▼         ▼                  │
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
+    │ send_response│  │ log success  │  │ deregister   │ │
+    │ to submitter │  │              │  │ agent        │ │
+    └──────────────┘  └──────────────┘  └──────────────┘ │
+           │                │                            │
+           └────────────────┴────────────────────────────┘
+```
+
+### Typestate Guarantee
+
+The `InFlight` enum ensures exhaustive handling. Adding `HealthCheck` variant forces us to handle it in exactly one place:
+
+```rust
+impl InFlight {
+    /// Consumes the in-flight work and performs completion action.
+    /// Exhaustive match guarantees all variants are handled.
+    fn complete(self, output: String) -> io::Result<()> {
+        match self {
+            InFlight::Task { respond_to } => {
+                // MUST send response to submitter
+                send_response(respond_to, &Response::processed(output))
+            }
+            InFlight::HealthCheck => {
+                // Health check: just log, no response needed
+                Ok(())
+            }
+        }
+    }
+}
+```
+
+**Compiler enforces**: Every `InFlight` variant must be handled in `complete()`. You cannot add a variant without handling its completion.
+
+### State Transition Points
+
+| Transition | Method | InFlight Variant | Completion Action |
+|------------|--------|------------------|-------------------|
+| Idle → Busy(Task) | `dispatch_to()` | `Task { respond_to }` | Send response to submitter |
+| Idle → Busy(HealthCheck) | `dispatch_health_check()` | `HealthCheck` | Log success |
+| Busy → Idle | `complete_task()` | Calls `in_flight.complete()` | Determined by variant |
+| Busy(HealthCheck) → removed | timeout check | N/A | Deregister agent |
+
+---
+
+## Event Loop Mechanics
+
+The daemon runs a polling event loop, not timers. Every ~100ms it:
+
+```
+loop {
+    1. Check for socket submissions (non-blocking)
+    2. Wait for FSEvents (100ms timeout)
+    3. Handle any filesystem events (agent registration, response files)
+
+    Every 500ms:
+    4. scan_agents()           - detect new/removed agent directories
+    5. scan_outputs()          - detect response.json files (completion)
+    6. scan_pending()          - detect file-based submissions
+    7. check_periodic_health_checks()  - NEW: dispatch to stale idle agents
+    8. check_health_check_timeouts()   - NEW: remove timed-out agents
+
+    9. dispatch_pending()      - assign queued tasks to idle agents
+}
+```
+
+### How Completion Works
+
+1. Agent writes `response.json` to its directory
+2. FSEvents (or periodic scan) detects the file
+3. `complete_task(agent_id, response_path)` is called:
+   ```rust
+   // Extract InFlight, set status to Idle
+   let in_flight = std::mem::replace(&mut agent.status, AgentStatus::Idle);
+
+   // Read response content
+   let output = fs::read_to_string(response_path)?;
+
+   // Clean up files
+   fs::remove_file(task_path);
+   fs::remove_file(response_path);
+
+   // Typestate: InFlight determines what happens
+   in_flight.complete(output)?;  // Task→send response, HealthCheck→log
+
+   // Update activity timestamp
+   agent.touch();
+   ```
+
+### How Timeout Works
+
+No timers. Every 500ms, the event loop calls `check_health_check_timeouts()`:
+
+```rust
+fn check_health_check_timeouts(&mut self) {
+    for (agent_id, agent) in &self.agents {
+        // Only check agents doing health checks
+        if !matches!(agent.status, AgentStatus::Busy(InFlight::HealthCheck)) {
+            continue;
+        }
+
+        // Check if they've exceeded the timeout
+        if agent.last_activity.elapsed() >= self.config.health_check_timeout {
+            // Remove them entirely (not a state transition, just deletion)
+            self.agents.remove(agent_id);
+            fs::remove_dir_all(agent_dir);
+        }
+    }
+}
+```
+
+**Key insight**: `last_activity` is set when we dispatch the health check. If 30 seconds pass without a response, `elapsed() >= 30s` becomes true on the next poll, and we remove the agent.
+
+This is polling-based, not callback-based. The daemon doesn't "know" exactly when 30 seconds pass; it just checks on each loop iteration.
+
+### With Tokio (Future State)
+
+After the daemon refactor to tokio (see `DAEMON_REFACTOR.md`), timeouts would be event-driven:
+
+```rust
+// When dispatching health check, spawn a timeout future
+let timeout_handle = tokio::spawn(async move {
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    timeout_tx.send(agent_id).await;
+});
+
+// In select!
+tokio::select! {
+    Some(agent_id) = timeout_rx.recv() => {
+        // Check if still waiting (might have completed before timeout)
+        if matches!(agent.status, AgentStatus::Busy(InFlight::HealthCheck)) {
+            deregister_agent(agent_id);
+        }
+    }
+}
+```
+
+**Difference**: Fires exactly at 30s, not "sometime within 500ms after 30s". More efficient (no polling), more precise.
+
+---
+
 ## Current State
 
 **AgentStatus enum** (already implemented):
 ```rust
-// daemon.rs lines 256-268
 enum AgentStatus {
     Idle,
     Busy(InFlight),
@@ -25,25 +190,25 @@ enum AgentStatus {
 enum InFlight {
     Task { respond_to: ResponseTarget },
 }
-```
 
-**DaemonConfig** (currently empty):
-```rust
-// daemon.rs lines 45-49
-pub struct DaemonConfig {
-    // Reserved for future configuration options (e.g., keepalive settings)
+impl InFlight {
+    fn complete(self, output: String) -> io::Result<()> {
+        match self {
+            InFlight::Task { respond_to } => {
+                let response = Response::processed(output);
+                send_response(respond_to, &response)
+            }
+        }
+    }
 }
 ```
 
-**get_task output** (always "Task"):
-```rust
-// main.rs lines 318-322
-let output = serde_json::json!({
-    "kind": "Task",
-    "response_file": response_file.display().to_string(),
-    "content": content_json
-});
+**Task file envelope** (already implemented):
+```json
+{"kind": "Task", "content": {...original task...}}
 ```
+
+The daemon writes this envelope; `get_task` passes through the `kind` field.
 
 ---
 
@@ -51,235 +216,133 @@ let output = serde_json::json!({
 
 | Status | Task | Description |
 |--------|------|-------------|
-| [ ] | 1 | Add `InFlight::HealthCheck` variant |
+| [ ] | 1 | Add `InFlight::HealthCheck` variant (compiler will force `complete()` update) |
 | [ ] | 2 | Add health check config to `DaemonConfig` |
 | [ ] | 3 | Add CLI flags for health check config |
-| [ ] | 4 | Update `get_task` to handle `HealthCheck` kind |
-| [ ] | 5 | Add `dispatch_health_check()` method |
+| [x] | 4 | Task envelope format with `kind` field |
+| [ ] | 5 | Add `dispatch_health_check()` (Idle → Busy(HealthCheck) transition) |
 | [ ] | 6 | Update `register()` to send initial health check |
 | [ ] | 7 | Add `last_activity` tracking to `AgentState` |
-| [ ] | 8 | Add periodic health check to event loop |
-| [ ] | 9 | Handle health check timeout |
-| [ ] | 10 | Update `complete_task()` to handle `HealthCheck` |
-| [ ] | 11 | Update shell scripts |
-| [ ] | 12 | Update demos |
-| [ ] | 13 | Add tests |
+| [ ] | 8 | Add periodic health check dispatch (idle agents only) |
+| [ ] | 9 | Add health check timeout handling (Busy(HealthCheck) → deregistered) |
+| [ ] | 10 | Update shell scripts to handle HealthCheck kind |
+| [ ] | 11 | Update demos |
+| [ ] | 12 | Add tests |
 
 ---
 
 ### Task 1: Add `InFlight::HealthCheck` variant
 
-**File:** `crates/agent_pool/src/daemon.rs` lines 264-268
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Before:**
+**Change:**
 ```rust
 enum InFlight {
-    /// A real task from a submitter.
     Task { respond_to: ResponseTarget },
+    HealthCheck,  // NEW
+}
+
+impl InFlight {
+    fn complete(self, output: String) -> io::Result<()> {
+        match self {
+            InFlight::Task { respond_to } => {
+                let response = Response::processed(output);
+                send_response(respond_to, &response)
+            }
+            InFlight::HealthCheck => {  // NEW - compiler forces this
+                debug!(output, "health check completed");
+                Ok(())
+            }
+        }
+    }
 }
 ```
 
-**After:**
-```rust
-enum InFlight {
-    /// A real task from a submitter.
-    Task { respond_to: ResponseTarget },
-    /// A health check (initial or periodic).
-    HealthCheck,
-}
-```
+**Typestate guarantee**: The compiler will not allow this code to compile until we add the `HealthCheck` arm to `complete()`. This ensures we cannot forget to handle health check completion.
 
 ---
 
 ### Task 2: Add health check config to `DaemonConfig`
 
-**File:** `crates/agent_pool/src/daemon.rs` lines 45-49
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Before:**
 ```rust
 pub struct DaemonConfig {
-    // Reserved for future configuration options (e.g., keepalive settings)
+    pub initial_health_check: bool,      // Send health check on registration
+    pub periodic_health_check: bool,     // Send periodic health checks to idle agents
+    pub health_check_interval: Duration, // How often to check idle agents (default: 60s)
+    pub health_check_timeout: Duration,  // How long to wait for response (default: 30s)
 }
 ```
 
-**After:**
-```rust
-pub struct DaemonConfig {
-    /// Send a health check when agent first registers.
-    /// Default: true
-    pub initial_health_check: bool,
-    /// Send periodic health checks to idle agents.
-    /// Default: true
-    pub periodic_health_check: bool,
-    /// Interval between periodic health checks.
-    /// Default: 60 seconds
-    pub health_check_interval: Duration,
-    /// Timeout for health check response.
-    /// Default: 30 seconds
-    pub health_check_timeout: Duration,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            initial_health_check: true,
-            periodic_health_check: true,
-            health_check_interval: Duration::from_secs(60),
-            health_check_timeout: Duration::from_secs(30),
-        }
-    }
-}
-```
-
-**Also:** Remove the `#[derive(Default)]` from the struct since we're implementing it manually.
-
-**Also:** Remove the `#[expect(dead_code)]` from `PoolState.config` (line 291-292).
+This config controls which state transitions are triggered automatically.
 
 ---
 
 ### Task 3: Add CLI flags for health check config
 
-**File:** `crates/agent_pool/src/main.rs` lines 50-61 (Command::Start)
+**File:** `crates/agent_pool/src/main.rs`
 
-**Before:**
-```rust
-Command::Start {
-    #[arg(long)]
-    pool: Option<String>,
-    #[arg(short, long, default_value = "info")]
-    log_level: LogLevel,
-    #[arg(long)]
-    json: bool,
-},
-```
+Add flags: `--initial-health-check`, `--periodic-health-check`, `--health-check-interval-secs`, `--health-check-timeout-secs`
 
-**After:**
-```rust
-Command::Start {
-    #[arg(long)]
-    pool: Option<String>,
-    #[arg(short, long, default_value = "info")]
-    log_level: LogLevel,
-    #[arg(long)]
-    json: bool,
-    #[arg(long, default_value = "true")]
-    initial_health_check: bool,
-    #[arg(long, default_value = "true")]
-    periodic_health_check: bool,
-    #[arg(long, default_value = "60")]
-    health_check_interval_secs: u64,
-    #[arg(long, default_value = "30")]
-    health_check_timeout_secs: u64,
-},
-```
-
-**Also:** Update the match arm (around line 146) to construct `DaemonConfig`:
-```rust
-let config = DaemonConfig {
-    initial_health_check,
-    periodic_health_check,
-    health_check_interval: Duration::from_secs(health_check_interval_secs),
-    health_check_timeout: Duration::from_secs(health_check_timeout_secs),
-};
-```
-
-**Also:** Change `run(&root)` to `run_with_config(&root, config)`.
+Wire these to `DaemonConfig` and pass to `run_with_config()` / `spawn_with_config()`.
 
 ---
 
-### Task 4: Update `get_task` to handle `HealthCheck` kind
+### Task 4: Task envelope format ✓
 
-**File:** `crates/agent_pool/src/main.rs` lines 318-322
+**Status: DONE**
 
-The daemon will write a JSON object with `"kind": "HealthCheck"` or `"kind": "Task"` to task.json. The `get_task` command reads this and outputs it directly.
-
-**Before:**
-```rust
-let output = serde_json::json!({
-    "kind": "Task",
-    "response_file": response_file.display().to_string(),
-    "content": content_json
-});
-```
-
-**After:**
-```rust
-// The daemon writes the kind to task.json, so just pass it through
-let kind = content_json.get("kind")
-    .and_then(|k| k.as_str())
-    .unwrap_or("Task");
-
-let output = serde_json::json!({
-    "kind": kind,
-    "response_file": response_file.display().to_string(),
-    "content": content_json.get("content").cloned().unwrap_or(content_json.clone())
-});
-```
-
-**Note:** This means the daemon must write task.json in a new format:
-```json
-{"kind": "Task", "content": {...original task...}}
-{"kind": "HealthCheck", "content": {"instructions": "..."}}
-```
+The daemon writes `{"kind": "Task", "content": ...}` to task.json. The `get_task` CLI passes through the `kind` field. No changes needed for health checks - just write `{"kind": "HealthCheck", ...}`.
 
 ---
 
-### Task 5: Add `dispatch_health_check()` method
+### Task 5: `dispatch_health_check()` — Idle → Busy(HealthCheck) transition
 
-**File:** `crates/agent_pool/src/daemon.rs` (add after `dispatch_to()`, around line 495)
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Add:**
 ```rust
+/// Transition: Idle → Busy(HealthCheck)
+/// Writes health check task file, updates agent status.
 fn dispatch_health_check(&mut self, agent_id: &str) -> io::Result<()> {
-    let Some(agent) = self.agents.get_mut(agent_id) else {
-        return Err(io::Error::other("agent not found"));
-    };
+    let agent = self.agents.get_mut(agent_id)
+        .ok_or_else(|| io::Error::other("agent not found"))?;
 
-    let task_content = serde_json::json!({
+    // Write task file with HealthCheck kind
+    let envelope = serde_json::json!({
         "kind": "HealthCheck",
-        "content": {
-            "instructions": "Respond with any value to confirm you are alive."
-        }
+        "content": { "instructions": "Respond with any value to confirm you are alive." }
     });
-
     let task_path = self.agents_dir.join(agent_id).join(TASK_FILE);
-    debug!(agent_id, path = %task_path.display(), "writing health check");
-    fs::write(&task_path, task_content.to_string())?;
+    fs::write(&task_path, envelope.to_string())?;
 
-    info!(agent_id, "health check dispatched");
+    // State transition: Idle → Busy(HealthCheck)
     agent.status = AgentStatus::Busy(InFlight::HealthCheck);
+    agent.touch(); // Reset activity timer
     Ok(())
 }
 ```
 
+**Precondition**: Agent must be Idle (caller's responsibility to check).
+
 ---
 
-### Task 6: Update `register()` to send initial health check
+### Task 6: Initial health check on registration
 
-**File:** `crates/agent_pool/src/daemon.rs` lines 422-427
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Before:**
+When agent registers, optionally trigger Idle → Busy(HealthCheck):
+
 ```rust
 fn register(&mut self, agent_id: &str) {
-    if !self.agents.contains_key(agent_id) {
-        info!(agent_id, "agent registered");
-        self.agents.insert(agent_id.to_string(), AgentState::new());
+    if self.agents.contains_key(agent_id) {
+        return;
     }
-}
-```
 
-**After:**
-```rust
-fn register(&mut self, agent_id: &str) {
-    if !self.agents.contains_key(agent_id) {
-        info!(agent_id, "agent registered");
-        self.agents.insert(agent_id.to_string(), AgentState::new());
+    self.agents.insert(agent_id.to_string(), AgentState::new());
 
-        if self.config.initial_health_check {
-            if let Err(e) = self.dispatch_health_check(agent_id) {
-                warn!(agent_id, error = %e, "failed to dispatch initial health check");
-            }
-        }
+    if self.config.initial_health_check {
+        let _ = self.dispatch_health_check(agent_id); // Idle → Busy(HealthCheck)
     }
 }
 ```
@@ -288,42 +351,17 @@ fn register(&mut self, agent_id: &str) {
 
 ### Task 7: Add `last_activity` tracking to `AgentState`
 
-**File:** `crates/agent_pool/src/daemon.rs` lines 270-283
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Before:**
 ```rust
 struct AgentState {
     status: AgentStatus,
-}
-
-impl AgentState {
-    const fn new() -> Self {
-        Self { status: AgentStatus::Idle }
-    }
-
-    const fn is_idle(&self) -> bool {
-        matches!(self.status, AgentStatus::Idle)
-    }
-}
-```
-
-**After:**
-```rust
-struct AgentState {
-    status: AgentStatus,
-    last_activity: Instant,
+    last_activity: Instant,  // NEW: for periodic check + timeout
 }
 
 impl AgentState {
     fn new() -> Self {
-        Self {
-            status: AgentStatus::Idle,
-            last_activity: Instant::now(),
-        }
-    }
-
-    const fn is_idle(&self) -> bool {
-        matches!(self.status, AgentStatus::Idle)
+        Self { status: AgentStatus::Idle, last_activity: Instant::now() }
     }
 
     fn touch(&mut self) {
@@ -332,59 +370,53 @@ impl AgentState {
 }
 ```
 
-**Note:** Remove `const` from `new()` since `Instant::now()` is not const.
+**Touch points**:
+- `AgentState::new()` - set to now
+- `dispatch_health_check()` - touch when dispatching
+- `complete_task()` - touch when completing (Busy → Idle)
 
 ---
 
-### Task 8: Add periodic health check to event loop
+### Task 8: Periodic health check dispatch
 
-**File:** `crates/agent_pool/src/daemon.rs` in `event_loop()` (around line 580)
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Add method to PoolState:**
 ```rust
+/// Check idle agents and dispatch health checks if stale.
+/// Transition: Idle → Busy(HealthCheck) for stale agents
 fn check_periodic_health_checks(&mut self) -> io::Result<()> {
     if !self.config.periodic_health_check {
         return Ok(());
     }
 
     let interval = self.config.health_check_interval;
-    let needs_check: Vec<_> = self
-        .agents
-        .iter()
+    let stale: Vec<_> = self.agents.iter()
         .filter(|(_, a)| a.is_idle() && a.last_activity.elapsed() >= interval)
         .map(|(id, _)| id.clone())
         .collect();
 
-    for agent_id in needs_check {
-        if let Err(e) = self.dispatch_health_check(&agent_id) {
-            warn!(agent_id, error = %e, "failed to dispatch periodic health check");
-        }
+    for agent_id in stale {
+        let _ = self.dispatch_health_check(&agent_id);
     }
-
     Ok(())
 }
 ```
 
-**Update event loop** (add after `scan_pending()` call, around line 577):
-```rust
-state.check_periodic_health_checks()
-    .map_err(|e| io::Error::new(e.kind(), format!("health check failed: {e}")))?;
-```
+**Called from**: Event loop, after `scan_pending()`.
 
 ---
 
-### Task 9: Handle health check timeout
+### Task 9: Health check timeout — Busy(HealthCheck) → deregistered
 
-**File:** `crates/agent_pool/src/daemon.rs` (add method to PoolState)
+**File:** `crates/agent_pool/src/daemon.rs`
 
-**Add:**
 ```rust
-fn check_health_check_timeouts(&mut self) -> io::Result<()> {
+/// Check for health check timeouts.
+/// Transition: Busy(HealthCheck) → removed (if timed out)
+fn check_health_check_timeouts(&mut self) {
     let timeout = self.config.health_check_timeout;
 
-    let timed_out: Vec<_> = self
-        .agents
-        .iter()
+    let timed_out: Vec<_> = self.agents.iter()
         .filter(|(_, a)| {
             matches!(a.status, AgentStatus::Busy(InFlight::HealthCheck))
                 && a.last_activity.elapsed() >= timeout
@@ -393,82 +425,27 @@ fn check_health_check_timeouts(&mut self) -> io::Result<()> {
         .collect();
 
     for agent_id in timed_out {
-        warn!(agent_id, "health check timeout, deregistering agent");
-
-        // Remove agent directory
-        let agent_dir = self.agents_dir.join(&agent_id);
-        let _ = fs::remove_dir_all(&agent_dir);
-
-        // Remove from state
+        warn!(agent_id, "health check timeout, deregistering");
+        let _ = fs::remove_dir_all(self.agents_dir.join(&agent_id));
         self.agents.remove(&agent_id);
     }
-
-    Ok(())
 }
 ```
 
-**Update event loop** (add after `check_periodic_health_checks()`):
-```rust
-state.check_health_check_timeouts()
-    .map_err(|e| io::Error::new(e.kind(), format!("health check timeout failed: {e}")))?;
-```
+**Note**: This is NOT a normal state transition. Timeout removes the agent entirely. Agent can recover by calling `get_task` again (re-registers).
+
+**Called from**: Event loop, after `check_periodic_health_checks()`.
 
 ---
 
-### Task 10: Update `complete_task()` to handle `HealthCheck`
+### Task 10: Update shell scripts
 
-**File:** `crates/agent_pool/src/daemon.rs` `complete_task()` (around line 505)
+**Files:** `crates/agent_pool/scripts/*.sh`
 
-**Before:**
-```rust
-let InFlight::Task { respond_to } = in_flight;
-let response = Response::processed(output);
-send_response(respond_to, &response)?;
-```
-
-**After:**
-```rust
-match in_flight {
-    InFlight::Task { respond_to } => {
-        let response = Response::processed(output);
-        send_response(respond_to, &response)?;
-    }
-    InFlight::HealthCheck => {
-        // Health check completed successfully, nothing to send back
-        debug!(agent_id, "health check response received");
-    }
-}
-```
-
-**Also:** Update `last_activity` when task completes. Add before the match:
-```rust
-agent.touch();
-```
-
-Wait, `agent` is borrowed. Need to restructure. Actually, we already set status to Idle via `std::mem::replace`. Let me check the current code structure.
-
-**Actually:** The `agent` is mutably borrowed, so we can call `agent.touch()` after we set status to Idle. Add at the end of `complete_task()` before `Ok(())`:
-```rust
-if let Some(agent) = self.agents.get_mut(agent_id) {
-    agent.touch();
-}
-```
-
----
-
-### Task 11: Update shell scripts
-
-**Files:**
-- `crates/agent_pool/scripts/command-agent.sh`
-- `crates/agent_pool/scripts/echo-agent.sh`
-- `crates/agent_pool/scripts/greeting-agent.sh`
-
-**Add at the start of the task processing loop:**
+Add at start of task loop:
 ```bash
-# Handle health checks
 KIND=$(echo "$TASK_JSON" | jq -r '.kind // "Task"')
 if [ "$KIND" = "HealthCheck" ]; then
-    echo "[$NAME] Responding to health check" >&2
     echo "{}" > "$RESPONSE_FILE"
     continue
 fi
@@ -476,11 +453,11 @@ fi
 
 ---
 
-### Task 12: Update demos
+### Task 11: Update demos
 
 **Files:** `crates/agent_pool/demos/*.sh`
 
-For simple demos, disable health checks:
+Disable health checks for simplicity:
 ```bash
 agent_pool start --pool "$POOL" \
     --initial-health-check=false \
@@ -489,31 +466,41 @@ agent_pool start --pool "$POOL" \
 
 ---
 
-### Task 13: Add tests
+### Task 12: Add tests
 
 **File:** `crates/agent_pool/tests/health_check.rs`
 
-Test cases:
-- Initial health check sent on registration (when enabled)
-- Agent status is `Busy(HealthCheck)` until response
-- Periodic health check sent after interval (to idle agents only)
-- Agent removed on health check timeout
-- Agent can re-register after timeout
-- Health checks disabled via config
+Test the state machine:
+1. Registration triggers Idle → Busy(HealthCheck) when enabled
+2. Health check response triggers Busy(HealthCheck) → Idle
+3. Periodic check only affects Idle agents (not Busy(Task))
+4. Timeout removes agent entirely
+5. Removed agent can re-register
+6. Disabled config skips health checks
 
 ---
 
 ## Summary
 
-| Location | Change |
-|----------|--------|
-| `daemon.rs` InFlight enum | Add `HealthCheck` variant |
-| `daemon.rs` DaemonConfig | Add 4 health check fields |
-| `daemon.rs` AgentState | Add `last_activity: Instant` and `touch()` |
-| `daemon.rs` register() | Dispatch initial health check |
-| `daemon.rs` event_loop() | Call periodic health check and timeout check |
-| `daemon.rs` complete_task() | Handle HealthCheck variant |
-| `main.rs` Command::Start | Add 4 CLI flags |
-| `main.rs` get_task | Pass through kind from task.json |
-| Shell scripts | Handle HealthCheck kind |
-| Demos | Disable health checks or handle them |
+### State Transitions Added
+
+| Transition | Trigger | Completion |
+|------------|---------|------------|
+| Idle → Busy(HealthCheck) | `dispatch_health_check()` | - |
+| Busy(HealthCheck) → Idle | `complete_task()` | `InFlight::complete()` logs |
+| Busy(HealthCheck) → removed | timeout | Deregister agent |
+
+### Typestate Guarantees
+
+1. **Exhaustive match in `complete()`**: Adding `InFlight::HealthCheck` won't compile until handled
+2. **Single completion point**: All Busy → Idle transitions go through `complete_task()` → `InFlight::complete()`
+3. **Variant determines action**: `Task` sends response, `HealthCheck` just logs
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `daemon.rs` | `InFlight::HealthCheck`, `DaemonConfig`, `AgentState.last_activity`, dispatch/timeout methods |
+| `main.rs` | CLI flags for health check config |
+| `scripts/*.sh` | Handle HealthCheck kind |
+| `demos/*.sh` | Disable health checks |

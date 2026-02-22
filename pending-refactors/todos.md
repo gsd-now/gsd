@@ -360,6 +360,31 @@ Replacing file-based heartbeats with task-based keepalives (ping-pong). Benefits
 - No special agent code needed beyond following task instructions
 - Agents can recover from timeout by simply calling `get_task` again
 
+## Typestate Pattern for State Transitions
+
+We introduced a pattern in `InFlight::complete(self, output)` where the state transition method lives on the inner type and consumes `self`. This couples the state transition with the action it enables (sending the response), making it harder to forget one or the other.
+
+Look for other places where state and actions are decoupled and could benefit from this pattern:
+
+- `AgentState` transitions (idle → busy, busy → idle)
+- `Task` lifecycle (pending → dispatched → completed)
+- `DaemonHandle` state (running → paused → shutdown)
+
+The pattern: instead of separately mutating state and performing I/O, have a method on the state type that consumes it and returns the next state while performing the associated action.
+
+```rust
+// Before: decoupled state and action
+agent.status = AgentStatus::Idle;
+send_response(respond_to, &response)?;
+
+// After: coupled via typestate
+let idle = busy_agent.complete(output)?;  // consumes BusyAgent, returns IdleAgent, sends response
+```
+
+This is a low-priority refactor - apply opportunistically when touching related code.
+
+---
+
 ## Full Socket-Based Protocol
 
 Remove filesystem-based IPC entirely:

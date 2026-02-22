@@ -39,7 +39,7 @@ loop {
         state.scan_agents()?;
         state.scan_outputs()?;
         state.scan_pending()?;
-        state.check_heartbeat_timeouts()?;
+        state.check_health_check_timeouts()?;
     }
 
     state.dispatch_pending()?;
@@ -76,7 +76,7 @@ The **client** is GSD's `TaskRunner`. When GSD runs a workflow:
 | FS: `agents/<name>/response.json` | Agent completes work | Complete task, respond to client |
 | FS: `agents/<name>/` created | Agent registers | Add to available pool |
 | FS: `agents/<name>/` removed | Agent deregisters | Remove from pool |
-| Timer tick | Periodic interval | Check heartbeat timeouts |
+| Timer tick | Periodic interval | Check health check timeouts |
 
 ### Architecture Diagram
 
@@ -98,7 +98,7 @@ The **client** is GSD's `TaskRunner`. When GSD runs a workflow:
                    │   tokio     │
                    │  select!    │<──── agents/<name>/response.json
                    │             │<──── agents/<name>/ (created/removed)
-                   │             │<──── heartbeat timer
+                   │             │<──── health check timer
                    └──────┬──────┘
                           │
                           v
@@ -121,12 +121,12 @@ use notify::Event;
 async fn event_loop(
     listener: UnixListener,
     mut fs_rx: mpsc::Receiver<Event>,
-    heartbeat_interval: Option<Duration>,
+    health_check_interval: Option<Duration>,
     state: &mut PoolState,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    // Only create heartbeat timer if configured
-    let mut heartbeat = heartbeat_interval.map(tokio::time::interval);
+    // Only create health check timer if configured
+    let mut health_check = health_check_interval.map(tokio::time::interval);
 
     loop {
         // Dispatch any pending tasks before waiting
@@ -153,12 +153,12 @@ async fn event_loop(
 
             // Heartbeat timeout checking (only if configured)
             _ = async {
-                match &mut heartbeat {
+                match &mut health_check {
                     Some(interval) => interval.tick().await,
                     None => std::future::pending().await,
                 }
             } => {
-                state.check_heartbeat_timeouts()?;
+                state.check_health_check_timeouts()?;
             }
         }
     }
@@ -309,7 +309,7 @@ With proper FS event handling, we remove all scans:
 | `scan_outputs()` | FS event: `agents/<name>/response.json` created |
 | `scan_pending()` | FS event: `pending/<uuid>/task.json` created |
 
-The only periodic operation is heartbeat checking, handled by the timer in `select!`.
+The only periodic operation is health check checking, handled by the timer in `select!`.
 
 ### Shutdown Handling
 
