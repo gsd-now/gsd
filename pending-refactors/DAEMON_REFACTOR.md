@@ -1,5 +1,15 @@
 # Daemon Event Loop Refactor
 
+## Dependencies
+
+**Must complete before**: TRANSPORT_ABSTRACTION.md
+- The transport traits are designed as `async fn`
+- Requires tokio runtime to be established first
+
+**Must complete after**: HEALTH_CHECK_PLAN.md
+- Health checks work with current sync polling
+- Converting to async is separate concern
+
 ## Scope: agent_pool Only
 
 This refactor applies specifically to the **agent_pool daemon**, not GSD.

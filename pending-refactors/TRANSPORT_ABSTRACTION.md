@@ -1,5 +1,11 @@
 # Transport Abstraction Plan
 
+## Dependencies
+
+**Must complete after**: DAEMON_REFACTOR.md
+- The traits defined here use `async fn`
+- Requires tokio runtime to be established first
+
 ## Problem
 
 The socket vs file distinction creates duplicate internal code paths:
