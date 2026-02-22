@@ -122,6 +122,9 @@ enum Command {
         /// Agent name
         #[arg(long)]
         name: String,
+        /// Automatically respond to health checks (agent never sees them)
+        #[arg(long, default_value = "true")]
+        auto_health_check: bool,
     },
 }
 
@@ -305,7 +308,11 @@ fn main() -> ExitCode {
 
             eprintln!("Deregistered agent '{name}'");
         }
-        Command::GetTask { pool, name } => {
+        Command::GetTask {
+            pool,
+            name,
+            auto_health_check,
+        } => {
             let root = resolve_pool(&pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
@@ -347,6 +354,18 @@ fn main() -> ExitCode {
                         .get("content")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
+
+                    // Handle health checks automatically if enabled
+                    if auto_health_check && kind == "HealthCheck" {
+                        // Respond to health check and continue polling
+                        if let Err(e) = fs::write(&response_file, "{}") {
+                            eprintln!("Failed to respond to health check: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                        // Wait for daemon to clean up files before polling again
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
 
                     // Output task info with stable response file path
                     let output = serde_json::json!({
