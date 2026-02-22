@@ -50,12 +50,43 @@ We have fan-out (tasks spawn more tasks) but no built-in reduce. Example test ca
 // 1. LookupFirstName { user_id }
 // 2. LookupLastName { user_id }
 //
-// In cleanup, store partial results in context.
+// In process, store partial results in context.
 // When we have both first + last name for a user,
 // emit ProcessFullName { first, last } task.
 ```
 
 Need unit tests exercising context-based coordination between tasks.
+
+### JSON Config Approaches (Not Yet Decided)
+
+**Option 1: Barrier/Join Step**
+```json
+{
+  "name": "FullNameReady",
+  "join": ["FetchFirstName", "FetchLastName"],
+  "instructions": "Both names fetched. Results in $JOIN_RESULTS."
+}
+```
+
+**Option 2: Accumulator in Value**
+Tasks pass accumulator through `value` - state travels with tasks, no daemon tracking:
+```json
+// FetchFirstName returns:
+[{"kind": "FetchLastName", "value": {"first": "John", "pending": ["last"]}}]
+// FetchLastName sees pending empty, emits ProcessFullName
+```
+
+**Option 3: Entity-Scoped Context**
+```json
+{
+  "name": "FetchFirstName",
+  "context_key": "user:{{user_id}}",
+  "on_context_complete": ["first", "last"],
+  "then": "ProcessFullName"
+}
+```
+
+Option 2 is most "JSON-native" but requires agents to understand the accumulator pattern. Need more real-world use cases before committing.
 
 ## Durability
 
@@ -74,6 +105,39 @@ Need timeout support for tasks. Considerations:
 - Configurable per-task timeouts
 - Distinguish between task timeout vs agent death
 
+## Granular Retry Options
+
+Currently `max_retries` is a single number. Need more granular control:
+
+**Global (fallback) options:**
+```json
+{
+  "options": {
+    "max_retries": 3,
+    "retry_on_timeout": true,
+    "retry_on_invalid_result": true
+  }
+}
+```
+
+**Per-step overrides:**
+```json
+{
+  "name": "ExpensiveStep",
+  "options": {
+    "max_retries": 1,
+    "retry_on_invalid_result": false
+  }
+}
+```
+
+Retry triggers to distinguish:
+- **Timeout**: Agent didn't respond in time
+- **Invalid result**: Agent returned wrong transition or malformed response
+- **Failure**: Agent process crashed or returned error
+
+Each should be independently configurable with per-step overrides.
+
 ## No-IPC Mode
 
 For sandboxed environments where Unix sockets are blocked, implement file-based task submission:
@@ -85,7 +149,7 @@ For sandboxed environments where Unix sockets are blocked, implement file-based 
 
 ## GSD JSON Runner
 
-**Status: Implemented** in `crates/gsd/`.
+**Status: Implemented** in `crates/gsd_json/` (library) and `crates/gsd_cli/` (binary).
 
 The `gsd` binary accepts JSON configuration:
 
@@ -95,7 +159,7 @@ gsd docs config.json
 gsd validate config.json
 ```
 
-See `crates/gsd/DESIGN.md` for full documentation.
+See `crates/gsd_json/DESIGN.md` for full documentation.
 
 ## Binary vs Library Mode
 
