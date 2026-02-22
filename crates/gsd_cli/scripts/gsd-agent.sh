@@ -71,11 +71,21 @@ while true; do
         if mv "$AGENT_DIR/next_task" "$AGENT_DIR/in_progress" 2>/dev/null; then
             payload=$(cat "$AGENT_DIR/in_progress")
 
-            # Extract kind from JSON payload using basic parsing
-            # Payload format: {"task": {"kind": "...", "value": ...}, ...}
-            kind=$(echo "$payload" | grep -o '"kind"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            # Extract fields from JSON payload using jq if available
+            # Payload format: {"task": {"kind": "...", "value": ...}, "instructions": "..."}
+            if command -v jq &> /dev/null; then
+                kind=$(echo "$payload" | jq -r '.task.kind')
+                instructions=$(echo "$payload" | jq -r '.instructions')
+            else
+                # Fallback: basic parsing
+                kind=$(echo "$payload" | grep -o '"kind"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+                instructions="(install jq to see instructions)"
+            fi
 
             echo "[$AGENT_ID] Processing task kind: $kind" >&2
+            echo "[$AGENT_ID] Instructions received:" >&2
+            echo "$instructions" >&2
+            echo "" >&2
 
             sleep "$SLEEP_TIME"
 
