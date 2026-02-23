@@ -128,6 +128,32 @@ enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Register as an agent and wait for first task (alias for get_task)
+    #[command(name = "register")]
+    Register {
+        /// Pool ID or path
+        #[arg(long)]
+        pool: String,
+        /// Agent name (must be unique within the pool)
+        #[arg(long)]
+        name: String,
+    },
+    /// Submit response to current task and wait for next task
+    #[command(name = "next_task")]
+    NextTask {
+        /// Pool ID or path
+        #[arg(long)]
+        pool: String,
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Response content as inline string
+        #[arg(long)]
+        data: Option<String>,
+        /// Path to file containing response
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
 }
 
 fn init_tracing(level: LogLevel) {
@@ -370,6 +396,131 @@ fn main() -> ExitCode {
                 }
 
                 // No task yet, wait and try again
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        // Register is an alias for GetTask
+        Command::Register { pool, name } => {
+            let root = resolve_pool(&pool);
+            let agent_dir = root.join(AGENTS_DIR).join(&name);
+
+            if let Err(e) = fs::create_dir_all(&agent_dir) {
+                eprintln!("Failed to create agent directory: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            let task_file = agent_dir.join(TASK_FILE);
+            let response_file = agent_dir.join(RESPONSE_FILE);
+
+            loop {
+                if task_file.exists() {
+                    let raw = match fs::read_to_string(&task_file) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Failed to read task: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+
+                    let envelope: serde_json::Value = match serde_json::from_str(&raw) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Failed to parse task envelope: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+
+                    let kind = envelope.get("kind").and_then(|k| k.as_str()).unwrap_or("Task");
+                    let content = envelope.get("task").cloned().unwrap_or(serde_json::Value::Null);
+
+                    let output = serde_json::json!({
+                        "kind": kind,
+                        "agent_name": name,
+                        "response_file": response_file.display().to_string(),
+                        "content": content
+                    });
+
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+                    return ExitCode::SUCCESS;
+                }
+
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Command::NextTask { pool, name, data, file } => {
+            let root = resolve_pool(&pool);
+            let agent_dir = root.join(AGENTS_DIR).join(&name);
+
+            if !agent_dir.exists() {
+                eprintln!("Agent not registered. Use 'register' first.");
+                return ExitCode::FAILURE;
+            }
+
+            let task_file = agent_dir.join(TASK_FILE);
+            let response_file = agent_dir.join(RESPONSE_FILE);
+
+            // Write response to previous task
+            let response_content = match (data, file) {
+                (Some(d), None) => d,
+                (None, Some(path)) => match fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Failed to read response file {}: {e}", path.display());
+                        return ExitCode::FAILURE;
+                    }
+                },
+                (Some(d), Some(_)) => d,
+                (None, None) => {
+                    eprintln!("Either --data or --file must be provided");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            // Write response
+            if let Err(e) = fs::write(&response_file, &response_content) {
+                eprintln!("Failed to write response: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            // Wait for task file to be removed (daemon picked up response) then reappear (new task)
+            // First, wait for current task to be cleaned up
+            while task_file.exists() {
+                thread::sleep(Duration::from_millis(100));
+            }
+
+            // Now wait for next task
+            loop {
+                if task_file.exists() {
+                    let raw = match fs::read_to_string(&task_file) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Failed to read task: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+
+                    let envelope: serde_json::Value = match serde_json::from_str(&raw) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Failed to parse task envelope: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+
+                    let kind = envelope.get("kind").and_then(|k| k.as_str()).unwrap_or("Task");
+                    let content = envelope.get("task").cloned().unwrap_or(serde_json::Value::Null);
+
+                    let output = serde_json::json!({
+                        "kind": kind,
+                        "agent_name": name,
+                        "response_file": response_file.display().to_string(),
+                        "content": content
+                    });
+
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+                    return ExitCode::SUCCESS;
+                }
+
                 thread::sleep(Duration::from_millis(100));
             }
         }
