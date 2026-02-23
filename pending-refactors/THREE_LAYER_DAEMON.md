@@ -497,13 +497,13 @@ fn try_dispatch(state: &mut PoolState) -> Vec<Effect> {
             break;
         };
 
-        if let Some(agent) = state.agents.get_mut(&agent_id) {
-            // Increment epoch on state transition (idle → busy)
-            agent.epoch.sequence += 1;
-            agent.status = AgentStatus::Busy { task_id };
+        let agent = state.agents.get_mut(&agent_id)
+            .expect("find_idle_agent returned agent not in state");
+        // Increment epoch on state transition (idle → busy)
+        agent.epoch.sequence += 1;
+        agent.status = AgentStatus::Busy { task_id };
 
-            effects.push(Effect::DispatchTask { task_id, epoch: agent.epoch });
-        }
+        effects.push(Effect::DispatchTask { task_id, epoch: agent.epoch });
     }
 
     effects
@@ -575,17 +575,22 @@ impl AgentMap {
         id
     }
 
-    /// Register an agent. ALWAYS generates a new AgentId, even if name existed before.
-    /// This ensures stale timeout events (with old AgentId) are ignored.
+    /// Returns true if this name is already registered.
+    fn contains_name(&self, name: &str) -> bool {
+        self.name_to_id.contains_key(name)
+    }
+
+    /// Register an agent. Panics if name is already registered.
+    /// Caller must check contains_name() first and deregister if needed.
     fn register(&mut self, name: String) -> AgentId {
+        assert!(
+            !self.name_to_id.contains_key(&name),
+            "register() called for already-registered agent '{name}' - Layer 3 bug"
+        );
+
         let id = self.next_agent_id();
-
-        // If name was previously registered, remove old mapping
-        if let Some(old_id) = self.name_to_id.insert(name.clone(), id) {
-            self.id_to_name.remove(&old_id);
-        }
-
-        self.id_to_name.insert(id, name);
+        self.id_to_name.insert(id, name.clone());
+        self.name_to_id.insert(name, id);
         id
     }
 
@@ -593,10 +598,14 @@ impl AgentMap {
         self.id_to_name.get(&id).map(|s| s.as_str())
     }
 
+    fn get_id(&self, name: &str) -> Option<AgentId> {
+        self.name_to_id.get(name).copied()
+    }
+
     fn remove(&mut self, id: AgentId) {
-        if let Some(name) = self.id_to_name.remove(&id) {
-            self.name_to_id.remove(&name);
-        }
+        let name = self.id_to_name.remove(&id)
+            .expect("remove() called for unknown AgentId - Layer 1 bug");
+        self.name_to_id.remove(&name);
     }
 }
 
@@ -755,24 +764,20 @@ fn execute_effect(
             let response_content = pending_responses.remove(&agent_id)
                 .expect("TaskCompleted for agent with no pending response - Layer 3 bug");
 
-            // If this was a submission, send response to submitter
-            // If this was a health check, task_map.complete returns None
-            if let Some(responder) = task_map.complete(task_id) {
-                responder.send(&response_content)?;
-            }
-            // For health checks: nothing to do, just logged
+            // Send response to submitter
+            let responder = task_map.complete(task_id)
+                .expect("TaskCompleted for unknown task - Layer 1 bug");
+            responder.send(&response_content)?;
         }
         Effect::TaskFailed { task_id } => {
-            // If this was a submission, send error to submitter
-            // If this was a health check, task_map.complete returns None
-            if let Some(responder) = task_map.complete(task_id) {
-                let error = serde_json::json!({
-                    "status": "NotProcessed",
-                    "reason": "AgentTimeout"
-                }).to_string();
-                responder.send(&error)?;
-            }
-            // For health checks: nothing to do
+            // Send error to submitter
+            let responder = task_map.complete(task_id)
+                .expect("TaskFailed for unknown task - Layer 1 bug");
+            let error = serde_json::json!({
+                "status": "NotProcessed",
+                "reason": "AgentTimeout"
+            }).to_string();
+            responder.send(&error)?;
         }
         Effect::DeregisterAgent { agent_id } => {
             let name = agent_map.get_name(agent_id)
