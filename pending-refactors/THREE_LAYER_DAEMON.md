@@ -83,6 +83,30 @@ Given the same `(state, event)` pair, `step()` always returns the same `(state, 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Event and Effect Flow
+
+**Events flow inward** (Layer 3 → Layer 2 → Layer 1):
+- Layer 3 detects something happened (FS event, socket connection, timer fired)
+- Layer 3 sends an `Event` to Layer 2
+- Layer 2 passes it to Layer 1's `step()` function
+
+**Effects flow outward** (Layer 1 → Layer 2 → Layer 3):
+- Layer 1's `step()` returns a list of `Effect`s
+- Layer 2 sends each `Effect` to Layer 3
+- Layer 3 executes the effect (write file, send response, start timer)
+
+```
+                    EVENTS (inward)                 EFFECTS (outward)
+
+Timer fires ─────┐                              ┌───── Write task.json
+FS event ────────┼──→ Layer 3 ──→ Layer 2 ──→ Layer 1
+Socket accept ───┘       ↑                          │
+                         └──────────────────────────┘
+                              Execute effects
+```
+
+**Key insight**: Timers are NOT effects. When Layer 3 starts a timer (in response to a `DispatchTask` effect), the timer eventually sends an `AgentTimedOut` *event* back to Layer 1. The timer spawning is a side effect of executing an effect, but the timeout notification is an event.
+
 ---
 
 ## Current Implementation
@@ -596,6 +620,16 @@ enum Channel {
 }
 
 impl Channel {
+    /// Read content from a file in this channel.
+    fn read(&self, filename: &str) -> io::Result<String> {
+        match self {
+            Channel::Directory(path) => {
+                fs::read_to_string(path.join(filename))
+            }
+            // Channel::Socket(stream) => { ... }
+        }
+    }
+
     /// Write content to a file in this channel.
     fn write(&self, filename: &str, content: &str) -> io::Result<()> {
         match self {
@@ -758,9 +792,6 @@ pub fn io_layer(
 ) -> io::Result<()> {
     let mut agent_map = AgentMap::new();
     let mut task_map = TaskMap::new();
-    // Pending responses: when agent writes response.json, we store content here
-    // until TaskCompleted effect tells us to send it
-    let mut pending_responses: HashMap<AgentId, String> = HashMap::new();
 
     // No periodic TimerTick - timers are started on-demand via effects
 
@@ -784,7 +815,7 @@ pub fn io_layer(
 
         // Execute effects (non-blocking)
         while let Ok(effect) = effects_rx.try_recv() {
-            execute_effect(effect, &mut agent_map, &mut task_map, &mut pending_responses, &events_tx, &config)?;
+            execute_effect(effect, &mut agent_map, &mut task_map, &events_tx, &config)?;
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -795,7 +826,6 @@ fn execute_effect(
     effect: Effect,
     agent_map: &mut AgentMap,
     task_map: &mut TaskMap,
-    pending_responses: &mut HashMap<AgentId, String>,
     events_tx: &mpsc::Sender<Event>,
     config: &IoConfig,
 ) -> io::Result<()> {
@@ -819,8 +849,10 @@ fn execute_effect(
             start_timeout_timer(events_tx.clone(), epoch, config.idle_agent_timeout);
         }
         Effect::TaskCompleted { agent_id, task_id } => {
-            let response_content = pending_responses.remove(&agent_id)
-                .expect("TaskCompleted for agent with no pending response - Layer 3 bug");
+            // Read response content from agent's channel on-demand
+            let response_content = agent_map.get(agent_id)
+                .expect("TaskCompleted for unknown agent - Layer 1 bug")
+                .read("response.json")?;
             task_map.complete(task_id, &response_content)?;
         }
         Effect::TaskFailed { task_id } => {
@@ -1101,7 +1133,6 @@ crates/agent_pool/src/
 | `ChannelMap<Id: ChannelId>` | 3 | Generic map: Id → (Channel, Id::Storage) |
 | `AgentMap` = `ChannelMap<AgentId>` | 3 | Storage = () (no extra data) |
 | `TaskMap` = `ChannelMap<TaskId>` | 3 | Storage = TaskData (content + timeout) |
-| `pending_responses` | 3 | Temporary storage for agent response content |
 | `Listener` | 3 | Socket I/O for submissions |
 | `Watcher` | 3 | FS I/O |
 
