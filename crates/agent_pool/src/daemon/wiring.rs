@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -63,38 +63,72 @@ impl From<DaemonConfig> for IoConfig {
 }
 
 // =============================================================================
+// Daemon State
+// =============================================================================
+
+/// Daemon run state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum DaemonState {
+    /// Running normally, dispatching tasks.
+    Playing = 0,
+    /// Paused, not dispatching new tasks.
+    Paused = 1,
+    /// Shutdown requested.
+    Shutdown = 2,
+}
+
+impl DaemonState {
+    fn from_u32(value: u32) -> Self {
+        match value {
+            0 => Self::Playing,
+            1 => Self::Paused,
+            2 => Self::Shutdown,
+            _ => Self::Shutdown, // Invalid state treated as shutdown
+        }
+    }
+}
+
+// =============================================================================
 // Public API
 // =============================================================================
 
 /// Shared control signals for the daemon.
 #[derive(Clone)]
 struct DaemonSignals {
-    shutdown: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
+    state: Arc<AtomicU32>,
 }
 
 impl DaemonSignals {
     fn new() -> Self {
         Self {
-            shutdown: Arc::new(AtomicBool::new(false)),
-            paused: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(AtomicU32::new(DaemonState::Playing as u32)),
         }
     }
 
+    fn get_state(&self) -> DaemonState {
+        DaemonState::from_u32(self.state.load(Ordering::SeqCst))
+    }
+
     fn trigger_shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.state.store(DaemonState::Shutdown as u32, Ordering::SeqCst);
     }
 
     fn is_shutdown_triggered(&self) -> bool {
-        self.shutdown.load(Ordering::SeqCst)
+        self.get_state() == DaemonState::Shutdown
     }
 
     fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
+        let new_state = if paused {
+            DaemonState::Paused
+        } else {
+            DaemonState::Playing
+        };
+        self.state.store(new_state as u32, Ordering::SeqCst);
     }
 
     fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
+        self.get_state() == DaemonState::Paused
     }
 }
 
