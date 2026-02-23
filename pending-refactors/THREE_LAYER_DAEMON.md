@@ -285,14 +285,10 @@ pub enum Event {
         epoch: u64,
     },
 
-    /// External request to pause dispatching.
-    PauseRequested,
-
-    /// External request to resume dispatching.
-    ResumeRequested,
-
-    /// External request to shut down.
-    ShutdownRequested,
+    // TODO: Implement pause/resume/shutdown
+    // PauseRequested - stop dispatching new tasks, let in-flight complete
+    // ResumeRequested - resume dispatching
+    // ShutdownRequested - drain in-flight tasks, then emit ShutdownComplete
 }
 ```
 
@@ -347,8 +343,7 @@ pub enum Effect {
         message: String,
     },
 
-    /// Signal shutdown complete
-    ShutdownComplete,
+    // TODO: ShutdownComplete - signal that shutdown is done
 }
 
 pub enum LogLevel {
@@ -382,16 +377,7 @@ pub fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
         Event::AgentTimedOut { agent_id, epoch } => {
             handle_agent_timed_out(state, agent_id, epoch)
         }
-        Event::PauseRequested => {
-            // Could add `paused: bool` to state if needed
-            (state, vec![])
-        }
-        Event::ResumeRequested => {
-            (state, vec![])
-        }
-        Event::ShutdownRequested => {
-            handle_shutdown(state)
-        }
+        // TODO: Implement pause/resume/shutdown handlers
     }
 }
 
@@ -798,7 +784,7 @@ fn execute_effect(
                 LogLevel::Warn => warn!("{message}"),
             }
         }
-        Effect::ShutdownComplete => {}
+        // TODO: Handle ShutdownComplete
     }
     Ok(())
 }
