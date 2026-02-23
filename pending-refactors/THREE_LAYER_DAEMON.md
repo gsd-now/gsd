@@ -193,20 +193,26 @@ fn event_loop(
 ```rust
 /// Unique identifier for a pending response.
 /// Layer 3 maps this back to the actual socket/file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResponderId(u64);
 
 /// Unique identifier for a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(u64);
 
-/// Pure pool state - no I/O handles, no paths, no time
+/// Unique identifier for an agent.
+/// Layer 3 maps this back to the actual directory name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AgentId(u64);
+
+/// Pure pool state - no I/O handles, no paths, no time, no strings
 pub struct PoolState {
     /// Tasks waiting to be assigned to agents
     pending_tasks: VecDeque<PendingTask>,
 
-    /// Registered agents and their current status
-    agents: HashMap<String, AgentState>,
+    /// Registered agents and their current status.
+    /// BTreeMap for deterministic iteration order (snapshots, debugging).
+    agents: BTreeMap<AgentId, AgentState>,
 
     /// Counter for generating unique IDs
     next_id: u64,
@@ -266,18 +272,19 @@ pub enum Event {
     },
 
     /// Agent directory appeared (agent registered)
+    /// Layer 3 assigns the AgentId and maintains the name mapping.
     AgentRegistered {
-        agent_id: String,
+        agent_id: AgentId,
     },
 
     /// Agent directory removed (agent deregistered)
     AgentDeregistered {
-        agent_id: String,
+        agent_id: AgentId,
     },
 
     /// Agent wrote response.json (task completed)
     AgentResponse {
-        agent_id: String,
+        agent_id: AgentId,
         response: String,
     },
 
@@ -308,15 +315,17 @@ pub enum Effect {
     },
 
     /// Dispatch task to an agent (write task.json)
+    /// Layer 3 looks up the directory name from AgentId.
     DispatchTask {
-        agent_id: String,
+        agent_id: AgentId,
         task_id: TaskId,
         envelope: String,  // JSON envelope with kind + content
     },
 
     /// Deregister agent (remove directory due to timeout)
+    /// Layer 3 looks up the directory name from AgentId.
     DeregisterAgent {
-        agent_id: String,
+        agent_id: AgentId,
     },
 
     /// Log a message (for observability)
@@ -385,21 +394,21 @@ fn handle_submission(
 
 fn handle_agent_registered(
     mut state: PoolState,
-    agent_id: String,
+    agent_id: AgentId,
 ) -> (PoolState, Vec<Effect>) {
     if state.agents.contains_key(&agent_id) {
         return (state, vec![]);
     }
 
-    state.agents.insert(agent_id.clone(), AgentState::new());
+    state.agents.insert(agent_id, AgentState::new());
 
     let mut effects = vec![Effect::Log {
         level: LogLevel::Info,
-        message: format!("agent registered: {agent_id}"),
+        message: format!("agent registered: {agent_id:?}"),
     }];
 
     if state.config.initial_health_check {
-        if let Some(dispatch_effect) = dispatch_health_check(&mut state, &agent_id) {
+        if let Some(dispatch_effect) = dispatch_health_check(&mut state, agent_id) {
             effects.push(dispatch_effect);
         }
     }
@@ -412,7 +421,7 @@ fn handle_agent_registered(
 
 fn handle_agent_response(
     mut state: PoolState,
-    agent_id: String,
+    agent_id: AgentId,
     response: String,
 ) -> (PoolState, Vec<Effect>) {
     let Some(agent) = state.agents.get_mut(&agent_id) else {
@@ -438,13 +447,13 @@ fn handle_agent_response(
             });
             effects.push(Effect::Log {
                 level: LogLevel::Info,
-                message: format!("task completed: agent={agent_id}"),
+                message: format!("task completed: agent={agent_id:?}"),
             });
         }
         TaskKind::HealthCheck => {
             effects.push(Effect::Log {
                 level: LogLevel::Debug,
-                message: format!("health check completed: agent={agent_id}"),
+                message: format!("health check completed: agent={agent_id:?}"),
             });
         }
     }
@@ -466,37 +475,37 @@ fn handle_timer_tick(mut state: PoolState) -> (PoolState, Vec<Effect>) {
     }
 
     // Check for health check timeouts
-    let timed_out: Vec<String> = state.agents
+    let timed_out: Vec<AgentId> = state.agents
         .iter()
         .filter(|(_, a)| {
             matches!(a.status, AgentStatus::Busy { kind: TaskKind::HealthCheck, .. })
                 && a.idle_ticks >= state.config.health_check_timeout_ticks
         })
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| *id)
         .collect();
 
     for agent_id in timed_out {
         state.agents.remove(&agent_id);
-        effects.push(Effect::DeregisterAgent { agent_id: agent_id.clone() });
+        effects.push(Effect::DeregisterAgent { agent_id });
         effects.push(Effect::Log {
             level: LogLevel::Warn,
-            message: format!("health check timeout, deregistering: {agent_id}"),
+            message: format!("health check timeout, deregistering: {agent_id:?}"),
         });
     }
 
     // Send periodic health checks to stale idle agents
     if state.config.periodic_health_check {
-        let stale: Vec<String> = state.agents
+        let stale: Vec<AgentId> = state.agents
             .iter()
             .filter(|(_, a)| {
                 matches!(a.status, AgentStatus::Idle)
                     && a.idle_ticks >= state.config.health_check_interval_ticks
             })
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
             .collect();
 
         for agent_id in stale {
-            if let Some(effect) = dispatch_health_check(&mut state, &agent_id) {
+            if let Some(effect) = dispatch_health_check(&mut state, agent_id) {
                 effects.push(effect);
             }
         }
@@ -527,28 +536,28 @@ fn try_dispatch(state: &mut PoolState) -> Vec<Effect> {
         }
 
         effects.push(Effect::DispatchTask {
-            agent_id: agent_id.clone(),
+            agent_id,
             task_id: task.id,
             envelope,
         });
         effects.push(Effect::Log {
             level: LogLevel::Info,
-            message: format!("task dispatched: agent={agent_id}"),
+            message: format!("task dispatched: agent={agent_id:?}"),
         });
     }
 
     effects
 }
 
-fn find_idle_agent(state: &PoolState) -> Option<String> {
+fn find_idle_agent(state: &PoolState) -> Option<AgentId> {
     state.agents
         .iter()
         .find(|(_, a)| matches!(a.status, AgentStatus::Idle))
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| *id)
 }
 
-fn dispatch_health_check(state: &mut PoolState, agent_id: &str) -> Option<Effect> {
-    let agent = state.agents.get_mut(agent_id)?;
+fn dispatch_health_check(state: &mut PoolState, agent_id: AgentId) -> Option<Effect> {
+    let agent = state.agents.get_mut(&agent_id)?;
 
     if !matches!(agent.status, AgentStatus::Idle) {
         return None;
@@ -567,7 +576,7 @@ fn dispatch_health_check(state: &mut PoolState, agent_id: &str) -> Option<Effect
     }).to_string();
 
     Some(Effect::DispatchTask {
-        agent_id: agent_id.to_string(),
+        agent_id,
         task_id,
         envelope,
     })
@@ -600,6 +609,36 @@ pub fn event_loop(
 ### Layer 3: I/O
 
 ```rust
+/// Maps AgentId back to directory name
+struct AgentMap {
+    id_to_name: BTreeMap<AgentId, String>,
+    name_to_id: HashMap<String, AgentId>,
+    next_id: u64,
+}
+
+impl AgentMap {
+    fn register(&mut self, name: String) -> AgentId {
+        if let Some(&id) = self.name_to_id.get(&name) {
+            return id;
+        }
+        let id = AgentId(self.next_id);
+        self.next_id += 1;
+        self.id_to_name.insert(id, name.clone());
+        self.name_to_id.insert(name, id);
+        id
+    }
+
+    fn get_name(&self, id: AgentId) -> Option<&str> {
+        self.id_to_name.get(&id).map(|s| s.as_str())
+    }
+
+    fn remove(&mut self, id: AgentId) {
+        if let Some(name) = self.id_to_name.remove(&id) {
+            self.name_to_id.remove(&name);
+        }
+    }
+}
+
 /// Maps ResponderId back to actual response mechanism
 struct ResponderMap {
     map: HashMap<ResponderId, Responder>,
@@ -694,6 +733,7 @@ pub fn io_layer(
 fn execute_effect(
     effect: Effect,
     responders: &mut ResponderMap,
+    agent_map: &mut AgentMap,
     agents_dir: &Path,
 ) -> io::Result<()> {
     match effect {
@@ -701,11 +741,17 @@ fn execute_effect(
             responders.send(responder, &content)?;
         }
         Effect::DispatchTask { agent_id, envelope, .. } => {
-            let task_path = agents_dir.join(&agent_id).join("task.json");
+            let Some(name) = agent_map.get_name(agent_id) else {
+                return Ok(()); // Agent was removed
+            };
+            let task_path = agents_dir.join(name).join("task.json");
             fs::write(&task_path, &envelope)?;
         }
         Effect::DeregisterAgent { agent_id } => {
-            let _ = fs::remove_dir_all(agents_dir.join(&agent_id));
+            if let Some(name) = agent_map.get_name(agent_id) {
+                let _ = fs::remove_dir_all(agents_dir.join(name));
+            }
+            agent_map.remove(agent_id);
         }
         Effect::Log { level, message } => {
             match level {
@@ -798,7 +844,8 @@ fn test_submission_queues_task() {
 #[test]
 fn test_submission_dispatches_to_idle_agent() {
     let mut state = PoolState::new(test_config());
-    state.agents.insert("agent-1".into(), AgentState::new());
+    let agent_id = AgentId(1);
+    state.agents.insert(agent_id, AgentState::new());
 
     let (state, effects) = step(state, Event::Submission {
         content: "test".into(),
@@ -807,7 +854,7 @@ fn test_submission_dispatches_to_idle_agent() {
 
     assert!(state.pending_tasks.is_empty());
     assert!(matches!(
-        state.agents.get("agent-1").unwrap().status,
+        state.agents.get(&agent_id).unwrap().status,
         AgentStatus::Busy { .. }
     ));
     assert!(effects.iter().any(|e| matches!(e, Effect::DispatchTask { .. })));
@@ -816,7 +863,8 @@ fn test_submission_dispatches_to_idle_agent() {
 #[test]
 fn test_agent_response_sends_to_submitter() {
     let mut state = PoolState::new(test_config());
-    state.agents.insert("agent-1".into(), AgentState {
+    let agent_id = AgentId(1);
+    state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Busy {
             task_id: TaskId(1),
             kind: TaskKind::Submission { responder: ResponderId(42) },
@@ -825,11 +873,11 @@ fn test_agent_response_sends_to_submitter() {
     });
 
     let (state, effects) = step(state, Event::AgentResponse {
-        agent_id: "agent-1".into(),
+        agent_id,
         response: "result".into(),
     });
 
-    assert!(matches!(state.agents.get("agent-1").unwrap().status, AgentStatus::Idle));
+    assert!(matches!(state.agents.get(&agent_id).unwrap().status, AgentStatus::Idle));
     assert!(effects.iter().any(|e| matches!(
         e,
         Effect::SendResponse { responder: ResponderId(42), .. }
@@ -842,7 +890,8 @@ fn test_health_check_timeout_deregisters() {
         health_check_timeout_ticks: 3,
         ..test_config()
     });
-    state.agents.insert("agent-1".into(), AgentState {
+    let agent_id = AgentId(1);
+    state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Busy {
             task_id: TaskId(1),
             kind: TaskKind::HealthCheck,
@@ -852,10 +901,10 @@ fn test_health_check_timeout_deregisters() {
 
     let (state, effects) = step(state, Event::TimerTick);
 
-    assert!(!state.agents.contains_key("agent-1"));
+    assert!(!state.agents.contains_key(&agent_id));
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::DeregisterAgent { agent_id } if agent_id == "agent-1"
+        Effect::DeregisterAgent { agent_id: id } if *id == agent_id
     )));
 }
 ```
@@ -864,18 +913,53 @@ These tests run instantly with no I/O, no threads, no timing issues.
 
 ---
 
+## File Structure
+
+Each layer should be in a separate file to enforce boundaries via Rust's visibility rules:
+
+```
+crates/agent_pool/src/
+├── lib.rs              # Public API
+├── core.rs             # Layer 1: Pure state machine
+│   ├── PoolState, AgentState, AgentStatus
+│   ├── Event, Effect, TaskKind
+│   ├── AgentId, TaskId, ResponderId
+│   └── fn step(state, event) -> (state, effects)
+├── event_loop.rs       # Layer 2: Orchestration
+│   └── fn event_loop(state, events_rx, effects_tx)
+├── io.rs               # Layer 3: I/O
+│   ├── ResponderMap, AgentMap
+│   ├── fn io_layer(...)
+│   └── fn execute_effect(...)
+└── daemon.rs           # Wiring: spawns threads, connects layers
+```
+
+**Benefits:**
+- `core.rs` has no `use std::fs`, no `use std::net` - enforced at module level
+- Layer 1 types are `pub`, Layer 3 types are `pub(crate)` or private
+- Can't accidentally add I/O to Layer 1 without changing imports
+
+---
+
 ## State Ownership Summary
 
 | Data | Layer | Reason |
 |------|-------|--------|
 | `pending_tasks: VecDeque<PendingTask>` | 1 | Core queue logic |
-| `agents: HashMap<String, AgentState>` | 1 | Core dispatch logic |
+| `agents: BTreeMap<AgentId, AgentState>` | 1 | Core dispatch logic |
 | `config: PoolConfig` | 1 | Affects state transitions |
 | `next_id: u64` | 1 | ID generation is deterministic |
-| `ResponderMap` | 3 | Maps IDs to I/O handles |
+| `ResponderMap` | 3 | Maps ResponderId to I/O handles |
+| `AgentMap` | 3 | Maps AgentId to directory names |
 | `Listener` | 3 | Socket I/O |
 | `Watcher` | 3 | FS I/O |
 | `agents_dir: PathBuf` | 3 | File paths are I/O |
 | `pending_dir: PathBuf` | 3 | File paths are I/O |
 
-The key insight: **Layer 1 only knows about IDs (ResponderId, TaskId). Layer 3 maps IDs to actual I/O handles.**
+The key insight: **Layer 1 only knows about IDs (AgentId, ResponderId, TaskId). Layer 3 maps IDs to actual I/O handles and file paths.**
+
+---
+
+## TODO
+
+- [ ] Extract architectural principles (serial event processing, Byzantine resilience, three-layer separation, IDs vs handles) to a prominent document (README.md or CLAUDE.md) for project-wide guidance.
