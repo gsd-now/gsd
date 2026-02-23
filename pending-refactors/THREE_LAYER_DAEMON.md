@@ -550,21 +550,73 @@ pub fn event_loop(
 ### Layer 3: I/O
 
 ```rust
-/// Maps AgentId back to directory name.
-/// IMPORTANT: AgentId is globally unique across ALL registrations.
-/// If an agent deregisters and re-registers, it gets a NEW AgentId.
-/// This prevents stale timeout events from affecting new registrations.
+/// How Layer 3 communicates with an agent.
+/// Agents are anonymous - they get a unique AgentId, no "name" identity.
+enum AgentChannel {
+    /// Filesystem-based: write task.json, read response.json
+    Directory(PathBuf),
+    // TODO: Socket-based communication (future refactor)
+    // Socket(Stream),
+}
+
+impl AgentChannel {
+    /// Try to register this channel with the map.
+    /// Returns None if this channel is already registered (duplicate FS event).
+    fn register(self, map: &mut AgentMap) -> Option<AgentId> {
+        match &self {
+            AgentChannel::Directory(path) => {
+                if map.path_to_id.contains_key(path) {
+                    return None;  // Duplicate, ignore
+                }
+                let id = map.next_agent_id();
+                map.path_to_id.insert(path.clone(), id);
+                map.agents.insert(id, self);
+                Some(id)
+            }
+            // AgentChannel::Socket(_) => {
+            //     // Sockets are always unique - no deduplication needed
+            //     let id = map.next_agent_id();
+            //     map.agents.insert(id, self);
+            //     Some(id)
+            // }
+        }
+    }
+
+    /// Write a task to this agent.
+    fn write_task(&self, envelope: &str) -> io::Result<()> {
+        match self {
+            AgentChannel::Directory(path) => {
+                fs::write(path.join("task.json"), envelope)
+            }
+            // AgentChannel::Socket(stream) => { ... }
+        }
+    }
+
+    /// Clean up this channel (remove directory, close socket, etc.)
+    fn cleanup(&self) {
+        match self {
+            AgentChannel::Directory(path) => {
+                let _ = fs::remove_dir_all(path);
+            }
+            // AgentChannel::Socket(_) => { /* socket closes on drop */ }
+        }
+    }
+}
+
+/// Maps AgentId to communication channel.
+/// AgentId is globally unique - each registration gets a new ID.
 struct AgentMap {
-    id_to_name: HashMap<AgentId, String>,
-    name_to_id: HashMap<String, AgentId>,
+    agents: HashMap<AgentId, AgentChannel>,
+    /// For deduplicating FS events - tracks which paths are registered
+    path_to_id: HashMap<PathBuf, AgentId>,
     next_id: u32,
 }
 
 impl AgentMap {
     fn new() -> Self {
         Self {
-            id_to_name: HashMap::new(),
-            name_to_id: HashMap::new(),
+            agents: HashMap::new(),
+            path_to_id: HashMap::new(),
             next_id: 0,
         }
     }
@@ -575,27 +627,17 @@ impl AgentMap {
         id
     }
 
-    /// Register an agent. Idempotent - returns existing ID if already registered.
-    /// Layer 3 always calls this and forwards the event; Layer 1 handles duplicates.
-    fn register(&mut self, name: String) -> AgentId {
-        if let Some(&id) = self.name_to_id.get(&name) {
-            return id;
-        }
-
-        let id = self.next_agent_id();
-        self.id_to_name.insert(id, name.clone());
-        self.name_to_id.insert(name, id);
-        id
-    }
-
-    fn get_name(&self, id: AgentId) -> Option<&str> {
-        self.id_to_name.get(&id).map(|s| s.as_str())
+    fn get(&self, id: AgentId) -> Option<&AgentChannel> {
+        self.agents.get(&id)
     }
 
     fn remove(&mut self, id: AgentId) {
-        let name = self.id_to_name.remove(&id)
+        let channel = self.agents.remove(&id)
             .expect("remove() called for unknown AgentId - Layer 1 bug");
-        self.name_to_id.remove(&name);
+        // Clean up path_to_id if this was a directory-based agent
+        if let AgentChannel::Directory(path) = channel {
+            self.path_to_id.remove(&path);
+        }
     }
 }
 
@@ -714,7 +756,7 @@ pub fn io_layer(
 
         // Execute effects (non-blocking)
         while let Ok(effect) = effects_rx.try_recv() {
-            execute_effect(effect, &mut agent_map, &mut task_map, &mut pending_responses, &agents_dir, &events_tx, &config)?;
+            execute_effect(effect, &mut agent_map, &mut task_map, &mut pending_responses, &events_tx, &config)?;
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -726,13 +768,12 @@ fn execute_effect(
     agent_map: &mut AgentMap,
     task_map: &mut TaskMap,
     pending_responses: &mut HashMap<AgentId, String>,
-    agents_dir: &Path,
     events_tx: &mpsc::Sender<Event>,
     config: &IoConfig,
 ) -> io::Result<()> {
     match effect {
         Effect::DispatchTask { task_id, epoch } => {
-            let name = agent_map.get_name(epoch.agent_id)
+            let channel = agent_map.get(epoch.agent_id)
                 .expect("DispatchTask for unknown agent - Layer 1 bug");
             let content = task_map.get_content(task_id);
             let envelope = serde_json::json!({
@@ -740,8 +781,7 @@ fn execute_effect(
                 "content": serde_json::from_str::<serde_json::Value>(content)
                     .unwrap_or(serde_json::Value::String(content.to_string())),
             }).to_string();
-            let task_path = agents_dir.join(name).join("task.json");
-            fs::write(&task_path, &envelope)?;
+            channel.write_task(&envelope)?;
 
             // Start timeout timer
             start_timeout_timer(events_tx.clone(), epoch, config.agent_timeout);
@@ -765,9 +805,11 @@ fn execute_effect(
             responder.send(&error)?;
         }
         Effect::DeregisterAgent { agent_id } => {
-            let name = agent_map.get_name(agent_id)
-                .expect("DeregisterAgent for unknown agent - Layer 1 bug");
-            let _ = fs::remove_dir_all(agents_dir.join(name));
+            // remove() returns the channel and cleans up internal maps
+            // We need to get the channel first to clean it up, then remove
+            if let Some(channel) = agent_map.get(agent_id) {
+                channel.cleanup();
+            }
             agent_map.remove(agent_id);
         }
         // TODO: Handle ShutdownComplete
@@ -1031,20 +1073,21 @@ crates/agent_pool/src/
 |------|-------|--------|
 | `pending_tasks: VecDeque<TaskId>` | 1 | Core queue logic (just IDs) |
 | `agents: BTreeMap<AgentId, AgentState>` | 1 | Core dispatch logic |
-| `IoConfig` | 3 | All policy (timeouts, health check settings) |
-| `TaskMap` (with `next_id: u32`) | 3 | Maps TaskId to content + responder; generates TaskIds |
-| `AgentMap` (with `next_id: u32`) | 3 | Maps AgentId to directory names; generates AgentIds |
+| `IoConfig` | 3 | All policy (timeouts) |
+| `TaskMap` | 3 | Maps TaskId to content + Responder; generates TaskIds |
+| `AgentMap` | 3 | Maps AgentId to AgentChannel; generates AgentIds |
+| `AgentChannel` | 3 | Communication channel (Directory or Socket) |
 | `pending_responses` | 3 | Temporary storage for agent response content |
-| `Listener` | 3 | Socket I/O |
+| `Listener` | 3 | Socket I/O for submissions |
 | `Watcher` | 3 | FS I/O |
-| `agents_dir: PathBuf` | 3 | File paths are I/O |
-| `pending_dir: PathBuf` | 3 | File paths are I/O |
+| `pending_dir: PathBuf` | 3 | File paths for submission protocol |
 
 **Key insights:**
 - **Layer 1 has no config** - it's purely reactive, processing events and emitting effects
-- **Layer 1 only knows about IDs** (AgentId, TaskId) - Layer 3 maps IDs to actual content and file paths
+- **Layer 1 only knows about IDs** (AgentId, TaskId) - Layer 3 maps IDs to actual content and channels
 - **Layer 1 has no concept of time** - timeout events come from Layer 3 timers
 - **Epochs validate timeouts** - stale timers (wrong epoch) are silently ignored
+- **Agents are anonymous** - no "names", just unique AgentIds and communication channels
 - **No health checks** - idle agents just timeout and get deregistered; alive ones re-register
 
 ---
