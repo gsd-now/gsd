@@ -209,8 +209,8 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
         fs::remove_file(&socket_path)?;
     }
 
-    let listener = create_listener(&socket_path)?;
-    let (watcher, fs_events) = create_watcher(&agents_dir)?;
+    let listener = create_socket_listener(&socket_path)?;
+    let (watcher, fs_events) = create_fs_watcher(&agents_dir)?;
 
     let signals = DaemonSignals::new();
     let signals_clone = signals.clone();
@@ -275,8 +275,8 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     let _cleanup = SocketCleanup(socket_path.clone());
 
-    let listener = create_listener(&socket_path)?;
-    let (watcher, fs_events) = create_watcher(&agents_dir)?;
+    let listener = create_socket_listener(&socket_path)?;
+    let (watcher, fs_events) = create_fs_watcher(&agents_dir)?;
     let _watcher = watcher;
 
     info!(socket = %socket_path.display(), "daemon listening");
@@ -448,7 +448,7 @@ fn io_loop(
 
         // Check for socket-based task submissions (non-blocking)
         if !signals.is_paused()
-            && let Some((content, respond_to)) = accept_task(listener)?
+            && let Some((content, respond_to)) = accept_socket_task(listener)?
         {
             let external_id = task_id_allocator.allocate_external();
             if external_task_map
@@ -764,7 +764,7 @@ fn scan_pending(
 /// Accept a task from the socket listener (non-blocking).
 ///
 /// Returns the task content and the directory path for the response.
-fn accept_task(listener: &Listener) -> io::Result<Option<(String, PathBuf)>> {
+fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, PathBuf)>> {
     use std::io::{BufRead, BufReader, Read};
 
     match listener.accept() {
@@ -810,7 +810,7 @@ fn accept_task(listener: &Listener) -> io::Result<Option<(String, PathBuf)>> {
 // Setup Helpers
 // =============================================================================
 
-fn create_listener(socket_path: &Path) -> io::Result<Listener> {
+fn create_socket_listener(socket_path: &Path) -> io::Result<Listener> {
     let name = socket_path
         .to_fs_name::<GenericFilePath>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -827,7 +827,7 @@ fn create_listener(socket_path: &Path) -> io::Result<Listener> {
     Ok(listener)
 }
 
-fn create_watcher(
+fn create_fs_watcher(
     agents_dir: &Path,
 ) -> io::Result<(RecommendedWatcher, mpsc::Receiver<notify::Event>)> {
     let (tx, rx) = mpsc::channel();
