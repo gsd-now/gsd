@@ -35,6 +35,8 @@ pub(super) struct IoConfig {
     pub idle_agent_timeout: Duration,
     /// Default timeout for tasks (used when submission doesn't specify one).
     pub default_task_timeout: Duration,
+    /// Whether to send heartbeats to idle agents.
+    pub heartbeat_enabled: bool,
 }
 
 impl Default for IoConfig {
@@ -42,6 +44,7 @@ impl Default for IoConfig {
         Self {
             idle_agent_timeout: Duration::from_secs(60),
             default_task_timeout: Duration::from_secs(300),
+            heartbeat_enabled: true,
         }
     }
 }
@@ -391,15 +394,17 @@ pub(super) fn execute_effect(
             }
         }
         Effect::AgentIdled { epoch } => {
-            let heartbeat_task_id = task_id_allocator.allocate_heartbeat();
-            trace!(?heartbeat_task_id, "allocated heartbeat for idle agent");
+            if config.heartbeat_enabled {
+                let heartbeat_task_id = task_id_allocator.allocate_heartbeat();
+                trace!(?heartbeat_task_id, "allocated heartbeat for idle agent");
 
-            start_idle_timer(
-                events_tx.clone(),
-                epoch,
-                heartbeat_task_id,
-                config.idle_agent_timeout,
-            );
+                start_idle_timer(
+                    events_tx.clone(),
+                    epoch,
+                    heartbeat_task_id,
+                    config.idle_agent_timeout,
+                );
+            }
         }
         Effect::TaskCompleted { agent_id, task_id } => {
             let agent_path = agent_map

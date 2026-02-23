@@ -75,6 +75,9 @@ enum Command {
         /// Default timeout for tasks in seconds.
         #[arg(long, default_value = "300")]
         task_timeout_secs: u64,
+        /// Disable heartbeat checks for idle agents.
+        #[arg(long)]
+        no_heartbeat: bool,
     },
     /// Stop a running agent pool server
     Stop {
@@ -210,6 +213,7 @@ fn main() -> ExitCode {
             json,
             idle_agent_timeout_secs,
             task_timeout_secs,
+            no_heartbeat,
         } => {
             init_tracing(log_level);
 
@@ -243,6 +247,7 @@ fn main() -> ExitCode {
             let config = DaemonConfig {
                 idle_agent_timeout: Duration::from_secs(idle_agent_timeout_secs),
                 default_task_timeout: Duration::from_secs(task_timeout_secs),
+                heartbeat_enabled: !no_heartbeat,
             };
 
             // run_with_config() returns Result<Infallible, _>, so Ok case never happens

@@ -43,6 +43,8 @@ pub struct DaemonConfig {
     pub idle_agent_timeout: Duration,
     /// Default timeout for tasks.
     pub default_task_timeout: Duration,
+    /// Whether to send heartbeats to idle agents.
+    pub heartbeat_enabled: bool,
 }
 
 impl Default for DaemonConfig {
@@ -50,6 +52,7 @@ impl Default for DaemonConfig {
         Self {
             idle_agent_timeout: Duration::from_secs(60),
             default_task_timeout: Duration::from_secs(300),
+            heartbeat_enabled: true,
         }
     }
 }
@@ -58,6 +61,7 @@ impl From<DaemonConfig> for IoConfig {
     fn from(config: DaemonConfig) -> Self {
         IoConfig {
             idle_agent_timeout: config.idle_agent_timeout,
+            heartbeat_enabled: config.heartbeat_enabled,
             default_task_timeout: config.default_task_timeout,
         }
     }
@@ -948,12 +952,14 @@ mod tests {
         let daemon_config = DaemonConfig {
             idle_agent_timeout: Duration::from_secs(120),
             default_task_timeout: Duration::from_secs(600),
+            heartbeat_enabled: false,
         };
 
         let io_config: IoConfig = daemon_config.into();
 
         assert_eq!(io_config.idle_agent_timeout, Duration::from_secs(120));
         assert_eq!(io_config.default_task_timeout, Duration::from_secs(600));
+        assert!(!io_config.heartbeat_enabled);
     }
 
     #[test]
