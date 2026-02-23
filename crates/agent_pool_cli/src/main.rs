@@ -195,7 +195,9 @@ fn init_tracing(level: LogLevel) {
 /// Wait for a task file to appear and return the formatted output JSON.
 fn wait_for_task(task_file: &std::path::Path, response_file: &std::path::Path, name: &str) -> Result<String, String> {
     loop {
-        if task_file.exists() {
+        // Wait for task.json to exist AND response.json to NOT exist
+        // (response.json existing means we already processed this task)
+        if task_file.exists() && !response_file.exists() {
             let raw = fs::read_to_string(task_file)
                 .map_err(|e| format!("Failed to read task: {e}"))?;
 
