@@ -119,6 +119,8 @@ pub fn submit_file(root: &Path, input: &str) -> io::Result<Response>;
 
 The current `--file` flag in the CLI reads the file locally and sends content—it doesn't send a file reference.
 
+**Socket submission is broken:** The client side (`submit()`) sends data and waits for response. The daemon side (`accept_socket_task()`) reads the data but then drops the connection without ever sending a response. Clients hang forever.
+
 ## Target Design
 
 Separate the two axes clearly:
@@ -155,8 +157,6 @@ impl NotifyMethod {
 }
 ```
 
-**Note:** Agent socket responses will panic for now (not yet implemented), but the code structure supports it. The goal is one enum handling both submission and agent responses identically.
-
 **CLI:**
 ```bash
 # Submission
@@ -178,71 +178,284 @@ agent_pool next_task --pool $POOL --name $NAME --data "response" --notify file  
 - `--file /path` = file reference payload
 - `--notify socket|file` = notification mechanism (default: socket)
 
-## Independent Migrations
+---
 
-The two axes can be migrated independently:
+## Implementation: Socket Support for Submissions
 
-### Payload Format Migration
+### Current State
 
-Add `--file` flag that sends a path (file reference) instead of reading and inlining content. Works with either notification mechanism.
+**Client side (works):**
+```rust
+// client/submit.rs
+pub fn submit(root: &Path, input: &str) -> io::Result<Response> {
+    let mut stream = Stream::connect(socket_path)?;
+    writeln!(stream, "{}", input.len())?;      // Send length
+    stream.write_all(input.as_bytes())?;       // Send content
+    // ... waits for response on same stream
+}
+```
 
-**Before:** `--file` reads file, sends content (inline)
-**After:** `--file` sends the path (file reference)
+**Daemon side (broken):**
+```rust
+// daemon/wiring.rs - accept_socket_task()
+fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, PathBuf)>> {
+    match listener.accept() {
+        Ok(stream) => {
+            // Read length and content from stream
+            // ...
+            warn!("socket-based submissions not yet supported, task ignored");
+            drop(stream);  // <-- Stream dropped! Client hangs forever.
+            Ok(None)
+        }
+    }
+}
+```
 
-### Notification Mechanism Migration
+### What Needs to Happen
 
-Already exists (`submit` vs `submit_file`), but rename for clarity:
-- `--notify socket` (default)
-- `--notify file`
+1. **Keep the stream alive** - Don't drop it after reading the task
+2. **Store the stream** - Associate it with the task ID
+3. **Write response** - When task completes, write response back to the stream
 
-### Migration Order
+### Detailed Implementation Plan
 
-Either order works:
-1. Fix `--file` to be true file reference, then add `--notify` flag
-2. Add `--notify` flag first, then fix `--file` semantics
+#### Step 1: Add Socket Transport Variant
 
-## Edge Case: Inaccessible Filesystems
+In `daemon/io.rs`:
 
-Currently we assume the submitter, daemon, and agents all share the same filesystem. File reference works because everyone can read the path.
+```rust
+pub(super) enum Transport {
+    Directory(PathBuf),
+    Socket(Stream),  // NEW
+}
 
-In a hypothetical future where the daemon can't access the submitter's filesystem:
-- File reference wouldn't work directly
-- The CLI would need to detect this and fall back to reading the file and sending inline
+impl Transport {
+    pub fn write_response(&mut self, content: &str) -> io::Result<()> {
+        match self {
+            Transport::Directory(path) => {
+                fs::write(path.join(RESPONSE_FILE), content)
+            }
+            Transport::Socket(stream) => {
+                writeln!(stream, "{}", content.len())?;
+                stream.write_all(content.as_bytes())?;
+                stream.flush()
+            }
+        }
+    }
+}
+```
 
-This is similar to the "remote socket" case discussed below. For now, we assume shared filesystem access.
+**Note:** `Stream` from interprocess doesn't implement `Debug`, so we'll need `#[derive(Debug)]` workarounds or manual impl.
 
-**Implementation note:** If we ever need to handle this case, the CLI (not the daemon) should detect it and automatically convert file reference to inline. The daemon shouldn't need to know about this complexity.
+#### Step 2: Store Socket in ExternalTaskMap
+
+Currently `ExternalTaskData` stores:
+```rust
+pub(super) struct ExternalTaskData {
+    pub content: String,
+    pub timeout: Duration,
+}
+```
+
+For socket tasks, we also need to store the stream. Options:
+
+**Option A: Add stream to ExternalTaskData**
+```rust
+pub(super) struct ExternalTaskData {
+    pub content: String,
+    pub timeout: Duration,
+    pub response_stream: Option<Stream>,  // None for file-based
+}
+```
+
+**Option B: Use Transport directly**
+Already have `TransportMap<ExternalTaskId>` which stores `(Transport, ExternalTaskData)`. Change `Transport::Directory` to only be used for agents, add a new map for socket submissions.
+
+**Option C: Separate SocketTaskMap**
+Keep file-based and socket-based tasks in separate maps.
+
+**Recommendation:** Option A is simplest. The stream is just another piece of data associated with the task.
+
+#### Step 3: Update accept_socket_task
+
+```rust
+fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)>> {
+    match listener.accept() {
+        Ok(stream) => {
+            let mut reader = BufReader::new(&stream);
+
+            let mut len_line = String::new();
+            reader.read_line(&mut len_line)?;
+            let len: usize = len_line.trim().parse().map_err(|_| ...)?;
+
+            let mut content = vec![0u8; len];
+            reader.read_exact(&mut content)?;
+            let content = String::from_utf8(content).map_err(|_| ...)?;
+
+            // Return both content and stream (don't drop it!)
+            Ok(Some((content, stream)))
+        }
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+```
+
+**Problem:** We're borrowing `stream` for `reader`, then need to return `stream`. Need to handle the borrow carefully - either:
+- Use `into_inner()` to get the stream back from the BufReader
+- Read without BufReader (manual buffering)
+- Clone the stream (if supported)
+
+#### Step 4: Register Socket Task with Stream
+
+In `io_loop`:
+
+```rust
+if let Some((content, stream)) = accept_socket_task(listener)? {
+    let external_id = task_id_allocator.allocate_external();
+    // Store stream with the task
+    if external_task_map.register(
+        external_id,
+        PathBuf::new(),  // No path for socket tasks
+        ExternalTaskData {
+            content,
+            timeout: io_config.default_task_timeout,
+            response_stream: Some(stream),  // NEW
+        },
+    ) {
+        let _ = events_tx.send(Event::TaskSubmitted {
+            task_id: TaskId::External(external_id),
+        });
+    }
+}
+```
+
+**Issue:** `register()` currently requires a `PathBuf`. For socket tasks, there's no path. Options:
+- Make path optional
+- Use a sentinel value
+- Have separate registration method for socket tasks
+
+#### Step 5: Write Response to Socket
+
+In `execute_effect`, when handling `TaskCompleted` for external tasks:
+
+```rust
+TaskId::External(external_id) => {
+    let response = agent_map.read_from(agent_id, RESPONSE_FILE)?;
+
+    // Get the task data (includes stream if socket-based)
+    let task_data = external_task_map.remove(external_id)?;
+
+    if let Some(mut stream) = task_data.response_stream {
+        // Socket-based: write response to stream
+        writeln!(stream, "{}", response.len())?;
+        stream.write_all(response.as_bytes())?;
+        stream.flush()?;
+    } else {
+        // File-based: write response to file (existing behavior)
+        external_task_map.finish(external_id, &response)?;
+    }
+}
+```
+
+#### Step 6: Handle Socket Task Failures
+
+When a socket task times out or fails:
+
+```rust
+Effect::TaskFailed { task_id } => {
+    match task_id {
+        TaskId::External(external_id) => {
+            let error = json!({"status": "NotProcessed", "reason": "AgentTimeout"});
+
+            if let Some(task_data) = external_task_map.remove(external_id) {
+                if let Some(mut stream) = task_data.response_stream {
+                    // Write error to socket
+                    let error_str = error.to_string();
+                    let _ = writeln!(stream, "{}", error_str.len());
+                    let _ = stream.write_all(error_str.as_bytes());
+                    let _ = stream.flush();
+                } else {
+                    // Write error to file (existing behavior)
+                }
+            }
+        }
+    }
+}
+```
+
+### Complications
+
+1. **BufReader ownership** - Reading from socket uses BufReader which borrows the stream. Need to get stream back after reading.
+
+2. **Stream doesn't implement Debug** - `interprocess::local_socket::Stream` doesn't derive Debug. Need manual Debug impl or wrapper.
+
+3. **Path requirement in TransportMap** - Current design assumes every task has a path. Socket tasks don't.
+
+4. **Thread safety** - Socket stream needs to be accessible when writing response, potentially from different context than where it was created.
+
+5. **Cleanup on drop** - If daemon crashes or task is never completed, socket should be closed cleanly.
+
+### Simplified Alternative
+
+Instead of storing the stream in the task map, handle socket tasks synchronously:
+
+```rust
+fn handle_socket_submission(stream: Stream, daemon: &Daemon) -> io::Result<()> {
+    // Read task from stream
+    let task = read_task(&stream)?;
+
+    // Submit task and wait for completion (blocking)
+    let response = daemon.submit_and_wait(task)?;
+
+    // Write response
+    write_response(&stream, &response)?;
+
+    Ok(())
+}
+```
+
+**Problem:** This blocks the I/O thread. Would need to spawn a thread per socket connection, or use async.
+
+### Recommended Approach
+
+1. Start with the full async-storage approach (store stream in task data)
+2. Add `Option<Stream>` to `ExternalTaskData`
+3. Handle the BufReader ownership issue by reading into owned buffer first
+4. Add a wrapper type for Stream that implements Debug
+5. Update `finish()` to handle socket responses
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Clarify Payload Format
+### Phase 1: Fix Socket Submissions (daemon-side)
 
-1. Rename current `--file` behavior to something explicit (it's inline, not file reference)
-2. Add true file reference support: `--file` sends the path, daemon reads the file
-3. Update both submission and task completion to support both payload formats
+**Goal:** Make `submit()` work end-to-end.
 
-### Phase 2: Clarify Notification Mechanism
+1. Add `response_stream: Option<Stream>` to `ExternalTaskData`
+2. Update `accept_socket_task()` to return the stream
+3. Store stream when registering socket task
+4. Write response to stream in `execute_effect(TaskCompleted)`
+5. Write error to stream in `execute_effect(TaskFailed)`
+6. Test: `agent_pool submit_task --input '...'` should work
 
-1. Rename `submit()` and `submit_file()` to reflect notification mechanism
-2. Add `--notify socket|file` CLI flag
-3. Default to socket, fall back to file in sandboxed environments
+### Phase 2: Clarify CLI Flags
 
-### Phase 3: Daemon Architecture
+**Goal:** Clean up CLI to match the 2x2 grid.
 
-**Status: COMPLETE** - The daemon has been refactored to separate core (pure state machine) from I/O. See:
-- `daemon/core.rs` - Pure state machine with `step(state, event) -> (state, effects)`
-- `daemon/io.rs` - I/O operations (filesystem, timers, effect execution)
-- `daemon/wiring.rs` - Spawns threads, creates channels, runs main loop
+1. Rename `--file` to `--input-file` (reads file, sends content inline)
+2. Add `--data` as alias for `--input` (inline content)
+3. Add `--notify socket|file` flag (default: socket)
+4. Update help text to explain the distinction
 
----
+### Phase 3: Add File Reference Support
 
-## Dependencies
+**Goal:** Support sending paths instead of content.
 
-**Phase 1 and 2 can start now** - CLI changes only, no daemon changes.
-
-**Phase 3** requires more thought on the daemon event loop. May benefit from async (tokio) but not required.
+1. Add `--file-ref /path` flag that sends the path (not content)
+2. Daemon reads the referenced file when processing task
+3. Works with both socket and FS events notification
 
 ---
 
@@ -250,15 +463,13 @@ This is similar to the "remote socket" case discussed below. For now, we assume 
 
 Currently, users must explicitly pass `--notify file` in sandboxed environments. Auto-discovery could detect when sockets are blocked and fall back automatically.
 
-**Challenge:** Submit calls are stateless. Each `submit_task` invocation is independent, so there's no natural place to cache "sockets work" or "sockets are blocked."
-
 **Options (all deferred):**
-1. **Try socket, fall back to file** - latency cost on every call in sandboxed environments (try connect, fail, then use file)
-2. **Cache in environment variable** - CLI sets `AGENT_POOL_NOTIFY=file` after first socket failure; subsequent calls read this
-3. **Cache in pool directory** - write `.notify-method` file after first successful/failed attempt
-4. **Don't auto-discover** - user explicitly passes `--notify file` (current approach)
+1. **Try socket, fall back to file** - latency cost on every call
+2. **Cache in environment variable** - `AGENT_POOL_NOTIFY=file`
+3. **Cache in pool directory** - write `.notify-method` file
+4. **Don't auto-discover** - user explicitly passes `--notify file`
 
-For initial implementation, option 4 (explicit flag) is simplest. Auto-discovery can be added later if the UX burden of `--notify file` proves annoying.
+For initial implementation, option 4 (explicit flag) is simplest.
 
 ---
 
@@ -272,6 +483,6 @@ A third notification mechanism could be added for remote daemons:
 | FS Events        | File watcher on same machine   | ✓ (shared filesystem) |
 | Remote Socket    | TCP socket to different machine| ✗ (no shared filesystem) |
 
-For remote sockets with file reference payload, the CLI would read the file and send content inline (automatic fallback). From the user's perspective, `--file` always works—the CLI handles the details.
+For remote sockets with file reference payload, the CLI would read the file and send content inline (automatic fallback).
 
 This is out of scope for now but the design accommodates it.
