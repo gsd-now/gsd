@@ -221,60 +221,34 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, PathBuf
 
 #### Step 1: Add Socket Transport Variant
 
-In `daemon/io.rs`:
+In `daemon/io.rs`, add `Socket` variant to existing `Transport` enum:
 
 ```rust
 pub(super) enum Transport {
     Directory(PathBuf),
     Socket(Stream),  // NEW
 }
+```
 
-impl Transport {
-    pub fn write_response(&mut self, content: &str) -> io::Result<()> {
-        match self {
-            Transport::Directory(path) => {
-                fs::write(path.join(RESPONSE_FILE), content)
-            }
-            Transport::Socket(stream) => {
-                writeln!(stream, "{}", content.len())?;
-                stream.write_all(content.as_bytes())?;
-                stream.flush()
-            }
-        }
+The `ExternalTaskMap` (which is `TransportMap<ExternalTaskId>`) already stores `(Transport, ExternalTaskData)`. For socket tasks, we store `(Transport::Socket(stream), ExternalTaskData)` - same pattern as directory-based tasks.
+
+**Note:** `Stream` from interprocess doesn't implement `Debug`, so we'll need a manual `Debug` impl or wrapper.
+
+#### Step 2: Update TransportMap for Socket Registration
+
+`TransportMap` currently has `path_to_id` reverse lookup that assumes paths. For socket transports:
+- Skip the `path_to_id` registration (socket tasks aren't discovered via filesystem)
+- Add a `register_socket()` method that only inserts into `entries`, not `path_to_id`
+
+```rust
+impl<Id: TransportId> TransportMap<Id> {
+    /// Register a socket-based transport (no path lookup).
+    pub fn register_socket(&mut self, id: Id, stream: Stream, data: Id::Data) {
+        self.entries.insert(id, (Transport::Socket(stream), data));
+        // No path_to_id entry - socket tasks don't have paths
     }
 }
 ```
-
-**Note:** `Stream` from interprocess doesn't implement `Debug`, so we'll need `#[derive(Debug)]` workarounds or manual impl.
-
-#### Step 2: Store Socket in ExternalTaskMap
-
-Currently `ExternalTaskData` stores:
-```rust
-pub(super) struct ExternalTaskData {
-    pub content: String,
-    pub timeout: Duration,
-}
-```
-
-For socket tasks, we also need to store the stream. Options:
-
-**Option A: Add stream to ExternalTaskData**
-```rust
-pub(super) struct ExternalTaskData {
-    pub content: String,
-    pub timeout: Duration,
-    pub response_stream: Option<Stream>,  // None for file-based
-}
-```
-
-**Option B: Use Transport directly**
-Already have `TransportMap<ExternalTaskId>` which stores `(Transport, ExternalTaskData)`. Change `Transport::Directory` to only be used for agents, add a new map for socket submissions.
-
-**Option C: Separate SocketTaskMap**
-Keep file-based and socket-based tasks in separate maps.
-
-**Recommendation:** Option A is simplest. The stream is just another piece of data associated with the task.
 
 #### Step 3: Update accept_socket_task
 
@@ -306,124 +280,65 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)
 - Read without BufReader (manual buffering)
 - Clone the stream (if supported)
 
-#### Step 4: Register Socket Task with Stream
+#### Step 4: Register Socket Task
 
 In `io_loop`:
 
 ```rust
 if let Some((content, stream)) = accept_socket_task(listener)? {
     let external_id = task_id_allocator.allocate_external();
-    // Store stream with the task
-    if external_task_map.register(
+
+    // Register with Transport::Socket (no path)
+    external_task_map.register_socket(
         external_id,
-        PathBuf::new(),  // No path for socket tasks
+        stream,
         ExternalTaskData {
             content,
             timeout: io_config.default_task_timeout,
-            response_stream: Some(stream),  // NEW
         },
-    ) {
-        let _ = events_tx.send(Event::TaskSubmitted {
-            task_id: TaskId::External(external_id),
-        });
-    }
+    );
+
+    let _ = events_tx.send(Event::TaskSubmitted {
+        task_id: TaskId::External(external_id),
+    });
 }
 ```
 
-**Issue:** `register()` currently requires a `PathBuf`. For socket tasks, there's no path. Options:
-- Make path optional
-- Use a sentinel value
-- Have separate registration method for socket tasks
+#### Step 5: Write Response via Transport
 
-#### Step 5: Write Response to Socket
-
-In `execute_effect`, when handling `TaskCompleted` for external tasks:
+Update `ExternalTaskMap::finish()` to handle both transport types:
 
 ```rust
-TaskId::External(external_id) => {
-    let response = agent_map.read_from(agent_id, RESPONSE_FILE)?;
+impl ExternalTaskMap {
+    pub fn finish(&mut self, id: ExternalTaskId, response: &str) -> io::Result<ExternalTaskData> {
+        let (transport, data) = self.remove(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "task not found"))?;
 
-    // Get the task data (includes stream if socket-based)
-    let task_data = external_task_map.remove(external_id)?;
-
-    if let Some(mut stream) = task_data.response_stream {
-        // Socket-based: write response to stream
-        writeln!(stream, "{}", response.len())?;
-        stream.write_all(response.as_bytes())?;
-        stream.flush()?;
-    } else {
-        // File-based: write response to file (existing behavior)
-        external_task_map.finish(external_id, &response)?;
-    }
-}
-```
-
-#### Step 6: Handle Socket Task Failures
-
-When a socket task times out or fails:
-
-```rust
-Effect::TaskFailed { task_id } => {
-    match task_id {
-        TaskId::External(external_id) => {
-            let error = json!({"status": "NotProcessed", "reason": "AgentTimeout"});
-
-            if let Some(task_data) = external_task_map.remove(external_id) {
-                if let Some(mut stream) = task_data.response_stream {
-                    // Write error to socket
-                    let error_str = error.to_string();
-                    let _ = writeln!(stream, "{}", error_str.len());
-                    let _ = stream.write_all(error_str.as_bytes());
-                    let _ = stream.flush();
-                } else {
-                    // Write error to file (existing behavior)
-                }
+        match transport {
+            Transport::Directory(path) => {
+                fs::write(path.join(RESPONSE_FILE), response)?;
+            }
+            Transport::Socket(mut stream) => {
+                writeln!(stream, "{}", response.len())?;
+                stream.write_all(response.as_bytes())?;
+                stream.flush()?;
             }
         }
+
+        Ok(data)
     }
 }
 ```
+
+This handles both `TaskCompleted` and `TaskFailed` - both just call `finish()` with the appropriate response content.
 
 ### Complications
 
-1. **BufReader ownership** - Reading from socket uses BufReader which borrows the stream. Need to get stream back after reading.
+1. **BufReader ownership** - Reading from socket uses BufReader which borrows the stream. Need to get stream back after reading (use `into_inner()` or read without BufReader).
 
-2. **Stream doesn't implement Debug** - `interprocess::local_socket::Stream` doesn't derive Debug. Need manual Debug impl or wrapper.
+2. **Stream doesn't implement Debug** - `interprocess::local_socket::Stream` doesn't derive Debug. Need manual Debug impl for Transport or skip Debug for Socket variant.
 
-3. **Path requirement in TransportMap** - Current design assumes every task has a path. Socket tasks don't.
-
-4. **Thread safety** - Socket stream needs to be accessible when writing response, potentially from different context than where it was created.
-
-5. **Cleanup on drop** - If daemon crashes or task is never completed, socket should be closed cleanly.
-
-### Simplified Alternative
-
-Instead of storing the stream in the task map, handle socket tasks synchronously:
-
-```rust
-fn handle_socket_submission(stream: Stream, daemon: &Daemon) -> io::Result<()> {
-    // Read task from stream
-    let task = read_task(&stream)?;
-
-    // Submit task and wait for completion (blocking)
-    let response = daemon.submit_and_wait(task)?;
-
-    // Write response
-    write_response(&stream, &response)?;
-
-    Ok(())
-}
-```
-
-**Problem:** This blocks the I/O thread. Would need to spawn a thread per socket connection, or use async.
-
-### Recommended Approach
-
-1. Start with the full async-storage approach (store stream in task data)
-2. Add `Option<Stream>` to `ExternalTaskData`
-3. Handle the BufReader ownership issue by reading into owned buffer first
-4. Add a wrapper type for Stream that implements Debug
-5. Update `finish()` to handle socket responses
+3. **Cleanup on drop** - If daemon crashes or task is never completed, socket closes automatically when dropped (correct behavior).
 
 ---
 
@@ -433,12 +348,11 @@ fn handle_socket_submission(stream: Stream, daemon: &Daemon) -> io::Result<()> {
 
 **Goal:** Make `submit()` work end-to-end.
 
-1. Add `response_stream: Option<Stream>` to `ExternalTaskData`
-2. Update `accept_socket_task()` to return the stream
-3. Store stream when registering socket task
-4. Write response to stream in `execute_effect(TaskCompleted)`
-5. Write error to stream in `execute_effect(TaskFailed)`
-6. Test: `agent_pool submit_task --input '...'` should work
+1. Add `Transport::Socket(Stream)` variant
+2. Add `TransportMap::register_socket()` method (no path lookup)
+3. Update `accept_socket_task()` to return the stream
+4. Update `ExternalTaskMap::finish()` to write to socket or file based on transport type
+5. Test: `agent_pool submit_task --input '...'` should work
 
 ### Phase 2: Clarify CLI Flags
 
