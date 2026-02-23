@@ -60,9 +60,9 @@ while true; do
             exit 0
         fi
 
-        # Handle heartbeat/health checks immediately
-        if [ "$kind" = "HealthCheck" ] || [ "$kind" = "Heartbeat" ]; then
-            echo "[$AGENT_ID] $kind" >&2
+        # Handle heartbeat immediately
+        if [ "$kind" = "Heartbeat" ]; then
+            echo "[$AGENT_ID] Heartbeat" >&2
             echo "{}" > "$AGENT_DIR/response.json"
             sleep 0.05
             continue

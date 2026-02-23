@@ -410,13 +410,13 @@ The `get_task` CLI has `--auto-health-check` (default: **false**).
 - The ping-pong provides forward progress that keeps agents engaged
 
 ```bash
-# Default: agent sees and must respond to health checks
+# Default: agent sees and must respond to heartbeats
 task=$(agent_pool get_task --pool $POOL --name $NAME)
-# task.kind can be "Task" or "HealthCheck"
-# Agent must write response for both
+# task.kind can be "Task", "Heartbeat", or "Kicked"
+# Agent must write response for Task/Heartbeat, exit on Kicked
 
-# Opt-in for dumb scripts: CLI handles health checks automatically
-task=$(agent_pool get_task --pool $POOL --name $NAME --auto-health-check=true)
+# Opt-in for dumb scripts: CLI handles heartbeats automatically
+task=$(agent_pool get_task --pool $POOL --name $NAME --auto-heartbeat=true)
 # task.kind is always "Task"
 ```
 

@@ -150,7 +150,7 @@ impl GsdTestAgent {
 
                     // Handle daemon control messages immediately
                     match envelope.kind.as_str() {
-                        "HealthCheck" | "Heartbeat" => {
+                        "Heartbeat" => {
                             let _ = fs::write(&response_file, "{}");
                             thread::sleep(Duration::from_millis(10));
                             continue;
