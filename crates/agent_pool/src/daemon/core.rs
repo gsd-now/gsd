@@ -77,7 +77,6 @@ pub(super) struct Epoch {
     pub(super) sequence: u32,
 }
 
-
 // =============================================================================
 // Agent State
 // =============================================================================
@@ -401,19 +400,29 @@ fn handle_agent_registered(
     let initial_epoch = agent.epoch;
 
     let old = state.agents.insert(agent_id, agent);
-    assert!(old.is_none(), "duplicate AgentRegistered event - I/O layer bug");
+    assert!(
+        old.is_none(),
+        "duplicate AgentRegistered event - I/O layer bug"
+    );
 
     if let Some(task_id) = heartbeat_task_id {
         // Heartbeat provided - assign it directly
         let agent = state.agents.get_mut(&agent_id).expect("just inserted");
-        let epoch = agent.try_become_busy(task_id).expect("new agent should be idle");
+        let epoch = agent
+            .try_become_busy(task_id)
+            .expect("new agent should be idle");
         (state, vec![Effect::TaskAssigned { task_id, epoch }])
     } else if let Some(effect) = try_assign_pending_to_agent(&mut state, agent_id) {
         // Assigned a pending task
         (state, vec![effect])
     } else {
         // No work available
-        (state, vec![Effect::AgentIdled { epoch: initial_epoch }])
+        (
+            state,
+            vec![Effect::AgentIdled {
+                epoch: initial_epoch,
+            }],
+        )
     }
 }
 
@@ -469,10 +478,13 @@ fn handle_agent_timed_out(mut state: PoolState, epoch: Epoch) -> (PoolState, Vec
     }
 
     match agent.status {
-        AgentStatus::Busy { task_id } => (state, vec![
-            Effect::TaskFailed { task_id },
-            Effect::AgentRemoved { agent_id },
-        ]),
+        AgentStatus::Busy { task_id } => (
+            state,
+            vec![
+                Effect::TaskFailed { task_id },
+                Effect::AgentRemoved { agent_id },
+            ],
+        ),
         AgentStatus::Idle => {
             panic!("AgentTimedOut with matching epoch but idle - daemon bug");
         }
@@ -499,10 +511,13 @@ fn handle_assign_task_to_agent_if_epoch_matches(
         .try_become_busy(task_id)
         .expect("epoch matched but agent not idle - epoch logic bug");
 
-    (state, vec![Effect::TaskAssigned {
-        task_id,
-        epoch: new_epoch,
-    }])
+    (
+        state,
+        vec![Effect::TaskAssigned {
+            task_id,
+            epoch: new_epoch,
+        }],
+    )
 }
 
 // =============================================================================
@@ -595,23 +610,13 @@ mod tests {
         let mut state = PoolState::new();
         state.agents.insert(AgentId(1), AgentState::new(AgentId(1)));
 
-        let (state, effects) = step(
-            state,
-            Event::TaskSubmitted {
-                task_id: ext(42),
-            },
-        );
+        let (state, effects) = step(state, Event::TaskSubmitted { task_id: ext(42) });
 
         assert_eq!(state.pending_count(), 0, "Task should be dispatched");
         assert_eq!(state.busy_count(), 1);
 
         let agent = state.get_agent(AgentId(1)).unwrap();
-        assert_eq!(
-            agent.status,
-            AgentStatus::Busy {
-                task_id: ext(42)
-            }
-        );
+        assert_eq!(agent.status, AgentStatus::Busy { task_id: ext(42) });
         assert_eq!(
             agent.epoch.sequence, 1,
             "Epoch should increment on dispatch"
@@ -632,12 +637,7 @@ mod tests {
         agent.try_become_busy(ext(99)).unwrap();
         state.agents.insert(AgentId(1), agent);
 
-        let (state, effects) = step(
-            state,
-            Event::TaskSubmitted {
-                task_id: ext(42),
-            },
-        );
+        let (state, effects) = step(state, Event::TaskSubmitted { task_id: ext(42) });
 
         assert_eq!(state.pending_count(), 1);
         assert!(state.has_pending_task(ext(42)));
@@ -683,12 +683,7 @@ mod tests {
     #[test]
     fn task_withdrawn_noop_for_unknown_task() {
         let state = PoolState::new();
-        let (state, effects) = step(
-            state,
-            Event::TaskWithdrawn {
-                task_id: ext(999),
-            },
-        );
+        let (state, effects) = step(state, Event::TaskWithdrawn { task_id: ext(999) });
 
         assert_eq!(state.pending_count(), 0);
         assert!(effects.is_empty());
@@ -702,12 +697,7 @@ mod tests {
         state.agents.insert(AgentId(1), agent);
 
         // Try to withdraw a task that's already dispatched
-        let (state, effects) = step(
-            state,
-            Event::TaskWithdrawn {
-                task_id: ext(42),
-            },
-        );
+        let (state, effects) = step(state, Event::TaskWithdrawn { task_id: ext(42) });
 
         // Task is still being processed - can't recall it
         assert_eq!(state.busy_count(), 1);
@@ -1032,7 +1022,10 @@ mod tests {
             Effect::TaskAssigned { epoch, .. } => *epoch,
             _ => panic!("Expected TaskAssigned"),
         };
-        assert_eq!(epoch3.sequence, 3, "Epoch: 1 (first busy) → 2 (idle) → 3 (second busy)");
+        assert_eq!(
+            epoch3.sequence, 3,
+            "Epoch: 1 (first busy) → 2 (idle) → 3 (second busy)"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1047,10 +1040,7 @@ mod tests {
         state.agents.insert(AgentId(1), AgentState::new(AgentId(1)));
         state.agents.insert(AgentId(2), AgentState::new(AgentId(2)));
 
-        let (_state, effects) = step(
-            state,
-            Event::TaskSubmitted { task_id: ext(1) },
-        );
+        let (_state, effects) = step(state, Event::TaskSubmitted { task_id: ext(1) });
 
         // Should dispatch to AgentId(1) - lowest ID
         assert_eq!(effects.len(), 1);

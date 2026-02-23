@@ -116,7 +116,9 @@ impl Transport {
 // =============================================================================
 
 /// Trait for IDs that can be used with TransportMap.
-pub(super) trait TransportId: Copy + Eq + std::hash::Hash + std::fmt::Debug + From<u32> {
+pub(super) trait TransportId:
+    Copy + Eq + std::hash::Hash + std::fmt::Debug + From<u32>
+{
     /// Data stored alongside the transport for this ID type.
     type Data: std::fmt::Debug;
 }
@@ -419,7 +421,11 @@ pub(super) fn execute_effect(
                     let _ = fs::remove_file(agent_path.join(TASK_FILE));
                     let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
 
-                    debug!(agent_id = agent_id.0, heartbeat_id = heartbeat_id.0, "heartbeat completed");
+                    debug!(
+                        agent_id = agent_id.0,
+                        heartbeat_id = heartbeat_id.0,
+                        "heartbeat completed"
+                    );
                 }
                 TaskId::External(external_id) => {
                     let agent_output = agent_map
@@ -436,26 +442,28 @@ pub(super) fn execute_effect(
                     });
                     external_task_map.finish(external_id, &response.to_string())?;
 
-                    info!(agent_id = agent_id.0, external_task_id = external_id.0, "task completed");
+                    info!(
+                        agent_id = agent_id.0,
+                        external_task_id = external_id.0,
+                        "task completed"
+                    );
                 }
             }
         }
-        Effect::TaskFailed { task_id } => {
-            match task_id {
-                TaskId::Heartbeat(heartbeat_id) => {
-                    debug!(heartbeat_id = heartbeat_id.0, "heartbeat timed out");
-                }
-                TaskId::External(external_id) => {
-                    let error = serde_json::json!({
-                        "status": "NotProcessed",
-                        "reason": "AgentTimeout"
-                    });
-                    external_task_map.finish(external_id, &error.to_string())?;
+        Effect::TaskFailed { task_id } => match task_id {
+            TaskId::Heartbeat(heartbeat_id) => {
+                debug!(heartbeat_id = heartbeat_id.0, "heartbeat timed out");
+            }
+            TaskId::External(external_id) => {
+                let error = serde_json::json!({
+                    "status": "NotProcessed",
+                    "reason": "AgentTimeout"
+                });
+                external_task_map.finish(external_id, &error.to_string())?;
 
-                    warn!(external_task_id = external_id.0, "task failed (timeout)");
-                }
+                warn!(external_task_id = external_id.0, "task failed (timeout)");
             }
-        }
+        },
         Effect::AgentRemoved { agent_id } => {
             let (transport, ()) = agent_map
                 .remove(agent_id)

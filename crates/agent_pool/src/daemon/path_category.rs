@@ -36,7 +36,11 @@ pub(super) enum PathCategory {
 ///
 /// Returns `None` if the path doesn't match any known category.
 #[must_use]
-pub(super) fn categorize(path: &Path, agents_dir: &Path, pending_dir: &Path) -> Option<PathCategory> {
+pub(super) fn categorize(
+    path: &Path,
+    agents_dir: &Path,
+    pending_dir: &Path,
+) -> Option<PathCategory> {
     categorize_under_agents(path, agents_dir)
         .or_else(|| categorize_under_pending(path, pending_dir))
 }

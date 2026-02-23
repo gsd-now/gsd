@@ -38,7 +38,9 @@ fn single_agent_queues_multiple_tasks() {
         .map(|task| {
             let root = root.clone();
             let task = (*task).to_string();
-            thread::spawn(move || agent_pool::submit(&root, &Payload::inline(task)).expect("Submit failed"))
+            thread::spawn(move || {
+                agent_pool::submit(&root, &Payload::inline(task)).expect("Submit failed")
+            })
         })
         .collect();
 

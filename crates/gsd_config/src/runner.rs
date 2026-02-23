@@ -326,7 +326,8 @@ impl<'a> TaskRunner<'a> {
                         );
                         debug!(payload = %payload, "task payload");
 
-                        let result = agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
+                        let result =
+                            agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
                         let _ = tx.send(InFlightResult {
                             task,
                             task_id,

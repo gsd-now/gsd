@@ -22,7 +22,9 @@ pub enum Payload {
 impl Payload {
     /// Create an inline payload with the given content.
     pub fn inline(content: impl Into<String>) -> Self {
-        Self::Inline { content: content.into() }
+        Self::Inline {
+            content: content.into(),
+        }
     }
 
     /// Create a file reference payload pointing to the given path.

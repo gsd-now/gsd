@@ -40,7 +40,9 @@ fn multiple_agents_parallel_tasks() {
         .map(|i| {
             let root = root.clone();
             let task = format!("Task-{i}");
-            thread::spawn(move || agent_pool::submit(&root, &Payload::inline(task)).expect("Submit failed"))
+            thread::spawn(move || {
+                agent_pool::submit(&root, &Payload::inline(task)).expect("Submit failed")
+            })
         })
         .collect();
 

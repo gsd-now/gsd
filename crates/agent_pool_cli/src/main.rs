@@ -5,9 +5,9 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, DaemonConfig, Payload, RESPONSE_FILE, TASK_FILE,
-    cleanup_stopped, generate_id, id_to_path, is_daemon_running, list_pools, resolve_pool,
-    run_with_config, stop, submit, submit_file,
+    AGENTS_DIR, DaemonConfig, Payload, RESPONSE_FILE, TASK_FILE, cleanup_stopped, generate_id,
+    id_to_path, is_daemon_running, list_pools, resolve_pool, run_with_config, stop, submit,
+    submit_file,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -193,19 +193,29 @@ fn init_tracing(level: LogLevel) {
 }
 
 /// Wait for a task file to appear and return the formatted output JSON.
-fn wait_for_task(task_file: &std::path::Path, response_file: &std::path::Path, name: &str) -> Result<String, String> {
+fn wait_for_task(
+    task_file: &std::path::Path,
+    response_file: &std::path::Path,
+    name: &str,
+) -> Result<String, String> {
     loop {
         // Wait for task.json to exist AND response.json to NOT exist
         // (response.json existing means we already processed this task)
         if task_file.exists() && !response_file.exists() {
-            let raw = fs::read_to_string(task_file)
-                .map_err(|e| format!("Failed to read task: {e}"))?;
+            let raw =
+                fs::read_to_string(task_file).map_err(|e| format!("Failed to read task: {e}"))?;
 
             let envelope: serde_json::Value = serde_json::from_str(&raw)
                 .map_err(|e| format!("Failed to parse task envelope: {e}"))?;
 
-            let kind = envelope.get("kind").and_then(|k| k.as_str()).unwrap_or("Task");
-            let content = envelope.get("task").cloned().unwrap_or(serde_json::Value::Null);
+            let kind = envelope
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .unwrap_or("Task");
+            let content = envelope
+                .get("task")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
 
             let output = serde_json::json!({
                 "kind": kind,
@@ -283,16 +293,22 @@ fn main() -> ExitCode {
                         eprintln!("Stopped existing daemon");
                     } else if clear {
                         // --clear alone but daemon running
-                        eprintln!("Daemon is running. Use --stop --clear or --force to stop and restart.");
+                        eprintln!(
+                            "Daemon is running. Use --stop --clear or --force to stop and restart."
+                        );
                         return ExitCode::FAILURE;
                     } else {
                         // No flags, daemon running
-                        eprintln!("Daemon is already running. Use --stop --clear or --force to restart.");
+                        eprintln!(
+                            "Daemon is already running. Use --stop --clear or --force to restart."
+                        );
                         return ExitCode::FAILURE;
                     }
                 } else if !clear && !force {
                     // Directory exists, daemon not running, no --clear or --force
-                    eprintln!("Pool directory exists with stale state. Use --clear or --force to wipe and restart.");
+                    eprintln!(
+                        "Pool directory exists with stale state. Use --clear or --force to wipe and restart."
+                    );
                     return ExitCode::FAILURE;
                 }
 
@@ -342,7 +358,12 @@ fn main() -> ExitCode {
             }
             eprintln!("Server stopped");
         }
-        Command::SubmitTask { pool, data, file, notify } => {
+        Command::SubmitTask {
+            pool,
+            data,
+            file,
+            notify,
+        } => {
             let root = resolve_pool(&pool);
 
             // Build payload from --data (inline) or --file (file reference)
@@ -452,7 +473,12 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::NextTask { pool, name, data, file } => {
+        Command::NextTask {
+            pool,
+            name,
+            data,
+            file,
+        } => {
             let root = resolve_pool(&pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 

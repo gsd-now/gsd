@@ -126,7 +126,11 @@ fn single_agent_multiple_tasks() {
 
     // Submit multiple tasks
     for i in 0..3 {
-        submit_task(&pending_dir, &format!("task-{i}"), &format!(r#"{{"n": {i}}}"#));
+        submit_task(
+            &pending_dir,
+            &format!("task-{i}"),
+            &format!(r#"{{"n": {i}}}"#),
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -138,7 +142,11 @@ fn single_agent_multiple_tasks() {
     }
 
     let processed = agent.stop();
-    assert_eq!(processed.len(), 3, "Agent should have processed three tasks");
+    assert_eq!(
+        processed.len(),
+        3,
+        "Agent should have processed three tasks"
+    );
 
     cleanup_test_dir(&format!("{TEST_DIR}_single_multi"));
 }
@@ -165,7 +173,11 @@ fn multiple_agents_parallel() {
 
     // Submit 4 tasks
     for i in 0..4 {
-        submit_task(&pending_dir, &format!("task-{i}"), &format!(r#"{{"n": {i}}}"#));
+        submit_task(
+            &pending_dir,
+            &format!("task-{i}"),
+            &format!(r#"{{"n": {i}}}"#),
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -246,7 +258,11 @@ fn tasks_queued_before_agents() {
 
     // Submit tasks BEFORE any agents register
     for i in 0..3 {
-        submit_task(&pending_dir, &format!("queued-{i}"), &format!(r#"{{"n": {i}}}"#));
+        submit_task(
+            &pending_dir,
+            &format!("queued-{i}"),
+            &format!(r#"{{"n": {i}}}"#),
+        );
     }
 
     thread::sleep(Duration::from_millis(100));
@@ -262,7 +278,11 @@ fn tasks_queued_before_agents() {
     }
 
     let processed = agent.stop();
-    assert_eq!(processed.len(), 3, "Agent should have processed all 3 queued tasks");
+    assert_eq!(
+        processed.len(),
+        3,
+        "Agent should have processed all 3 queued tasks"
+    );
 
     cleanup_test_dir(&format!("{TEST_DIR}_queue_before"));
 }
@@ -286,7 +306,11 @@ fn rapid_task_burst() {
 
     // Submit 10 tasks as fast as possible
     for i in 0..10 {
-        submit_task(&pending_dir, &format!("burst-{i}"), &format!(r#"{{"n": {i}}}"#));
+        submit_task(
+            &pending_dir,
+            &format!("burst-{i}"),
+            &format!(r#"{{"n": {i}}}"#),
+        );
     }
 
     // Wait for all responses
@@ -297,7 +321,11 @@ fn rapid_task_burst() {
     }
 
     let processed = agent.stop();
-    assert_eq!(processed.len(), 10, "Agent should have processed all 10 tasks");
+    assert_eq!(
+        processed.len(),
+        10,
+        "Agent should have processed all 10 tasks"
+    );
 
     cleanup_test_dir(&format!("{TEST_DIR}_rapid_burst"));
 }
@@ -334,7 +362,11 @@ fn identical_task_content() {
     }
 
     let processed = agent.stop();
-    assert_eq!(processed.len(), 5, "Agent should have processed all 5 identical tasks");
+    assert_eq!(
+        processed.len(),
+        5,
+        "Agent should have processed all 5 identical tasks"
+    );
 
     cleanup_test_dir(&format!("{TEST_DIR}_identical"));
 }
@@ -360,7 +392,11 @@ fn agent_joins_mid_processing() {
 
     // Submit 6 tasks
     for i in 0..6 {
-        submit_task(&pending_dir, &format!("task-{i}"), &format!(r#"{{"n": {i}}}"#));
+        submit_task(
+            &pending_dir,
+            &format!("task-{i}"),
+            &format!(r#"{{"n": {i}}}"#),
+        );
     }
 
     // Wait a bit, then add a second fast agent

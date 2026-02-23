@@ -27,8 +27,7 @@ use crate::lock::acquire_lock;
 
 use super::core::{AgentId, Effect, Event, TaskId};
 use super::io::{
-    AgentMap, ExternalTaskData, ExternalTaskMap, IoConfig,
-    TaskIdAllocator, execute_effect,
+    AgentMap, ExternalTaskData, ExternalTaskMap, IoConfig, TaskIdAllocator, execute_effect,
 };
 use super::path_category::{self, PathCategory};
 
@@ -120,7 +119,8 @@ impl DaemonSignals {
     }
 
     fn trigger_shutdown(&self) {
-        self.state.store(DaemonState::Shutdown as u32, Ordering::SeqCst);
+        self.state
+            .store(DaemonState::Shutdown as u32, Ordering::SeqCst);
     }
 
     fn is_shutdown_triggered(&self) -> bool {
@@ -370,7 +370,14 @@ fn run_daemon(
     });
 
     // Do initial scan of existing agents (kicked_paths is empty at startup)
-    scan_agents(agents_dir, &events_tx, &mut agent_map, &kicked_paths, &mut task_id_allocator, io_config)?;
+    scan_agents(
+        agents_dir,
+        &events_tx,
+        &mut agent_map,
+        &kicked_paths,
+        &mut task_id_allocator,
+        io_config,
+    )?;
 
     // Run the I/O loop
     let result = io_loop(
@@ -479,7 +486,10 @@ fn io_loop(
     io_config: &IoConfig,
     signals: &DaemonSignals,
 ) -> io::Result<()> {
-    debug!("io_loop starting, agents_dir={:?}, pending_dir={:?}", agents_dir, pending_dir);
+    debug!(
+        "io_loop starting, agents_dir={:?}, pending_dir={:?}",
+        agents_dir, pending_dir
+    );
 
     loop {
         // Block until woken or timeout (for shutdown check)
@@ -598,23 +608,51 @@ fn handle_fs_event(
         match category {
             PathCategory::AgentDir { name } => {
                 let agent_path = agents_dir.join(&name);
-                handle_agent_dir(&agent_path, events_tx, agent_map, kicked_paths, task_id_allocator, io_config);
+                handle_agent_dir(
+                    &agent_path,
+                    events_tx,
+                    agent_map,
+                    kicked_paths,
+                    task_id_allocator,
+                    io_config,
+                );
             }
             PathCategory::AgentResponse { name } => {
                 let agent_path = agents_dir.join(&name);
-                handle_agent_response(&agent_path, path, events_tx, agent_map, pending_responses, kicked_paths, task_id_allocator, io_config);
+                handle_agent_response(
+                    &agent_path,
+                    path,
+                    events_tx,
+                    agent_map,
+                    pending_responses,
+                    kicked_paths,
+                    task_id_allocator,
+                    io_config,
+                );
             }
             PathCategory::PendingDir { uuid } => {
                 let submission_dir = pending_dir.join(&uuid);
                 let task_path = submission_dir.join(TASK_FILE);
                 if task_path.exists() {
-                    register_pending_task(&submission_dir, events_tx, external_task_map, task_id_allocator, io_config);
+                    register_pending_task(
+                        &submission_dir,
+                        events_tx,
+                        external_task_map,
+                        task_id_allocator,
+                        io_config,
+                    );
                 }
             }
             PathCategory::PendingTask { uuid } => {
                 let submission_dir = pending_dir.join(&uuid);
                 if path.exists() {
-                    register_pending_task(&submission_dir, events_tx, external_task_map, task_id_allocator, io_config);
+                    register_pending_task(
+                        &submission_dir,
+                        events_tx,
+                        external_task_map,
+                        task_id_allocator,
+                        io_config,
+                    );
                 }
             }
         }
@@ -744,7 +782,10 @@ fn register_pending_task(
             timeout: io_config.default_task_timeout,
         },
     ) {
-        info!(external_task_id = external_id.0, "file-based task registered");
+        info!(
+            external_task_id = external_id.0,
+            "file-based task registered"
+        );
         let _ = events_tx.send(Event::TaskSubmitted {
             task_id: TaskId::External(external_id),
         });
@@ -907,8 +948,8 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)
 /// For inline payloads, returns the content directly.
 /// For file references, reads the file and returns its contents.
 fn resolve_payload(raw: &str) -> io::Result<String> {
-    let payload: Payload = serde_json::from_str(raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let payload: Payload =
+        serde_json::from_str(raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     match payload {
         Payload::Inline { content } => Ok(content),
@@ -1017,7 +1058,15 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        scan_agents(&agents_dir, &events_tx, &mut agent_map, &kicked_paths, &mut task_id_allocator, &io_config).unwrap();
+        scan_agents(
+            &agents_dir,
+            &events_tx,
+            &mut agent_map,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        )
+        .unwrap();
 
         // Should have received two AgentRegistered events (with heartbeat task IDs)
         let mut events = vec![];
@@ -1027,7 +1076,13 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         for event in events {
-            assert!(matches!(event, Event::AgentRegistered { heartbeat_task_id: Some(_), .. }));
+            assert!(matches!(
+                event,
+                Event::AgentRegistered {
+                    heartbeat_task_id: Some(_),
+                    ..
+                }
+            ));
         }
     }
 
@@ -1047,10 +1102,19 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         let event = events_rx.try_recv().unwrap();
-        assert!(matches!(event, Event::AgentRegistered { agent_id, heartbeat_task_id: Some(_) } if agent_id == AgentId(0)));
+        assert!(
+            matches!(event, Event::AgentRegistered { agent_id, heartbeat_task_id: Some(_) } if agent_id == AgentId(0))
+        );
         assert!(agent_map.get_id_by_path(&agent_path).is_some());
     }
 
@@ -1067,11 +1131,25 @@ mod tests {
         let io_config = IoConfig::default();
 
         // Register once
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
         let _ = events_rx.try_recv().unwrap();
 
         // Second call should not emit event
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
         assert!(events_rx.try_recv().is_err());
     }
 
@@ -1088,7 +1166,14 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
         assert!(agent_map.get_id_by_path(&agent_path).is_none());
@@ -1107,12 +1192,26 @@ mod tests {
         let io_config = IoConfig::default();
 
         // Register first
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
         let _ = events_rx.try_recv().unwrap();
 
         // Delete and handle again
         fs::remove_dir(&agent_path).unwrap();
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         let event = events_rx.try_recv().unwrap();
         assert!(matches!(event, Event::AgentDeregistered { agent_id } if agent_id == AgentId(0)));
@@ -1131,7 +1230,14 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(!kicked_paths.contains(&agent_path));
     }
@@ -1148,7 +1254,14 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_dir(
+            &agent_path,
+            &events_tx,
+            &mut agent_map,
+            &mut kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
     }
@@ -1167,13 +1280,24 @@ mod tests {
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut agent_map = AgentMap::new();
-        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        agent_map
+            .register_directory(agent_path.clone(), ())
+            .unwrap();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         let event = events_rx.try_recv().unwrap();
         assert!(matches!(event, Event::AgentResponded { agent_id } if agent_id == AgentId(0)));
@@ -1194,7 +1318,16 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         // Should get both registration and response events
         let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
@@ -1213,15 +1346,35 @@ mod tests {
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut agent_map = AgentMap::new();
-        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        agent_map
+            .register_directory(agent_path.clone(), ())
+            .unwrap();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
         // Call twice
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         // Should only get one event
         let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
@@ -1244,7 +1397,16 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
     }
@@ -1259,13 +1421,24 @@ mod tests {
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut agent_map = AgentMap::new();
-        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        agent_map
+            .register_directory(agent_path.clone(), ())
+            .unwrap();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths, &mut task_id_allocator, &io_config);
+        handle_agent_response(
+            &agent_path,
+            &response_path,
+            &events_tx,
+            &mut agent_map,
+            &mut pending_responses,
+            &kicked_paths,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
     }
@@ -1279,14 +1452,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let submission_dir = tmp.path().join("task-1");
         fs::create_dir(&submission_dir).unwrap();
-        fs::write(submission_dir.join(TASK_FILE), r#"{"kind": "Inline", "content": "test task"}"#).unwrap();
+        fs::write(
+            submission_dir.join(TASK_FILE),
+            r#"{"kind": "Inline", "content": "test task"}"#,
+        )
+        .unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut external_task_map = ExternalTaskMap::new();
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        register_pending_task(
+            &submission_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         let event = events_rx.try_recv().unwrap();
         assert!(matches!(event, Event::TaskSubmitted { task_id } if task_id == ext(0)));
@@ -1298,7 +1481,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let submission_dir = tmp.path().join("task-1");
         fs::create_dir(&submission_dir).unwrap();
-        fs::write(submission_dir.join(TASK_FILE), r#"{"kind": "Inline", "content": "test task"}"#).unwrap();
+        fs::write(
+            submission_dir.join(TASK_FILE),
+            r#"{"kind": "Inline", "content": "test task"}"#,
+        )
+        .unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut external_task_map = ExternalTaskMap::new();
@@ -1306,11 +1493,23 @@ mod tests {
         let io_config = IoConfig::default();
 
         // Register once
-        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        register_pending_task(
+            &submission_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &io_config,
+        );
         let _ = events_rx.try_recv().unwrap();
 
         // Second call should not emit event
-        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        register_pending_task(
+            &submission_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &io_config,
+        );
         assert!(events_rx.try_recv().is_err());
     }
 
@@ -1319,15 +1518,29 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let submission_dir = tmp.path().join("task-1");
         fs::create_dir(&submission_dir).unwrap();
-        fs::write(submission_dir.join(TASK_FILE), r#"{"kind": "Inline", "content": "test task"}"#).unwrap();
-        fs::write(submission_dir.join(crate::constants::RESPONSE_FILE), r#"{"done": true}"#).unwrap();
+        fs::write(
+            submission_dir.join(TASK_FILE),
+            r#"{"kind": "Inline", "content": "test task"}"#,
+        )
+        .unwrap();
+        fs::write(
+            submission_dir.join(crate::constants::RESPONSE_FILE),
+            r#"{"done": true}"#,
+        )
+        .unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
         let mut external_task_map = ExternalTaskMap::new();
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        register_pending_task(
+            &submission_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
     }
@@ -1344,7 +1557,13 @@ mod tests {
         let mut task_id_allocator = TaskIdAllocator::new();
         let io_config = IoConfig::default();
 
-        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        register_pending_task(
+            &submission_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &io_config,
+        );
 
         assert!(events_rx.try_recv().is_err());
     }
@@ -1412,9 +1631,7 @@ mod tests {
         assert!(matches!(effect, Effect::AgentIdled { .. }));
 
         events_tx
-            .send(Event::TaskSubmitted {
-                task_id: ext(42),
-            })
+            .send(Event::TaskSubmitted { task_id: ext(42) })
             .unwrap();
 
         let effect = effects_rx.recv().unwrap();
