@@ -560,45 +560,11 @@ fn handle_fs_event(
         match category {
             PathCategory::AgentDir { name } => {
                 let agent_path = agents_dir.join(&name);
-                if !agent_path.exists() {
-                    // Directory deleted - clean up tracking
-                    kicked_paths.remove(&agent_path);
-                    if let Some(agent_id) = agent_map.get_id_by_path(&agent_path) {
-                        let _ = events_tx.send(Event::AgentDeregistered { agent_id });
-                    }
-                } else if agent_path.is_dir() && !kicked_paths.contains(&agent_path) {
-                    // Only register if not kicked
-                    if let Some(agent_id) = agent_map.register_directory(agent_path, ()) {
-                        // No heartbeat - let core try pending queue first
-                        let _ = events_tx.send(Event::AgentRegistered {
-                            agent_id,
-                            heartbeat_task_id: None,
-                        });
-                    }
-                }
+                handle_agent_dir(&agent_path, events_tx, agent_map, kicked_paths);
             }
             PathCategory::AgentResponse { name } => {
                 let agent_path = agents_dir.join(&name);
-                if path.exists() && !kicked_paths.contains(&agent_path) {
-                    // Only process responses from non-kicked agents
-                    if agent_map.get_id_by_path(&agent_path).is_none() {
-                        if let Some(agent_id) = agent_map.register_directory(agent_path.clone(), ()) {
-                            // No heartbeat - let core try pending queue first
-                            let _ = events_tx.send(Event::AgentRegistered {
-                                agent_id,
-                                heartbeat_task_id: None,
-                            });
-                        }
-                    }
-                    if let Some(agent_id) = agent_map.get_id_by_path(&agent_path) {
-                        // Deduplicate: FSWatcher often sends multiple events for the same file
-                        if pending_responses.insert(agent_id) {
-                            let _ = events_tx.send(Event::AgentResponded { agent_id });
-                        } else {
-                            trace!(agent_id = agent_id.0, "skipping duplicate AgentResponded");
-                        }
-                    }
-                }
+                handle_agent_response(&agent_path, path, events_tx, agent_map, pending_responses, kicked_paths);
             }
             PathCategory::PendingDir { uuid } => {
                 let submission_dir = pending_dir.join(&uuid);
@@ -613,6 +579,63 @@ fn handle_fs_event(
                     register_pending_task(&submission_dir, events_tx, external_task_map, task_id_allocator, io_config);
                 }
             }
+        }
+    }
+}
+
+/// Handle an agent directory event (creation or deletion).
+fn handle_agent_dir(
+    agent_path: &Path,
+    events_tx: &mpsc::Sender<Event>,
+    agent_map: &mut AgentMap,
+    kicked_paths: &mut HashSet<PathBuf>,
+) {
+    if !agent_path.exists() {
+        // Directory deleted - clean up tracking
+        kicked_paths.remove(agent_path);
+        if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
+            let _ = events_tx.send(Event::AgentDeregistered { agent_id });
+        }
+    } else if agent_path.is_dir() && !kicked_paths.contains(agent_path) {
+        // Only register if not kicked
+        if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
+            let _ = events_tx.send(Event::AgentRegistered {
+                agent_id,
+                heartbeat_task_id: None,
+            });
+        }
+    }
+}
+
+/// Handle an agent response file event.
+fn handle_agent_response(
+    agent_path: &Path,
+    response_path: &Path,
+    events_tx: &mpsc::Sender<Event>,
+    agent_map: &mut AgentMap,
+    pending_responses: &mut HashSet<AgentId>,
+    kicked_paths: &HashSet<PathBuf>,
+) {
+    if !response_path.exists() || kicked_paths.contains(agent_path) {
+        return;
+    }
+
+    // Register agent if not already known (response arrived before we saw the directory)
+    if agent_map.get_id_by_path(agent_path).is_none() {
+        if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
+            let _ = events_tx.send(Event::AgentRegistered {
+                agent_id,
+                heartbeat_task_id: None,
+            });
+        }
+    }
+
+    // Send response event (deduplicated)
+    if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
+        if pending_responses.insert(agent_id) {
+            let _ = events_tx.send(Event::AgentResponded { agent_id });
+        } else {
+            trace!(agent_id = agent_id.0, "skipping duplicate AgentResponded");
         }
     }
 }
