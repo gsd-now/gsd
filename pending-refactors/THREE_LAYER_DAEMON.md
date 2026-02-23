@@ -648,14 +648,17 @@ impl TaskMap {
         id
     }
 
-    /// Get content for a task. Returns None for health checks.
-    fn get_content(&self, id: TaskId) -> Option<&str> {
-        self.submissions.get(&id).map(|s| s.content.as_str())
+    fn get_content(&self, id: TaskId) -> &str {
+        &self.submissions.get(&id)
+            .expect("get_content for unknown TaskId")
+            .content
     }
 
-    /// Complete a task: remove from map, return responder if it was a submission.
-    fn complete(&mut self, id: TaskId) -> Option<Responder> {
-        self.submissions.remove(&id).map(|s| s.responder)
+    /// Complete a task: remove from map, return responder.
+    fn complete(&mut self, id: TaskId) -> Responder {
+        self.submissions.remove(&id)
+            .expect("complete() for unknown TaskId")
+            .responder
     }
 }
 
@@ -741,8 +744,7 @@ fn execute_effect(
         Effect::DispatchTask { task_id, epoch } => {
             let name = agent_map.get_name(epoch.agent_id)
                 .expect("DispatchTask for unknown agent - Layer 1 bug");
-            let content = task_map.get_content(task_id)
-                .expect("DispatchTask for unknown task - Layer 1 bug");
+            let content = task_map.get_content(task_id);
             let envelope = serde_json::json!({
                 "kind": "Task",
                 "content": serde_json::from_str::<serde_json::Value>(content)
@@ -759,20 +761,13 @@ fn execute_effect(
             start_timeout_timer(events_tx.clone(), epoch, config.agent_timeout);
         }
         Effect::TaskCompleted { agent_id, task_id } => {
-            // Look up the pending response content
-            // This MUST exist - Layer 3 stored it when AgentResponded was parsed
             let response_content = pending_responses.remove(&agent_id)
                 .expect("TaskCompleted for agent with no pending response - Layer 3 bug");
-
-            // Send response to submitter
-            let responder = task_map.complete(task_id)
-                .expect("TaskCompleted for unknown task - Layer 1 bug");
+            let responder = task_map.complete(task_id);
             responder.send(&response_content)?;
         }
         Effect::TaskFailed { task_id } => {
-            // Send error to submitter
-            let responder = task_map.complete(task_id)
-                .expect("TaskFailed for unknown task - Layer 1 bug");
+            let responder = task_map.complete(task_id);
             let error = serde_json::json!({
                 "status": "NotProcessed",
                 "reason": "AgentTimeout"
