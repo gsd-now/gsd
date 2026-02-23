@@ -318,28 +318,11 @@ pub(super) fn execute_effect(
                         .get_data(external_id)
                         .expect("TaskAssigned for unknown task - core bug");
 
-                    let content_value = serde_json::from_str::<serde_json::Value>(&task_data.content)
-                        .unwrap_or_else(|_| serde_json::Value::String(task_data.content.clone()));
-
-                    // Extract instructions and data from the content
-                    let instructions = content_value
-                        .get("instructions")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let data = content_value
-                        .get("task")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-
-                    let envelope = serde_json::json!({
-                        "kind": "Task",
-                        "task": {
-                            "instructions": instructions,
-                            "data": data,
-                        },
-                    });
+                    // Submission format is identical to agent format:
+                    // {"kind": "Task", "task": {"instructions": "...", "data": {...}}}
+                    // Pass through directly.
                     agent_map
-                        .write_to(epoch.agent_id, TASK_FILE, &envelope.to_string())
+                        .write_to(epoch.agent_id, TASK_FILE, &task_data.content)
                         .expect("TaskAssigned for unknown agent - core bug");
 
                     start_timeout_timer(events_tx.clone(), epoch, task_data.timeout);
