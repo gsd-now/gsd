@@ -938,6 +938,302 @@ mod tests {
     }
 
     // =========================================================================
+    // handle_agent_dir tests
+    // =========================================================================
+
+    #[test]
+    fn handle_agent_dir_registers_new_directory() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+
+        let event = events_rx.try_recv().unwrap();
+        assert!(matches!(event, Event::AgentRegistered { agent_id, heartbeat_task_id: None } if agent_id == AgentId(0)));
+        assert!(agent_map.get_id_by_path(&agent_path).is_some());
+    }
+
+    #[test]
+    fn handle_agent_dir_ignores_already_registered() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+
+        // Register once
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+        let _ = events_rx.try_recv().unwrap();
+
+        // Second call should not emit event
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn handle_agent_dir_ignores_kicked_agent() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+        kicked_paths.insert(agent_path.clone());
+
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+
+        assert!(events_rx.try_recv().is_err());
+        assert!(agent_map.get_id_by_path(&agent_path).is_none());
+    }
+
+    #[test]
+    fn handle_agent_dir_deregisters_deleted_directory() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+
+        // Register first
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+        let _ = events_rx.try_recv().unwrap();
+
+        // Delete and handle again
+        fs::remove_dir(&agent_path).unwrap();
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+
+        let event = events_rx.try_recv().unwrap();
+        assert!(matches!(event, Event::AgentDeregistered { agent_id } if agent_id == AgentId(0)));
+    }
+
+    #[test]
+    fn handle_agent_dir_clears_kicked_on_delete() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        // Don't create the directory - simulating deletion
+
+        let (events_tx, _events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+        kicked_paths.insert(agent_path.clone());
+
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+
+        assert!(!kicked_paths.contains(&agent_path));
+    }
+
+    #[test]
+    fn handle_agent_dir_ignores_file_not_directory() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::write(&agent_path, "not a directory").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut kicked_paths = HashSet::new();
+
+        handle_agent_dir(&agent_path, &events_tx, &mut agent_map, &mut kicked_paths);
+
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    // =========================================================================
+    // handle_agent_response tests
+    // =========================================================================
+
+    #[test]
+    fn handle_agent_response_sends_event_for_known_agent() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+        let response_path = agent_path.join("response.json");
+        fs::write(&response_path, "{}").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        let mut pending_responses = HashSet::new();
+        let kicked_paths = HashSet::new();
+
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+
+        let event = events_rx.try_recv().unwrap();
+        assert!(matches!(event, Event::AgentResponded { agent_id } if agent_id == AgentId(0)));
+    }
+
+    #[test]
+    fn handle_agent_response_registers_unknown_agent() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+        let response_path = agent_path.join("response.json");
+        fs::write(&response_path, "{}").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut pending_responses = HashSet::new();
+        let kicked_paths = HashSet::new();
+
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+
+        // Should get both registration and response events
+        let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::AgentRegistered { .. }));
+        assert!(matches!(events[1], Event::AgentResponded { .. }));
+    }
+
+    #[test]
+    fn handle_agent_response_deduplicates_events() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+        let response_path = agent_path.join("response.json");
+        fs::write(&response_path, "{}").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        let mut pending_responses = HashSet::new();
+        let kicked_paths = HashSet::new();
+
+        // Call twice
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+
+        // Should only get one event
+        let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn handle_agent_response_ignores_kicked_agent() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+        let response_path = agent_path.join("response.json");
+        fs::write(&response_path, "{}").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        let mut pending_responses = HashSet::new();
+        let mut kicked_paths = HashSet::new();
+        kicked_paths.insert(agent_path.clone());
+
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn handle_agent_response_ignores_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let agent_path = tmp.path().join("agent-1");
+        fs::create_dir(&agent_path).unwrap();
+        let response_path = agent_path.join("response.json");
+        // Don't create the file
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut agent_map = AgentMap::new();
+        agent_map.register_directory(agent_path.clone(), ()).unwrap();
+        let mut pending_responses = HashSet::new();
+        let kicked_paths = HashSet::new();
+
+        handle_agent_response(&agent_path, &response_path, &events_tx, &mut agent_map, &mut pending_responses, &kicked_paths);
+
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    // =========================================================================
+    // register_pending_task tests
+    // =========================================================================
+
+    #[test]
+    fn register_pending_task_registers_new_task() {
+        let tmp = TempDir::new().unwrap();
+        let submission_dir = tmp.path().join("task-1");
+        fs::create_dir(&submission_dir).unwrap();
+        fs::write(submission_dir.join(TASK_FILE), r#"{"task": "data"}"#).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let io_config = IoConfig::default();
+
+        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+
+        let event = events_rx.try_recv().unwrap();
+        assert!(matches!(event, Event::TaskSubmitted { task_id } if task_id == ext(0)));
+        assert!(external_task_map.get_id_by_path(&submission_dir).is_some());
+    }
+
+    #[test]
+    fn register_pending_task_ignores_already_registered() {
+        let tmp = TempDir::new().unwrap();
+        let submission_dir = tmp.path().join("task-1");
+        fs::create_dir(&submission_dir).unwrap();
+        fs::write(submission_dir.join(TASK_FILE), r#"{"task": "data"}"#).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let io_config = IoConfig::default();
+
+        // Register once
+        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        let _ = events_rx.try_recv().unwrap();
+
+        // Second call should not emit event
+        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn register_pending_task_ignores_completed_task() {
+        let tmp = TempDir::new().unwrap();
+        let submission_dir = tmp.path().join("task-1");
+        fs::create_dir(&submission_dir).unwrap();
+        fs::write(submission_dir.join(TASK_FILE), r#"{"task": "data"}"#).unwrap();
+        fs::write(submission_dir.join(crate::constants::RESPONSE_FILE), r#"{"done": true}"#).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let io_config = IoConfig::default();
+
+        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn register_pending_task_ignores_missing_task_file() {
+        let tmp = TempDir::new().unwrap();
+        let submission_dir = tmp.path().join("task-1");
+        fs::create_dir(&submission_dir).unwrap();
+        // Don't create task.json
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let io_config = IoConfig::default();
+
+        register_pending_task(&submission_dir, &events_tx, &mut external_task_map, &mut task_id_allocator, &io_config);
+
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    // =========================================================================
     // Event loop tests (events → step → effects)
     // =========================================================================
 
