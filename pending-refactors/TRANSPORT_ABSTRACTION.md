@@ -55,7 +55,7 @@ Submitter                 Daemon
 ```
 
 **CLI flags:**
-- `--input "content"` = inline payload
+- `--data "content"` = inline payload
 - `--file /path/to/task.json` = file reference payload
 - `--notify socket` (default) or `--notify file` = notification mechanism
 
@@ -70,13 +70,25 @@ Daemon                    Agent
    |                         |
 ```
 
-Same 2x2 applies. Agent responses can be:
-- `--result "content"` = inline payload
-- `--file /path/to/response.json` = file reference payload (or write to `response_file` path)
+**Agent commands:**
+- `register` - Initial connection, receives first task (health check)
+- `next` - Submit response to previous task, receive next task
 
-Notification mechanism for agent responses:
-- Socket: agent calls `complete_task` which sends over socket
-- FS events: agent writes to `response_file`, daemon watches for it
+**CLI flags (same as submission):**
+- `--data "response"` = inline payload
+- `--file /path/to/response.json` = file reference payload
+- `--notify socket` (default) or `--notify file` = notification mechanism
+
+**Agent loop:**
+```bash
+task=$(agent_pool register --pool $POOL --name $NAME)
+while true; do
+    response=$(process "$task")
+    task=$(agent_pool next --pool $POOL --name $NAME --data "$response")
+done
+```
+
+After `register`, every `next` call is symmetric: "here's my response, give me next task."
 
 ## Sandbox Restrictions
 
@@ -112,36 +124,59 @@ The current `--file` flag in the CLI reads the file locally and sends content—
 Separate the two axes clearly:
 
 ```rust
-// Payload format
+/// What content are we sending?
 enum Payload {
     Inline(String),
     FileReference(PathBuf),
 }
 
-// Notification mechanism
-enum Notification {
-    Socket,
-    FsEvents,
+/// How do we communicate with the daemon?
+/// Used identically for submission and agent responses.
+enum NotifyMethod {
+    Socket { socket_path: PathBuf },
+    FsEvents { dir: PathBuf },
 }
 
-// Submission with explicit choices
-fn submit(root: &Path, payload: Payload, notify: Notification) -> io::Result<Response>;
+impl NotifyMethod {
+    /// Send message to daemon, wait for response.
+    /// Same logic for submission and agent task completion.
+    fn send_and_receive(&self, payload: &Payload) -> io::Result<String> {
+        match self {
+            Self::Socket { socket_path } => {
+                // Connect to socket, write payload, read response
+            }
+            Self::FsEvents { dir } => {
+                // Write payload to dir/task.json
+                // Poll for dir/response.json
+                // Read and return response
+            }
+        }
+    }
+}
 ```
+
+**Note:** Agent socket responses will panic for now (not yet implemented), but the code structure supports it. The goal is one enum handling both submission and agent responses identically.
 
 **CLI:**
 ```bash
-# Socket + inline (fastest, default)
-agent_pool submit_task --pool $POOL --input "content"
+# Submission
+agent_pool submit_task --pool $POOL --data "content"              # inline
+agent_pool submit_task --pool $POOL --file /path/to/task.json     # file reference
+agent_pool submit_task --pool $POOL --data "content" --notify file  # sandboxed
 
-# Socket + file reference (avoids copying large content)
-agent_pool submit_task --pool $POOL --file /path/to/task.json
+# Agent registration (first call, gets initial task/health check)
+agent_pool register --pool $POOL --name $NAME
 
-# FS events + inline (for sandboxed submitters)
-agent_pool submit_task --pool $POOL --input "content" --notify file
-
-# FS events + file reference (sandboxed + large content)
-agent_pool submit_task --pool $POOL --file /path/to/task.json --notify file
+# Agent next task (submit response, get next task)
+agent_pool next --pool $POOL --name $NAME --data "response"
+agent_pool next --pool $POOL --name $NAME --file /path/to/response.json
+agent_pool next --pool $POOL --name $NAME --data "response" --notify file  # sandboxed
 ```
+
+**Unified flag names:**
+- `--data "content"` = inline payload (same name for submission and agent response)
+- `--file /path` = file reference payload
+- `--notify socket|file` = notification mechanism (default: socket)
 
 ## Independent Migrations
 
