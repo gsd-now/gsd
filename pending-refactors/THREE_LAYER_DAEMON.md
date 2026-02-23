@@ -191,24 +191,21 @@ fn event_loop(
 ### Layer 1: Pure State (no I/O, no time)
 
 ```rust
-/// Unique identifier for a pending response.
-/// Layer 3 maps this back to the actual socket/file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ResponderId(u64);
-
 /// Unique identifier for a task.
+/// Layer 3 maps this to content, responder, and task kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(u64);
 
 /// Unique identifier for an agent.
-/// Layer 3 maps this back to the actual directory name.
+/// Layer 3 maps this to the actual directory name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AgentId(u64);
 
-/// Pure pool state - no I/O handles, no paths, no time, no strings
+/// Pure pool state - only IDs, no content, no I/O, no time, no config
 pub struct PoolState {
-    /// Tasks waiting to be assigned to agents
-    pending_tasks: VecDeque<PendingTask>,
+    /// Task IDs waiting to be assigned to agents.
+    /// Just IDs - Layer 3 holds the actual content and responder info.
+    pending_tasks: VecDeque<TaskId>,
 
     /// Registered agents and their current status.
     /// BTreeMap for deterministic iteration order (snapshots, debugging).
@@ -216,113 +213,129 @@ pub struct PoolState {
 
     /// Counter for generating unique IDs
     next_id: u64,
-
-    /// Configuration (immutable after creation)
-    config: PoolConfig,
-}
-
-/// A task waiting in the queue
-pub struct PendingTask {
-    pub id: TaskId,
-    pub content: String,
-    pub responder: ResponderId,
 }
 
 /// Agent state - no I/O, no absolute time
 pub struct AgentState {
     pub status: AgentStatus,
-    /// Ticks since last activity (incremented by TimerTick event)
-    pub idle_ticks: u32,
+    /// Incremented on every state transition (idle→busy, busy→idle).
+    /// Used to validate timeout events - stale timers have wrong epoch.
+    pub epoch: u64,
 }
 
 pub enum AgentStatus {
     /// Ready to receive work
     Idle,
-    /// Currently processing a task
-    Busy { task_id: TaskId, kind: TaskKind },
+    /// Currently processing a task (submission or health check)
+    /// Layer 3 knows whether it's a submission or health check.
+    Busy { task_id: TaskId },
 }
 
-pub enum TaskKind {
-    /// Regular task from a submitter
-    Submission { responder: ResponderId },
-    /// Health check ping
-    HealthCheck,
-}
-
-/// Configuration - all durations expressed as tick counts
-pub struct PoolConfig {
-    pub initial_health_check: bool,
-    pub periodic_health_check: bool,
-    /// How many ticks before sending health check to idle agent
-    pub health_check_interval_ticks: u32,
-    /// How many ticks before timing out a health check
-    pub health_check_timeout_ticks: u32,
-}
+// No PoolConfig in Layer 1!
+// Layer 1 is purely reactive - it processes events and emits effects.
+// Layer 3 decides policy (whether to start timers, send health checks, etc.)
 ```
 
 ### Layer 1: Events (inputs to state machine)
 
 ```rust
-/// All possible events that can affect state
+/// All possible events that can affect state.
+/// Named in past tense - these are things that HAPPENED.
+/// Note: No content in events - Layer 3 holds all content.
+/// Note: No time in Layer 1 - timeout events come from Layer 3 timers.
 pub enum Event {
-    /// New task submitted (from socket or file)
-    Submission {
-        content: String,
-        responder: ResponderId,
+    /// A task was submitted (from socket or file).
+    /// Layer 3 has already stored the content and responder.
+    TaskSubmitted {
+        task_id: TaskId,
     },
 
-    /// Agent directory appeared (agent registered)
+    /// A task was withdrawn (submitter disconnected/died before completion).
+    /// Remove from pending queue if not yet dispatched.
+    /// If already dispatched, the response will be discarded.
+    TaskWithdrawn {
+        task_id: TaskId,
+    },
+
+    /// An agent directory appeared (agent registered).
     /// Layer 3 assigns the AgentId and maintains the name mapping.
     AgentRegistered {
         agent_id: AgentId,
     },
 
-    /// Agent directory removed (agent deregistered)
+    /// An agent directory was removed (agent deregistered).
     AgentDeregistered {
         agent_id: AgentId,
     },
 
-    /// Agent wrote response.json (task completed)
-    AgentResponse {
+    /// An agent wrote response.json (task completed).
+    /// Layer 3 stores the response content; Layer 1 just knows the agent responded.
+    AgentResponded {
         agent_id: AgentId,
-        response: String,
     },
 
-    /// Timer tick (for health check scheduling/timeouts)
-    /// Layer 2 sends this periodically (e.g., every 1 second)
-    TimerTick,
+    /// An agent timeout fired (from Layer 3 timer).
+    /// Layer 1 checks if agent still exists with matching epoch.
+    /// If yes: deregister agent (and TaskFailed if busy).
+    /// If no: epoch changed, ignore stale timeout.
+    ///
+    /// Agents that are still alive will call get_task again and re-register.
+    AgentTimedOut {
+        agent_id: AgentId,
+        epoch: u64,
+    },
 
-    /// External request to pause dispatching
-    Pause,
+    /// External request to pause dispatching.
+    PauseRequested,
 
-    /// External request to resume dispatching
-    Resume,
+    /// External request to resume dispatching.
+    ResumeRequested,
 
-    /// External request to shut down
-    Shutdown,
+    /// External request to shut down.
+    ShutdownRequested,
 }
 ```
 
 ### Layer 1: Effects (outputs from state machine)
 
 ```rust
-/// Actions for Layer 3 to execute
+/// Actions for Layer 3 to execute.
+/// Note: Minimal data - Layer 3 looks up content/responder from IDs.
 pub enum Effect {
-    /// Send response to a submitter
-    SendResponse {
-        responder: ResponderId,
-        content: String,
-    },
-
-    /// Dispatch task to an agent (write task.json)
-    /// Layer 3 looks up the directory name from AgentId.
+    /// Dispatch a submitted task to an agent.
+    /// Layer 3 looks up: agent directory name, task content from task_id.
+    /// Layer 3 also starts a task timeout timer using the epoch.
     DispatchTask {
         agent_id: AgentId,
         task_id: TaskId,
-        envelope: String,  // JSON envelope with kind + content
+        epoch: u64,
     },
 
-    /// Deregister agent (remove directory due to timeout)
+    /// Agent became idle (after registration or task completion).
+    /// Layer 3 starts a timeout timer - if agent doesn't get work,
+    /// they'll be deregistered. Alive agents will re-register.
+    AgentBecameIdle {
+        agent_id: AgentId,
+        epoch: u64,
+    },
+
+    /// Task completed successfully - send response to submitter (if any).
+    /// For submissions: Layer 3 looks up responder and pending response, sends it.
+    /// For health checks: Layer 3 has no responder, just cleans up.
+    /// agent_id lets Layer 3 look up the pending response content.
+    TaskCompleted {
+        agent_id: AgentId,
+        task_id: TaskId,
+    },
+
+    /// Task failed (agent timed out) - send error to submitter (if any).
+    /// For submissions: Layer 3 looks up responder, sends error.
+    /// For health checks: Layer 3 has no responder, nothing to do.
+    TaskFailed {
+        task_id: TaskId,
+    },
+
+    /// Deregister agent (remove directory due to timeout).
     /// Layer 3 looks up the directory name from AgentId.
     DeregisterAgent {
         agent_id: AgentId,
@@ -351,8 +364,11 @@ pub enum LogLevel {
 /// Pure state transition - no I/O, fully deterministic
 pub fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
     match event {
-        Event::Submission { content, responder } => {
-            handle_submission(state, content, responder)
+        Event::TaskSubmitted { task_id } => {
+            handle_task_submitted(state, task_id)
+        }
+        Event::TaskWithdrawn { task_id } => {
+            handle_task_withdrawn(state, task_id)
         }
         Event::AgentRegistered { agent_id } => {
             handle_agent_registered(state, agent_id)
@@ -360,36 +376,51 @@ pub fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
         Event::AgentDeregistered { agent_id } => {
             handle_agent_deregistered(state, agent_id)
         }
-        Event::AgentResponse { agent_id, response } => {
-            handle_agent_response(state, agent_id, response)
+        Event::AgentResponded { agent_id } => {
+            handle_agent_responded(state, agent_id)
         }
-        Event::TimerTick => {
-            handle_timer_tick(state)
+        Event::AgentTimedOut { agent_id, epoch } => {
+            handle_agent_timed_out(state, agent_id, epoch)
         }
-        Event::Pause => {
+        Event::PauseRequested => {
             // Could add `paused: bool` to state if needed
             (state, vec![])
         }
-        Event::Resume => {
+        Event::ResumeRequested => {
             (state, vec![])
         }
-        Event::Shutdown => {
+        Event::ShutdownRequested => {
             handle_shutdown(state)
         }
     }
 }
 
-fn handle_submission(
+fn handle_task_submitted(
     mut state: PoolState,
-    content: String,
-    responder: ResponderId,
+    task_id: TaskId,
 ) -> (PoolState, Vec<Effect>) {
-    let task_id = state.next_task_id();
-    let task = PendingTask { id: task_id, content, responder };
-    state.pending_tasks.push_back(task);
+    // Just queue the ID - Layer 3 holds the content and responder
+    state.pending_tasks.push_back(task_id);
 
     let effects = try_dispatch(&mut state);
     (state, effects)
+}
+
+fn handle_task_withdrawn(
+    mut state: PoolState,
+    task_id: TaskId,
+) -> (PoolState, Vec<Effect>) {
+    // Remove from pending queue if not yet dispatched
+    state.pending_tasks.retain(|&id| id != task_id);
+
+    // If task was already dispatched to an agent, we can't recall it.
+    // When the agent responds, TaskCompleted will be emitted, but
+    // Layer 3 will find no responder (it was cleaned up) and discard the response.
+
+    (state, vec![Effect::Log {
+        level: LogLevel::Info,
+        message: format!("task withdrawn: {task_id:?}"),
+    }])
 }
 
 fn handle_agent_registered(
@@ -400,63 +431,53 @@ fn handle_agent_registered(
         return (state, vec![]);
     }
 
-    state.agents.insert(agent_id, AgentState::new());
+    state.agents.insert(agent_id, AgentState {
+        status: AgentStatus::Idle,
+        epoch: 0,
+    });
 
-    let mut effects = vec![Effect::Log {
-        level: LogLevel::Info,
-        message: format!("agent registered: {agent_id:?}"),
-    }];
+    let mut effects = vec![
+        Effect::AgentBecameIdle { agent_id, epoch: 0 },
+        Effect::Log {
+            level: LogLevel::Info,
+            message: format!("agent registered: {agent_id:?}"),
+        },
+    ];
 
-    if state.config.initial_health_check {
-        if let Some(dispatch_effect) = dispatch_health_check(&mut state, agent_id) {
-            effects.push(dispatch_effect);
-        }
-    }
-
-    // Try to dispatch pending tasks
+    // Try to dispatch pending tasks to this new agent
     effects.extend(try_dispatch(&mut state));
 
     (state, effects)
 }
 
-fn handle_agent_response(
+fn handle_agent_responded(
     mut state: PoolState,
     agent_id: AgentId,
-    response: String,
 ) -> (PoolState, Vec<Effect>) {
     let Some(agent) = state.agents.get_mut(&agent_id) else {
         return (state, vec![]);
     };
 
-    let AgentStatus::Busy { task_id, kind } = std::mem::replace(
+    let AgentStatus::Busy { task_id } = std::mem::replace(
         &mut agent.status,
         AgentStatus::Idle,
     ) else {
         return (state, vec![]);
     };
 
-    agent.idle_ticks = 0;
+    // Increment epoch on state transition - invalidates any pending TaskTimedOut
+    agent.epoch += 1;
+    let new_epoch = agent.epoch;
 
-    let mut effects = vec![];
-
-    match kind {
-        TaskKind::Submission { responder } => {
-            effects.push(Effect::SendResponse {
-                responder,
-                content: response,
-            });
-            effects.push(Effect::Log {
-                level: LogLevel::Info,
-                message: format!("task completed: agent={agent_id:?}"),
-            });
-        }
-        TaskKind::HealthCheck => {
-            effects.push(Effect::Log {
-                level: LogLevel::Debug,
-                message: format!("health check completed: agent={agent_id:?}"),
-            });
-        }
-    }
+    // Layer 3 looks up response content using agent_id
+    let mut effects = vec![
+        Effect::TaskCompleted { agent_id, task_id },
+        Effect::AgentBecameIdle { agent_id, epoch: new_epoch },
+        Effect::Log {
+            level: LogLevel::Info,
+            message: format!("task completed: agent={agent_id:?}, task={task_id:?}"),
+        },
+    ];
 
     // Try to dispatch more tasks
     effects.extend(try_dispatch(&mut state));
@@ -464,51 +485,41 @@ fn handle_agent_response(
     (state, effects)
 }
 
-fn handle_timer_tick(mut state: PoolState) -> (PoolState, Vec<Effect>) {
-    let mut effects = vec![];
+fn handle_agent_timed_out(
+    mut state: PoolState,
+    agent_id: AgentId,
+    epoch: u64,
+) -> (PoolState, Vec<Effect>) {
+    let Some(agent) = state.agents.get(&agent_id) else {
+        // Agent already removed, ignore
+        return (state, vec![]);
+    };
 
-    // Increment idle ticks for all idle agents
-    for agent in state.agents.values_mut() {
-        if matches!(agent.status, AgentStatus::Idle) {
-            agent.idle_ticks += 1;
-        }
+    if agent.epoch != epoch {
+        // Epoch mismatch - agent did work since timer started, ignore stale timeout
+        return (state, vec![]);
     }
 
-    // Check for health check timeouts
-    let timed_out: Vec<AgentId> = state.agents
-        .iter()
-        .filter(|(_, a)| {
-            matches!(a.status, AgentStatus::Busy { kind: TaskKind::HealthCheck, .. })
-                && a.idle_ticks >= state.config.health_check_timeout_ticks
-        })
-        .map(|(id, _)| *id)
-        .collect();
+    // Capture task_id if agent was busy (for TaskFailed effect)
+    let in_flight_task = match agent.status {
+        AgentStatus::Busy { task_id } => Some(task_id),
+        AgentStatus::Idle => None,
+    };
 
-    for agent_id in timed_out {
-        state.agents.remove(&agent_id);
-        effects.push(Effect::DeregisterAgent { agent_id });
-        effects.push(Effect::Log {
+    // Deregister the agent
+    state.agents.remove(&agent_id);
+
+    let mut effects = vec![
+        Effect::DeregisterAgent { agent_id },
+        Effect::Log {
             level: LogLevel::Warn,
-            message: format!("health check timeout, deregistering: {agent_id:?}"),
-        });
-    }
+            message: format!("agent timed out, deregistering: {agent_id:?}"),
+        },
+    ];
 
-    // Send periodic health checks to stale idle agents
-    if state.config.periodic_health_check {
-        let stale: Vec<AgentId> = state.agents
-            .iter()
-            .filter(|(_, a)| {
-                matches!(a.status, AgentStatus::Idle)
-                    && a.idle_ticks >= state.config.health_check_interval_ticks
-            })
-            .map(|(id, _)| *id)
-            .collect();
-
-        for agent_id in stale {
-            if let Some(effect) = dispatch_health_check(&mut state, agent_id) {
-                effects.push(effect);
-            }
-        }
+    // If agent was busy, the task failed
+    if let Some(task_id) = in_flight_task {
+        effects.insert(0, Effect::TaskFailed { task_id });
     }
 
     (state, effects)
@@ -518,32 +529,21 @@ fn try_dispatch(state: &mut PoolState) -> Vec<Effect> {
     let mut effects = vec![];
 
     while let Some(agent_id) = find_idle_agent(state) {
-        let Some(task) = state.pending_tasks.pop_front() else {
+        let Some(task_id) = state.pending_tasks.pop_front() else {
             break;
         };
 
-        let envelope = serde_json::json!({
-            "kind": "Task",
-            "content": task.content,
-        }).to_string();
-
         if let Some(agent) = state.agents.get_mut(&agent_id) {
-            agent.status = AgentStatus::Busy {
-                task_id: task.id,
-                kind: TaskKind::Submission { responder: task.responder },
-            };
-            agent.idle_ticks = 0;
-        }
+            // Increment epoch on state transition (idle → busy)
+            agent.epoch += 1;
+            agent.status = AgentStatus::Busy { task_id };
 
-        effects.push(Effect::DispatchTask {
-            agent_id,
-            task_id: task.id,
-            envelope,
-        });
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            message: format!("task dispatched: agent={agent_id:?}"),
-        });
+            effects.push(Effect::DispatchTask { agent_id, task_id, epoch: agent.epoch });
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                message: format!("task dispatched: agent={agent_id:?}, task={task_id:?}"),
+            });
+        }
     }
 
     effects
@@ -556,31 +556,6 @@ fn find_idle_agent(state: &PoolState) -> Option<AgentId> {
         .map(|(id, _)| *id)
 }
 
-fn dispatch_health_check(state: &mut PoolState, agent_id: AgentId) -> Option<Effect> {
-    let agent = state.agents.get_mut(&agent_id)?;
-
-    if !matches!(agent.status, AgentStatus::Idle) {
-        return None;
-    }
-
-    let task_id = state.next_task_id();
-    agent.status = AgentStatus::Busy {
-        task_id,
-        kind: TaskKind::HealthCheck,
-    };
-    agent.idle_ticks = 0;
-
-    let envelope = serde_json::json!({
-        "kind": "HealthCheck",
-        "content": { "instructions": "Respond with any value to confirm you are alive." }
-    }).to_string();
-
-    Some(Effect::DispatchTask {
-        agent_id,
-        task_id,
-        envelope,
-    })
-}
 ```
 
 ### Layer 2: Event Loop
@@ -609,7 +584,10 @@ pub fn event_loop(
 ### Layer 3: I/O
 
 ```rust
-/// Maps AgentId back to directory name
+/// Maps AgentId back to directory name.
+/// IMPORTANT: AgentId is globally unique across ALL registrations.
+/// If an agent deregisters and re-registers, it gets a NEW AgentId.
+/// This prevents stale timeout events from affecting new registrations.
 struct AgentMap {
     id_to_name: BTreeMap<AgentId, String>,
     name_to_id: HashMap<String, AgentId>,
@@ -617,14 +595,19 @@ struct AgentMap {
 }
 
 impl AgentMap {
+    /// Register an agent. ALWAYS generates a new AgentId, even if name existed before.
+    /// This ensures stale timeout events (with old AgentId) are ignored.
     fn register(&mut self, name: String) -> AgentId {
-        if let Some(&id) = self.name_to_id.get(&name) {
-            return id;
-        }
+        // Always generate new ID - never reuse
         let id = AgentId(self.next_id);
         self.next_id += 1;
-        self.id_to_name.insert(id, name.clone());
-        self.name_to_id.insert(name, id);
+
+        // If name was previously registered, remove old mapping
+        if let Some(old_id) = self.name_to_id.insert(name.clone(), id) {
+            self.id_to_name.remove(&old_id);
+        }
+
+        self.id_to_name.insert(id, name);
         id
     }
 
@@ -639,10 +622,18 @@ impl AgentMap {
     }
 }
 
-/// Maps ResponderId back to actual response mechanism
-struct ResponderMap {
-    map: HashMap<ResponderId, Responder>,
+/// Stores task content and response routing.
+/// Layer 1 only knows TaskIds; Layer 3 maps them to actual data.
+struct TaskMap {
+    /// For submissions: stores content and responder
+    /// For health checks: not stored (Layer 3 generates content on dispatch)
+    submissions: HashMap<TaskId, SubmissionData>,
     next_id: u64,
+}
+
+struct SubmissionData {
+    content: String,
+    responder: Responder,
 }
 
 enum Responder {
@@ -650,26 +641,28 @@ enum Responder {
     File(PathBuf),
 }
 
-impl ResponderMap {
-    fn register_socket(&mut self, stream: Stream) -> ResponderId {
-        let id = ResponderId(self.next_id);
+impl TaskMap {
+    fn register_submission(&mut self, content: String, responder: Responder) -> TaskId {
+        let id = TaskId(self.next_id);
         self.next_id += 1;
-        self.map.insert(id, Responder::Socket(stream));
+        self.submissions.insert(id, SubmissionData { content, responder });
         id
     }
 
-    fn register_file(&mut self, path: PathBuf) -> ResponderId {
-        let id = ResponderId(self.next_id);
-        self.next_id += 1;
-        self.map.insert(id, Responder::File(path));
-        id
+    /// Get content for a task. Returns None for health checks.
+    fn get_content(&self, id: TaskId) -> Option<&str> {
+        self.submissions.get(&id).map(|s| s.content.as_str())
     }
 
-    fn send(&mut self, id: ResponderId, content: &str) -> io::Result<()> {
-        let Some(responder) = self.map.remove(&id) else {
-            return Ok(());
-        };
-        match responder {
+    /// Complete a task: remove from map, return responder if it was a submission.
+    fn complete(&mut self, id: TaskId) -> Option<Responder> {
+        self.submissions.remove(&id).map(|s| s.responder)
+    }
+}
+
+impl Responder {
+    fn send(self, content: &str) -> io::Result<()> {
+        match self {
             Responder::Socket(mut stream) => {
                 writeln!(stream, "{}", content.len())?;
                 stream.write_all(content.as_bytes())?;
@@ -682,6 +675,15 @@ impl ResponderMap {
     }
 }
 
+/// Layer 3 configuration - all policy decisions live here, not in Layer 1
+pub struct IoConfig {
+    /// How long before an agent times out (busy or idle).
+    /// Busy agents: task fails, agent deregistered.
+    /// Idle agents: agent deregistered.
+    /// Alive agents will re-register by calling get_task again.
+    pub agent_timeout: Duration,
+}
+
 /// Layer 3: All I/O happens here
 pub fn io_layer(
     events_tx: mpsc::Sender<Event>,
@@ -690,40 +692,37 @@ pub fn io_layer(
     fs_events: mpsc::Receiver<notify::Event>,
     agents_dir: PathBuf,
     pending_dir: PathBuf,
+    config: IoConfig,
 ) -> io::Result<()> {
-    let mut responders = ResponderMap::new();
+    let mut agent_map = AgentMap::new();
+    let mut task_map = TaskMap::new();
+    // Pending responses: when agent writes response.json, we store content here
+    // until TaskCompleted effect tells us to send it
+    let mut pending_responses: HashMap<AgentId, String> = HashMap::new();
 
-    // Timer thread sends TimerTick every second
-    let events_tx_timer = events_tx.clone();
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(1));
-            if events_tx_timer.send(Event::TimerTick).is_err() {
-                break;
-            }
-        }
-    });
+    // No periodic TimerTick - timers are started on-demand via effects
 
     // Main I/O loop
     loop {
         // Non-blocking socket accept
         if let Ok(stream) = listener.accept() {
             if let Some((content, stream)) = read_submission(stream) {
-                let responder = responders.register_socket(stream);
-                let _ = events_tx.send(Event::Submission { content, responder });
+                // Register submission in TaskMap, get TaskId
+                let task_id = task_map.register_submission(content, Responder::Socket(stream));
+                let _ = events_tx.send(Event::TaskSubmitted { task_id });
             }
         }
 
         // FS events (non-blocking)
         while let Ok(event) = fs_events.try_recv() {
-            for parsed in parse_fs_event(&event, &agents_dir, &pending_dir, &mut responders) {
+            for parsed in parse_fs_event(&event, &agents_dir, &pending_dir, &mut agent_map, &mut task_map) {
                 let _ = events_tx.send(parsed);
             }
         }
 
         // Execute effects (non-blocking)
         while let Ok(effect) = effects_rx.try_recv() {
-            execute_effect(effect, &mut responders, &agents_dir)?;
+            execute_effect(effect, &mut agent_map, &mut task_map, &mut pending_responses, &agents_dir, &events_tx, &config)?;
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -732,20 +731,59 @@ pub fn io_layer(
 
 fn execute_effect(
     effect: Effect,
-    responders: &mut ResponderMap,
     agent_map: &mut AgentMap,
+    task_map: &mut TaskMap,
+    pending_responses: &mut HashMap<AgentId, String>,
     agents_dir: &Path,
+    events_tx: &mpsc::Sender<Event>,
+    config: &IoConfig,
 ) -> io::Result<()> {
     match effect {
-        Effect::SendResponse { responder, content } => {
-            responders.send(responder, &content)?;
-        }
-        Effect::DispatchTask { agent_id, envelope, .. } => {
+        Effect::DispatchTask { agent_id, task_id, epoch } => {
             let Some(name) = agent_map.get_name(agent_id) else {
                 return Ok(()); // Agent was removed
             };
+            let Some(content) = task_map.get_content(task_id) else {
+                return Ok(()); // Task not found (shouldn't happen)
+            };
+            let envelope = serde_json::json!({
+                "kind": "Task",
+                "content": serde_json::from_str::<serde_json::Value>(content)
+                    .unwrap_or(serde_json::Value::String(content.to_string())),
+            }).to_string();
             let task_path = agents_dir.join(name).join("task.json");
             fs::write(&task_path, &envelope)?;
+
+            // Start timeout timer
+            start_timeout_timer(events_tx.clone(), agent_id, epoch, config.agent_timeout);
+        }
+        Effect::AgentBecameIdle { agent_id, epoch } => {
+            // Start timeout timer - if agent doesn't get work, they'll be deregistered
+            start_timeout_timer(events_tx.clone(), agent_id, epoch, config.agent_timeout);
+        }
+        Effect::TaskCompleted { agent_id, task_id } => {
+            // Look up the pending response content
+            let response_content = pending_responses.remove(&agent_id)
+                .unwrap_or_default();
+
+            // If this was a submission, send response to submitter
+            // If this was a health check, task_map.complete returns None
+            if let Some(responder) = task_map.complete(task_id) {
+                responder.send(&response_content)?;
+            }
+            // For health checks: nothing to do, just logged
+        }
+        Effect::TaskFailed { task_id } => {
+            // If this was a submission, send error to submitter
+            // If this was a health check, task_map.complete returns None
+            if let Some(responder) = task_map.complete(task_id) {
+                let error = serde_json::json!({
+                    "status": "NotProcessed",
+                    "reason": "AgentTimeout"
+                }).to_string();
+                responder.send(&error)?;
+            }
+            // For health checks: nothing to do
         }
         Effect::DeregisterAgent { agent_id } => {
             if let Some(name) = agent_map.get_name(agent_id) {
@@ -763,6 +801,20 @@ fn execute_effect(
         Effect::ShutdownComplete => {}
     }
     Ok(())
+}
+
+/// Start a timer that sends AgentTimedOut after the given duration.
+/// The timer is "fire and forget" - Layer 1 ignores it if epoch doesn't match.
+fn start_timeout_timer(
+    events_tx: mpsc::Sender<Event>,
+    agent_id: AgentId,
+    epoch: u64,
+    timeout: Duration,
+) {
+    thread::spawn(move || {
+        thread::sleep(timeout);
+        let _ = events_tx.send(Event::AgentTimedOut { agent_id, epoch });
+    });
 }
 ```
 
@@ -830,86 +882,144 @@ fn execute_effect(
 
 ```rust
 #[test]
-fn test_submission_queues_task() {
-    let state = PoolState::new(test_config());
-    let (state, effects) = step(state, Event::Submission {
-        content: "test".into(),
-        responder: ResponderId(1),
-    });
+fn test_task_submitted_queues_task() {
+    let state = PoolState::new();
+    let task_id = TaskId(1);
+
+    let (state, effects) = step(state, Event::TaskSubmitted { task_id });
 
     assert_eq!(state.pending_tasks.len(), 1);
+    assert_eq!(state.pending_tasks[0], task_id);
     assert!(effects.is_empty()); // No agent to dispatch to
 }
 
 #[test]
-fn test_submission_dispatches_to_idle_agent() {
-    let mut state = PoolState::new(test_config());
+fn test_task_submitted_dispatches_to_idle_agent() {
+    let mut state = PoolState::new();
     let agent_id = AgentId(1);
-    state.agents.insert(agent_id, AgentState::new());
-
-    let (state, effects) = step(state, Event::Submission {
-        content: "test".into(),
-        responder: ResponderId(1),
+    state.agents.insert(agent_id, AgentState {
+        status: AgentStatus::Idle,
+        epoch: 0,
     });
+    let task_id = TaskId(42);
+
+    let (state, effects) = step(state, Event::TaskSubmitted { task_id });
 
     assert!(state.pending_tasks.is_empty());
-    assert!(matches!(
-        state.agents.get(&agent_id).unwrap().status,
-        AgentStatus::Busy { .. }
-    ));
-    assert!(effects.iter().any(|e| matches!(e, Effect::DispatchTask { .. })));
-}
-
-#[test]
-fn test_agent_response_sends_to_submitter() {
-    let mut state = PoolState::new(test_config());
-    let agent_id = AgentId(1);
-    state.agents.insert(agent_id, AgentState {
-        status: AgentStatus::Busy {
-            task_id: TaskId(1),
-            kind: TaskKind::Submission { responder: ResponderId(42) },
-        },
-        idle_ticks: 0,
-    });
-
-    let (state, effects) = step(state, Event::AgentResponse {
-        agent_id,
-        response: "result".into(),
-    });
-
-    assert!(matches!(state.agents.get(&agent_id).unwrap().status, AgentStatus::Idle));
+    // Agent now busy, epoch incremented to 1
+    let agent = state.agents.get(&agent_id).unwrap();
+    assert!(matches!(agent.status, AgentStatus::Busy { task_id: t } if t == task_id));
+    assert_eq!(agent.epoch, 1);
+    // DispatchTask includes epoch for timeout timer
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SendResponse { responder: ResponderId(42), .. }
+        Effect::DispatchTask { agent_id: a, task_id: t, epoch: 1 }
+            if *a == agent_id && *t == task_id
     )));
 }
 
 #[test]
-fn test_health_check_timeout_deregisters() {
-    let mut state = PoolState::new(PoolConfig {
-        health_check_timeout_ticks: 3,
-        ..test_config()
-    });
+fn test_task_withdrawn_removes_from_queue() {
+    let mut state = PoolState::new();
+    state.pending_tasks.push_back(TaskId(1));
+    state.pending_tasks.push_back(TaskId(2));
+    state.pending_tasks.push_back(TaskId(3));
+
+    let (state, _effects) = step(state, Event::TaskWithdrawn { task_id: TaskId(2) });
+
+    assert_eq!(state.pending_tasks.len(), 2);
+    assert!(!state.pending_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn test_agent_responded_completes_task_and_increments_epoch() {
+    let mut state = PoolState::new();
     let agent_id = AgentId(1);
+    let task_id = TaskId(42);
     state.agents.insert(agent_id, AgentState {
-        status: AgentStatus::Busy {
-            task_id: TaskId(1),
-            kind: TaskKind::HealthCheck,
-        },
-        idle_ticks: 3, // At timeout threshold
+        status: AgentStatus::Busy { task_id },
+        epoch: 5,
     });
 
-    let (state, effects) = step(state, Event::TimerTick);
+    let (state, effects) = step(state, Event::AgentResponded { agent_id });
 
+    // Agent is now idle with incremented epoch
+    let agent = state.agents.get(&agent_id).unwrap();
+    assert!(matches!(agent.status, AgentStatus::Idle));
+    assert_eq!(agent.epoch, 6); // Incremented from 5 to 6
+
+    // TaskCompleted and AgentBecameIdle effects emitted
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::TaskCompleted { agent_id: a, task_id: t }
+            if *a == agent_id && *t == task_id
+    )));
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::AgentBecameIdle { agent_id: a, epoch: 6 } if *a == agent_id
+    )));
+}
+
+#[test]
+fn test_busy_agent_timed_out_deregisters_and_fails_task() {
+    let mut state = PoolState::new();
+    let agent_id = AgentId(1);
+    let task_id = TaskId(42);
+    state.agents.insert(agent_id, AgentState {
+        status: AgentStatus::Busy { task_id },
+        epoch: 7,
+    });
+
+    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 7 });
+
+    // Agent removed
     assert!(!state.agents.contains_key(&agent_id));
-    assert!(effects.iter().any(|e| matches!(
-        e,
-        Effect::DeregisterAgent { agent_id: id } if *id == agent_id
-    )));
+    // TaskFailed and DeregisterAgent emitted
+    assert!(effects.iter().any(|e| matches!(e, Effect::TaskFailed { task_id: t } if *t == task_id)));
+    assert!(effects.iter().any(|e| matches!(e, Effect::DeregisterAgent { agent_id: a } if *a == agent_id)));
+}
+
+#[test]
+fn test_idle_agent_timed_out_deregisters() {
+    let mut state = PoolState::new();
+    let agent_id = AgentId(1);
+    state.agents.insert(agent_id, AgentState {
+        status: AgentStatus::Idle,
+        epoch: 4,
+    });
+
+    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 4 });
+
+    // Agent removed
+    assert!(!state.agents.contains_key(&agent_id));
+    // DeregisterAgent emitted (no TaskFailed since agent was idle)
+    assert!(effects.iter().any(|e| matches!(e, Effect::DeregisterAgent { agent_id: a } if *a == agent_id)));
+    assert!(!effects.iter().any(|e| matches!(e, Effect::TaskFailed { .. })));
+}
+
+#[test]
+fn test_stale_timeout_ignored() {
+    let mut state = PoolState::new();
+    let agent_id = AgentId(1);
+    // Agent has epoch 5, but timeout is for epoch 3 (stale)
+    state.agents.insert(agent_id, AgentState {
+        status: AgentStatus::Busy { task_id: TaskId(99) },
+        epoch: 5,
+    });
+
+    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 3 });
+
+    // Agent still exists - stale timeout ignored
+    assert!(state.agents.contains_key(&agent_id));
+    assert!(effects.is_empty());
 }
 ```
 
-These tests run instantly with no I/O, no threads, no timing issues.
+These tests run instantly with no I/O, no threads, no timing issues. Note that:
+- Layer 1 doesn't know about content or time - it just routes IDs
+- Timeout events are "soft" - Layer 1 validates them against current state
+- Stale timeouts (wrong task_id or epoch) are silently ignored
+- Tests don't need to set up any mocks for I/O, timers, or content storage
 
 ---
 
@@ -945,18 +1055,24 @@ crates/agent_pool/src/
 
 | Data | Layer | Reason |
 |------|-------|--------|
-| `pending_tasks: VecDeque<PendingTask>` | 1 | Core queue logic |
+| `pending_tasks: VecDeque<TaskId>` | 1 | Core queue logic (just IDs) |
 | `agents: BTreeMap<AgentId, AgentState>` | 1 | Core dispatch logic |
-| `config: PoolConfig` | 1 | Affects state transitions |
 | `next_id: u64` | 1 | ID generation is deterministic |
-| `ResponderMap` | 3 | Maps ResponderId to I/O handles |
-| `AgentMap` | 3 | Maps AgentId to directory names |
+| `IoConfig` | 3 | All policy (timeouts, health check settings) |
+| `TaskMap` | 3 | Maps TaskId to content + responder (submissions only) |
+| `AgentMap` | 3 | Maps AgentId to directory names (unique per registration) |
+| `pending_responses` | 3 | Temporary storage for agent response content |
 | `Listener` | 3 | Socket I/O |
 | `Watcher` | 3 | FS I/O |
 | `agents_dir: PathBuf` | 3 | File paths are I/O |
 | `pending_dir: PathBuf` | 3 | File paths are I/O |
 
-The key insight: **Layer 1 only knows about IDs (AgentId, ResponderId, TaskId). Layer 3 maps IDs to actual I/O handles and file paths.**
+**Key insights:**
+- **Layer 1 has no config** - it's purely reactive, processing events and emitting effects
+- **Layer 1 only knows about IDs** (AgentId, TaskId) - Layer 3 maps IDs to actual content and file paths
+- **Layer 1 has no concept of time** - timeout events come from Layer 3 timers
+- **Epochs validate timeouts** - stale timers (wrong epoch) are silently ignored
+- **No health checks** - idle agents just timeout and get deregistered; alive ones re-register
 
 ---
 
