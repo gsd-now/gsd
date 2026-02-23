@@ -75,9 +75,15 @@ enum Command {
         /// Default timeout for tasks in seconds.
         #[arg(long, default_value = "300")]
         task_timeout_secs: u64,
-        /// Disable heartbeat checks for idle agents.
-        #[arg(long)]
+        /// Disable all heartbeats (both immediate and periodic).
+        #[arg(long, conflicts_with_all = ["no_immediate_heartbeat", "no_periodic_heartbeat"])]
         no_heartbeat: bool,
+        /// Disable immediate heartbeat on agent connect.
+        #[arg(long, conflicts_with_all = ["no_heartbeat", "no_periodic_heartbeat"])]
+        no_immediate_heartbeat: bool,
+        /// Disable periodic heartbeats after idle timeout.
+        #[arg(long, conflicts_with_all = ["no_heartbeat", "no_immediate_heartbeat"])]
+        no_periodic_heartbeat: bool,
         /// Clear existing pool directory before starting.
         /// Required if the directory exists but daemon is not running.
         #[arg(long, conflicts_with = "force")]
@@ -225,6 +231,8 @@ fn main() -> ExitCode {
             idle_agent_timeout_secs,
             task_timeout_secs,
             no_heartbeat,
+            no_immediate_heartbeat,
+            no_periodic_heartbeat,
             clear,
             stop: stop_flag,
             force,
@@ -311,7 +319,8 @@ fn main() -> ExitCode {
             let config = DaemonConfig {
                 idle_agent_timeout: Duration::from_secs(idle_agent_timeout_secs),
                 default_task_timeout: Duration::from_secs(task_timeout_secs),
-                heartbeat_enabled: !no_heartbeat,
+                immediate_heartbeat_enabled: !no_heartbeat && !no_immediate_heartbeat,
+                periodic_heartbeat_enabled: !no_heartbeat && !no_periodic_heartbeat,
             };
 
             // run_with_config() returns Result<Infallible, _>, so Ok case never happens

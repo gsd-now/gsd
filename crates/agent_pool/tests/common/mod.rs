@@ -153,8 +153,8 @@ impl TestAgent {
                     // Extract kind/content from envelope
                     let envelope = extract_task_envelope(&raw);
 
-                    // Handle health checks immediately
-                    if envelope.kind == "HealthCheck" {
+                    // Handle heartbeats/health checks immediately (don't count as processed)
+                    if envelope.kind == "HealthCheck" || envelope.kind == "Heartbeat" {
                         let _ = fs::write(&response_file, "{}");
                         thread::sleep(Duration::from_millis(10));
                         continue;
