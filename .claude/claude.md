@@ -149,11 +149,53 @@ This document captures the *shape* of the refactor without getting into implemen
 
 ### Phase 2: Practical task list
 
-Convert the architecture document into a concrete checklist:
-- Numbered tasks with checkboxes
-- Specific file locations and line numbers
+Convert the architecture document into concrete, **independently deployable tasks**. Each task should be:
+
+1. **Self-contained** - Can be implemented and deployed without other tasks
+2. **Detailed** - Broken into numbered subtasks with specific file locations
+3. **Actionable** - Include code snippets showing exactly what changes
+
+**Expected level of detail for tasks:**
+
+```markdown
+## Task 1: Add Socket Transport Variant
+
+**Goal:** One sentence describing the outcome.
+
+**Current state:** What exists now and why it's insufficient.
+
+### 1.1: Subtask Name
+
+**File:** `path/to/file.rs`
+
+Description of what to change:
+
+\`\`\`rust
+// Before
+pub enum Transport {
+    Directory(PathBuf),
+}
+
+// After
+pub enum Transport {
+    Directory(PathBuf),
+    Socket(Stream),  // NEW
+}
+\`\`\`
+
+**Complication:** Any gotchas or decisions to make.
+
+### 1.2: Next Subtask
+...
+```
+
+Each subtask should be small enough that someone could implement it without asking questions. Include:
+- Exact file paths
 - Before/after code snippets
-- Dependencies between tasks
+- Complications or edge cases
+- How to test the change
+
+See `pending-refactors/TRANSPORT_ABSTRACTION.md` for a good example.
 
 ### Extract independent work
 
