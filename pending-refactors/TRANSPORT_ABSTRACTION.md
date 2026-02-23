@@ -231,92 +231,159 @@ This is similar to the "remote socket" case discussed below. For now, we assume 
 
 ### Phase 3: Daemon Architecture
 
-The daemon should be split into two layers:
-
-**Inner layer (DaemonCore):** Pure pool management logic.
-- Queue management, task dispatch, concurrency limits, health checks
-- Receives plain data (strings), knows nothing about sockets, files, JSON, fs events
-- Sends responses via channels - doesn't know how they'll be delivered
-
-**Outer layer (Transport):** All I/O and serialization.
-- Listens on sockets, watches filesystem
-- Reads file references, parses JSON
-- Calls into DaemonCore with plain data
-- Receives responses via channels, sends them back over socket or file
+The daemon should be split into three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Outer Layer (Transport)                   │
+│                     Layer 3: I/O                                 │
 │                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │ Socket       │    │ FS Watcher   │    │ File Reader  │       │
-│  │ Listener     │    │ (pending/,   │    │ (resolve     │       │
-│  │              │    │  agents/)    │    │  file refs)  │       │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘       │
-│         │                   │                   │                │
-│         └───────────────────┴───────────────────┘                │
-│                             │                                    │
-│                     parse, deserialize                           │
-│                             │                                    │
-│                             ▼                                    │
-│         ┌───────────────────────────────────────┐                │
-│         │  on_submission(content, respond_to)   │                │
-│         │  on_agent_register(name, respond_to)  │                │
-│         │  on_agent_response(name, data, resp)  │                │
-│         └───────────────────┬───────────────────┘                │
-└─────────────────────────────┼────────────────────────────────────┘
-                              │
-                              ▼
+│  - socket.accept(), fs_watcher.next()                           │
+│  - Parse JSON, resolve file references                          │
+│  - Send responses (socket write, file write)                    │
+│                                                                  │
+│  Sends events to Layer 2 via channel                            │
+│  Receives "send response" effects from Layer 2                  │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ Event channel
+                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Inner Layer (DaemonCore)                     │
+│                     Layer 2: Event Loop                          │
 │                                                                  │
-│  - Task queue                                                    │
-│  - Agent pool (who's idle, who's busy)                          │
-│  - Dispatch logic (assign task to idle agent)                   │
-│  - Health check scheduling                                       │
-│  - Concurrency limits                                            │
+│  - Holds PoolState                                              │
+│  - Receives events from Layer 3                                 │
+│  - Calls step(state, event) in a loop                           │
+│  - Processes returned effects (delegates I/O back to Layer 3)   │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ step(state, event)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Layer 1: Pure State Machine                  │
 │                                                                  │
-│  Sends responses via oneshot channels - doesn't know             │
-│  whether response goes to socket or file                         │
+│  fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>)
+│                                                                  │
+│  - No I/O, no channels, no async                                │
+│  - Pure function: state + event → new state + effects           │
+│  - Completely testable with plain function calls                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Interface between layers:**
+**Layer 1: Pure State Machine**
 
 ```rust
-/// Inner layer - pure pool logic, no I/O knowledge
-impl DaemonCore {
-    /// Submitter sent a task. Response sent via channel when complete.
-    fn on_submission(&mut self, content: String, respond_to: oneshot::Sender<String>);
+/// Pool state - all the data the daemon tracks
+struct PoolState {
+    /// Tasks waiting to be assigned
+    pending_tasks: VecDeque<Task>,
+    /// Registered agents and their status
+    agents: HashMap<String, AgentState>,
+    /// Tasks currently being processed
+    in_flight: HashMap<TaskId, InFlightTask>,
+}
 
-    /// Agent registered. First task (health check) sent via channel.
-    fn on_agent_register(&mut self, name: String, respond_to: oneshot::Sender<String>);
+/// Events that can happen
+enum Event {
+    /// New task submitted
+    Submission { content: String, respond_to: ResponderId },
+    /// Agent registered
+    AgentRegister { name: String, respond_to: ResponderId },
+    /// Agent responded to previous task
+    AgentResponse { name: String, response: String, respond_to: ResponderId },
+    /// Health check timer fired
+    HealthCheckTick,
+}
 
-    /// Agent responded to previous task. Next task sent via channel.
-    fn on_agent_response(&mut self, name: String, response: String, respond_to: oneshot::Sender<String>);
+/// Effects to perform (I/O actions)
+enum Effect {
+    /// Send response to a submitter or agent
+    SendResponse { to: ResponderId, content: String },
+    /// Schedule health check for agent
+    ScheduleHealthCheck { agent: String, delay: Duration },
+}
+
+/// Pure function - no I/O, fully testable
+fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
+    match event {
+        Event::Submission { content, respond_to } => {
+            let mut state = state;
+            let task = Task::new(content, respond_to);
+            state.pending_tasks.push_back(task);
+            // Try to dispatch immediately if agent available
+            let effects = try_dispatch(&mut state);
+            (state, effects)
+        }
+        Event::AgentRegister { name, respond_to } => {
+            // Register agent, send health check
+            // ...
+        }
+        // ...
+    }
 }
 ```
 
-The `respond_to` channel is created by the outer layer. When the core has a response ready, it sends through the channel. The outer layer receives it and writes to socket or file - the core never knows which.
+**Layer 2: Event Loop**
 
-**What the outer layer does:**
-1. Accept socket connection → read message → parse JSON → call `on_*` with plain data
-2. See fs event in pending/ → read file → resolve file reference if needed → call `on_submission`
-3. See fs event in agents/ → read response file → call `on_agent_response`
-4. Receive from channel → serialize → write to socket or file
+```rust
+/// Holds state, receives events, calls step(), processes effects
+async fn event_loop(
+    mut state: PoolState,
+    mut events: mpsc::Receiver<Event>,
+    io: IoHandle,  // For sending effects back to Layer 3
+) {
+    while let Some(event) = events.recv().await {
+        let (new_state, effects) = step(state, event);
+        state = new_state;
 
-**What the inner layer does:**
-1. Manage task queue
-2. Track agent states (idle/busy)
-3. Dispatch tasks to agents
-4. Schedule health checks
-5. Send responses/tasks via channels
+        for effect in effects {
+            io.execute(effect).await;
+        }
+    }
+}
+```
+
+**Layer 3: I/O**
+
+```rust
+/// All actual I/O happens here
+async fn io_layer(
+    events_tx: mpsc::Sender<Event>,
+    mut effects_rx: mpsc::Receiver<Effect>,
+    socket: UnixListener,
+    fs_watcher: FsWatcher,
+) {
+    loop {
+        select! {
+            // Receive from socket or fs, parse, send event
+            conn = socket.accept() => {
+                let msg = parse_message(conn).await;
+                let event = to_event(msg);
+                events_tx.send(event).await;
+            }
+            fs_event = fs_watcher.next() => {
+                let event = parse_fs_event(fs_event).await;
+                events_tx.send(event).await;
+            }
+
+            // Execute effects (send responses)
+            effect = effects_rx.recv() => {
+                match effect {
+                    Effect::SendResponse { to, content } => {
+                        send_response(to, content).await;
+                    }
+                    // ...
+                }
+            }
+        }
+    }
+}
+```
 
 **Benefits:**
-- Core logic is testable without any I/O
-- Transport concerns completely separated
-- Easy to add new transports without touching core
-- Core doesn't branch on socket vs file anywhere
+
+1. **Layer 1 is trivially testable** - just call `step()` with inputs, assert outputs
+2. **No I/O in core logic** - all I/O is in Layer 3
+3. **Clean separation** - each layer has one job
+4. **Easy to add transports** - only Layer 3 changes
+5. **State machine is explicit** - easy to reason about state transitions
 
 ---
 
