@@ -78,11 +78,11 @@ enum Command {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
-        /// Task input as inline JSON (uses socket protocol)
+        /// Task content as inline string (sent directly to daemon)
         #[arg(long, conflicts_with = "file")]
-        input: Option<String>,
-        /// Path to file containing task input JSON (uses file protocol, works in sandboxes)
-        #[arg(long, conflicts_with = "input")]
+        data: Option<String>,
+        /// Path to file containing task JSON (uses file protocol, works in sandboxes)
+        #[arg(long, conflicts_with = "data")]
         file: Option<PathBuf>,
     },
     /// List all pools
@@ -196,21 +196,21 @@ fn main() -> ExitCode {
             }
             eprintln!("Server stopped");
         }
-        Command::SubmitTask { pool, input, file } => {
+        Command::SubmitTask { pool, data, file } => {
             let root = resolve_pool(&pool);
 
-            // --input uses socket protocol, --file uses file protocol
-            let result = match (input, file) {
-                (Some(task_input), None) => submit(&root, &task_input),
+            // --data uses socket protocol, --file uses file protocol
+            let result = match (data, file) {
+                (Some(task_data), None) => submit(&root, &task_data),
                 (None, Some(path)) => {
-                    let task_input = match fs::read_to_string(&path) {
+                    let task_data = match fs::read_to_string(&path) {
                         Ok(content) => content,
                         Err(e) => {
                             eprintln!("Failed to read file {}: {e}", path.display());
                             return ExitCode::FAILURE;
                         }
                     };
-                    submit_file(&root, &task_input)
+                    submit_file(&root, &task_data)
                 }
                 (None, None) => {
                     eprintln!("Either --input or --file must be provided");
