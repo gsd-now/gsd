@@ -118,6 +118,17 @@ The pre-commit hook runs:
 - `cargo test --workspace`
 - `cargo +nightly udeps --workspace --all-targets` (if available)
 
+## Autonomous operation
+
+**Always look for opportunities to work autonomously without user intervention.**
+
+- **Log to files you can read.** When running external processes (daemons, agents, tests), always pipe output to log files like `/tmp/daemon.log` or `/tmp/agent.log`. This lets you diagnose issues by reading the logs rather than asking the user what they see.
+- **Use the file protocol.** When you need to run commands outside the sandbox (like `git push`, `cargo test` with IPC), submit them via the cmd pool's file protocol rather than asking the user to run them.
+- **Self-diagnose.** Before asking "is it working?", check the logs yourself. Read the daemon log, agent log, response files, etc.
+- **Verify your fixes.** After making a change, test it yourself rather than asking the user to test.
+
+The goal: minimize back-and-forth. Get information proactively so you can solve problems without waiting for user feedback.
+
 ## Sandbox restrictions
 
 When running in Claude Code's sandbox:
