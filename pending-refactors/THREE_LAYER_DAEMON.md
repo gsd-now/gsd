@@ -343,20 +343,10 @@ pub enum Effect {
         agent_id: AgentId,
     },
 
-    /// Log a message (for observability)
-    Log {
-        level: LogLevel,
-        message: String,
-    },
-
     // TODO: ShutdownComplete - signal that shutdown is done
 }
 
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-}
+// No Log effect - Layer 2/3 should automatically log all events and effects
 ```
 
 ### Layer 1: Pure Step Function
@@ -409,10 +399,7 @@ fn handle_task_withdrawn(
     // When the agent responds, TaskCompleted will be emitted, but
     // Layer 3 will find no responder (it was cleaned up) and discard the response.
 
-    (state, vec![Effect::Log {
-        level: LogLevel::Info,
-        message: format!("task withdrawn: {task_id:?}"),
-    }])
+    (state, vec![])
 }
 
 fn handle_agent_registered(
@@ -431,10 +418,6 @@ fn handle_agent_registered(
 
     let mut effects = vec![
         Effect::AgentBecameIdle { epoch },
-        Effect::Log {
-            level: LogLevel::Info,
-            message: format!("agent registered: {agent_id:?}"),
-        },
     ];
 
     // Try to dispatch pending tasks to this new agent
@@ -466,10 +449,6 @@ fn handle_agent_responded(
     let mut effects = vec![
         Effect::TaskCompleted { agent_id, task_id },
         Effect::AgentBecameIdle { epoch: new_epoch },
-        Effect::Log {
-            level: LogLevel::Info,
-            message: format!("task completed: agent={agent_id:?}, task={task_id:?}"),
-        },
     ];
 
     // Try to dispatch more tasks
@@ -503,13 +482,7 @@ fn handle_agent_timed_out(
     // Deregister the agent
     state.agents.remove(&agent_id);
 
-    let mut effects = vec![
-        Effect::DeregisterAgent { agent_id },
-        Effect::Log {
-            level: LogLevel::Warn,
-            message: format!("agent timed out, deregistering: {agent_id:?}"),
-        },
-    ];
+    let mut effects = vec![Effect::DeregisterAgent { agent_id }];
 
     // If agent was busy, the task failed
     if let Some(task_id) = in_flight_task {
@@ -533,10 +506,6 @@ fn try_dispatch(state: &mut PoolState) -> Vec<Effect> {
             agent.status = AgentStatus::Busy { task_id };
 
             effects.push(Effect::DispatchTask { task_id, epoch: agent.epoch });
-            effects.push(Effect::Log {
-                level: LogLevel::Info,
-                message: format!("task dispatched: agent={agent_id:?}, task={task_id:?}"),
-            });
         }
     }
 
@@ -562,10 +531,16 @@ pub fn event_loop(
     effects_tx: mpsc::Sender<Effect>,
 ) {
     while let Ok(event) = events_rx.recv() {
+        // Log all incoming events
+        tracing::debug!(?event, "received event");
+
         let (new_state, effects) = step(state, event);
         state = new_state;
 
         for effect in effects {
+            // Log all outgoing effects
+            tracing::debug!(?effect, "emitting effect");
+
             if matches!(effect, Effect::ShutdownComplete) {
                 return;
             }
@@ -784,13 +759,6 @@ fn execute_effect(
                 let _ = fs::remove_dir_all(agents_dir.join(name));
             }
             agent_map.remove(agent_id);
-        }
-        Effect::Log { level, message } => {
-            match level {
-                LogLevel::Debug => debug!("{message}"),
-                LogLevel::Info => info!("{message}"),
-                LogLevel::Warn => warn!("{message}"),
-            }
         }
         // TODO: Handle ShutdownComplete
     }
