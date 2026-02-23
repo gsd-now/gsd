@@ -555,7 +555,7 @@ pub fn event_loop(
 /// If an agent deregisters and re-registers, it gets a NEW AgentId.
 /// This prevents stale timeout events from affecting new registrations.
 struct AgentMap {
-    id_to_name: BTreeMap<AgentId, String>,
+    id_to_name: HashMap<AgentId, String>,
     name_to_id: HashMap<String, AgentId>,
     next_id: u32,
 }
@@ -563,7 +563,7 @@ struct AgentMap {
 impl AgentMap {
     fn new() -> Self {
         Self {
-            id_to_name: BTreeMap::new(),
+            id_to_name: HashMap::new(),
             name_to_id: HashMap::new(),
             next_id: 0,
         }
