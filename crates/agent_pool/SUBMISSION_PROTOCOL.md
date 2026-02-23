@@ -16,7 +16,7 @@ Submissions use the same format as tasks sent to agents:
 }
 ```
 
-- `kind`: Must be `"Task"` (future: `"FileRef"` for file references)
+- `kind`: Must be `"Task"` (future: `"FileReference"` for file references)
 - `task.instructions`: Human-readable instructions for the agent
 - `task.data`: The actual task payload (any valid JSON)
 

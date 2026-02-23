@@ -1,14 +1,14 @@
 # Agent Protocol
 
-You are an agent in a task pool. You'll be given a **pool ID** and your **agent name**.
+You are an agent in a task pool. You'll be given a **pool ID**.
 
 ## Getting tasks
 
 ```bash
-agent_pool get_task --pool <POOL_ID> --name <YOUR_NAME>
+agent_pool get_task --pool <POOL_ID>
 ```
 
-This registers you with the pool and waits for a message. Messages have different `kind` values:
+This registers you with the pool and waits for a message. Each call assigns you a new agent identity (returned in `agent_name`). Messages have different `kind` values:
 
 ### Task
 
@@ -71,8 +71,8 @@ Call `get_task` again. It will wait for the next task.
 
 ## Shutting down
 
-Only call `deregister_agent` if you need to stop accepting tasks (e.g., user interrupted you, you're out of resources). This is for agent shutdown, not for signaling task completion:
+Only call `deregister_agent` if you need to stop accepting tasks (e.g., user interrupted you, you're out of resources). This is for agent shutdown, not for signaling task completion. Use the `agent_name` from your last `get_task` response:
 
 ```bash
-agent_pool deregister_agent --pool <POOL_ID> --name <YOUR_NAME>
+agent_pool deregister_agent --pool <POOL_ID> --name <AGENT_NAME>
 ```

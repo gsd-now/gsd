@@ -94,9 +94,6 @@ enum Command {
         /// Pool ID to include in the instructions
         #[arg(long)]
         pool: Option<String>,
-        /// Agent name to include in the instructions
-        #[arg(long)]
-        name: Option<String>,
     },
     /// Deregister an agent from the pool
     #[command(name = "deregister_agent")]
@@ -114,9 +111,6 @@ enum Command {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
-        /// Agent name
-        #[arg(long)]
-        name: String,
     },
 }
 
@@ -265,7 +259,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::Protocol { pool, name } => {
+        Command::Protocol { pool } => {
             let mut output = AGENT_PROTOCOL.to_string();
 
             if let Some(id) = &pool {
@@ -274,12 +268,6 @@ fn main() -> ExitCode {
                     .replace("<POOL_ID>", id)
                     .replace("abc12345", id)
                     .replace("/tmp/gsd/<POOL_ID>", &path.display().to_string());
-            }
-
-            if let Some(agent_name) = &name {
-                output = output
-                    .replace("<YOUR_NAME>", agent_name)
-                    .replace("claude-1", agent_name);
             }
 
             print!("{output}");
@@ -298,8 +286,9 @@ fn main() -> ExitCode {
 
             eprintln!("Deregistered agent '{name}'");
         }
-        Command::GetTask { pool, name } => {
+        Command::GetTask { pool } => {
             let root = resolve_pool(&pool);
+            let name = generate_id();
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
             // Create agent directory if it doesn't exist (registers the agent)
@@ -323,7 +312,8 @@ fn main() -> ExitCode {
                         }
                     };
 
-                    // Parse envelope and extract kind/content
+                    // TODO: Add type-safe envelope structs instead of parsing as serde_json::Value.
+                    // Currently we manually extract "kind" and "task" fields without validation.
                     let envelope: serde_json::Value = match serde_json::from_str(&raw) {
                         Ok(v) => v,
                         Err(e) => {
@@ -337,14 +327,15 @@ fn main() -> ExitCode {
                         .and_then(|k| k.as_str())
                         .unwrap_or("Task");
                     let content = envelope
-                        .get("content")
+                        .get("task")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
 
-                    // Output task info with stable response file path
-                    // Agent sees both Task and HealthCheck - must respond to both
+                    // Output task info with response file path and agent name
+                    // Agent sees both Task and Heartbeat - must respond to both
                     let output = serde_json::json!({
                         "kind": kind,
+                        "agent_name": name,
                         "response_file": response_file.display().to_string(),
                         "content": content
                     });

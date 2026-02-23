@@ -129,7 +129,7 @@ Separate the two axes clearly:
 /// What content are we sending?
 enum Payload {
     Inline(String),
-    FileReference(PathBuf),
+    FileReferenceerence(PathBuf),
 }
 
 /// How do we communicate with the daemon?
@@ -490,8 +490,8 @@ When client sends a file reference, it needs to be distinguishable from inline c
 
 **Option A: JSON envelope**
 ```json
-{"kind": "inline", "content": "..."}
-{"kind": "file_ref", "path": "/path/to/task.json"}
+{"kind": "Inline", "content": "..."}
+{"kind": "FileReference", "path": "/path/to/task.json"}
 ```
 
 **Option B: Length-prefix convention**
@@ -513,7 +513,7 @@ Add new function or parameter:
 ```rust
 pub fn submit_file_ref(root: &Path, file_path: &Path) -> io::Result<Response> {
     let envelope = json!({
-        "kind": "file_ref",
+        "kind": "FileReference",
         "path": file_path.display().to_string()
     });
     submit_raw(root, &envelope.to_string())
@@ -533,13 +533,13 @@ fn resolve_payload(raw: &str) -> io::Result<String> {
     let envelope: serde_json::Value = serde_json::from_str(raw)?;
 
     match envelope.get("kind").and_then(|k| k.as_str()) {
-        Some("file_ref") => {
+        Some("FileReference") => {
             let path = envelope.get("path")
                 .and_then(|p| p.as_str())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing path"))?;
             fs::read_to_string(path)
         }
-        Some("inline") | None => {
+        Some("Inline") | None => {
             // Treat as inline content (backward compatible)
             envelope.get("content")
                 .and_then(|c| c.as_str())
@@ -572,8 +572,8 @@ Or add a new flag:
 **File:** `client/submit_file.rs`
 
 Same changes for fs-events notification path. The `pending/<uuid>/task.json` can contain either:
-- `{"kind": "inline", "content": "..."}`
-- `{"kind": "file_ref", "path": "/path/to/task.json"}`
+- `{"kind": "Inline", "content": "..."}`
+- `{"kind": "FileReference", "path": "/path/to/task.json"}`
 
 Daemon's `register_pending_task()` needs to call `resolve_payload()` when reading the task file.
 

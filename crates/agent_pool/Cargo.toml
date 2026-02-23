@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
 description = "Agent pool daemon for managing workers with file-based task dispatch"
 keywords = ["agent", "pool", "task-queue", "daemon", "ipc"]
 categories = ["concurrency"]

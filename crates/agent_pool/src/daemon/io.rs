@@ -10,13 +10,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use tracing::{debug, trace, warn};
+use interprocess::local_socket::Stream;
+use tracing::{debug, info, trace, warn};
 
 use crate::constants::{RESPONSE_FILE, TASK_FILE};
 
@@ -50,25 +51,47 @@ impl Default for IoConfig {
 // =============================================================================
 
 /// Communication transport for agents and submissions.
-#[derive(Debug)]
 pub(super) enum Transport {
     /// Filesystem-based transport using a directory.
     Directory(PathBuf),
-    // TODO: Socket(Stream) - for socket-based submissions
+    /// Socket-based transport for direct RPC.
+    Socket(Stream),
+}
+
+// Manual Debug impl because Stream doesn't implement Debug
+impl std::fmt::Debug for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Transport::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
+            Transport::Socket(_) => f.debug_tuple("Socket").field(&"...").finish(),
+        }
+    }
 }
 
 impl Transport {
     /// Read content from a file in this transport.
+    ///
+    /// Only valid for directory-based transports.
     pub fn read(&self, filename: &str) -> io::Result<String> {
         match self {
             Transport::Directory(path) => fs::read_to_string(path.join(filename)),
+            Transport::Socket(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "cannot read files from socket transport",
+            )),
         }
     }
 
     /// Write content to a file in this transport.
+    ///
+    /// Only valid for directory-based transports.
     pub fn write(&self, filename: &str, content: &str) -> io::Result<()> {
         match self {
             Transport::Directory(path) => fs::write(path.join(filename), content),
+            Transport::Socket(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "cannot write files to socket transport",
+            )),
         }
     }
 
@@ -77,6 +100,7 @@ impl Transport {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Transport::Directory(path) => Some(path),
+            Transport::Socket(_) => None,
         }
     }
 }
@@ -210,6 +234,15 @@ impl<Id: TransportId> TransportMap<Id> {
         }
     }
 
+    /// Register a socket-based transport with associated data.
+    ///
+    /// Socket transports don't have paths, so no duplicate checking is done.
+    pub fn register_socket(&mut self, stream: Stream, data: Id::Data) -> Id {
+        let id = self.allocate_id();
+        self.entries.insert(id, (Transport::Socket(stream), data));
+        id
+    }
+
     /// Get the transport for an ID.
     #[must_use]
     pub fn get_transport(&self, id: Id) -> Option<&Transport> {
@@ -231,8 +264,10 @@ impl<Id: TransportId> TransportMap<Id> {
     /// Remove an entry and return its transport and data.
     pub fn remove(&mut self, id: Id) -> Option<(Transport, Id::Data)> {
         let entry = self.entries.remove(&id)?;
-        let Transport::Directory(ref path) = entry.0;
-        self.path_to_id.remove(path);
+        // Only directory transports have path_to_id entries
+        if let Transport::Directory(ref path) = entry.0 {
+            self.path_to_id.remove(path);
+        }
         Some(entry)
     }
 
@@ -276,14 +311,26 @@ impl ExternalTaskMap {
     /// Finish a task: write response to transport and remove from map.
     ///
     /// Used for both success and failure - the response content determines the outcome.
+    /// For directory transports, writes to response.json.
+    /// For socket transports, sends length-prefixed response over the socket.
     pub fn finish(&mut self, id: ExternalTaskId, response: &str) -> io::Result<ExternalTaskData> {
-        let (transport, data) = self
+        let (mut transport, data) = self
             .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "task not found"))?;
-        transport.write(RESPONSE_FILE, response)?;
+
+        match &mut transport {
+            Transport::Directory(path) => {
+                fs::write(path.join(RESPONSE_FILE), response)?;
+            }
+            Transport::Socket(stream) => {
+                writeln!(stream, "{}", response.len())?;
+                stream.write_all(response.as_bytes())?;
+                stream.flush()?;
+            }
+        }
+
         Ok(data)
     }
-
 }
 
 // =============================================================================
@@ -367,16 +414,21 @@ pub(super) fn execute_effect(
                     debug!(agent_id = agent_id.0, heartbeat_id = heartbeat_id.0, "heartbeat completed");
                 }
                 TaskId::External(external_id) => {
-                    let response = agent_map
+                    let agent_output = agent_map
                         .read_from(agent_id, RESPONSE_FILE)
                         .expect("TaskCompleted for unknown agent - core bug");
 
                     let _ = fs::remove_file(agent_path.join(TASK_FILE));
                     let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
 
-                    external_task_map.finish(external_id, &response)?;
+                    // Wrap agent output in Response format
+                    let response = serde_json::json!({
+                        "kind": "Processed",
+                        "stdout": agent_output
+                    });
+                    external_task_map.finish(external_id, &response.to_string())?;
 
-                    debug!(agent_id = agent_id.0, external_task_id = external_id.0, "task completed");
+                    info!(agent_id = agent_id.0, external_task_id = external_id.0, "task completed");
                 }
             }
         }

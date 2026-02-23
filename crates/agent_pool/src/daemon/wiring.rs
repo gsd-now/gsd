@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::{
-    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, prelude::*,
+    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, info, trace, warn};
@@ -191,12 +191,16 @@ pub fn spawn(root: impl AsRef<Path>) -> io::Result<DaemonHandle> {
 ///
 /// Returns an error if the lock can't be acquired or setup fails.
 pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Result<DaemonHandle> {
-    let root = root.as_ref().to_path_buf();
-
-    fs::create_dir_all(&root)?;
+    fs::create_dir_all(root.as_ref())?;
+    // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
+    // so FSEvent paths match our stored paths.
+    let root = fs::canonicalize(root.as_ref())?;
 
     let lock_path = root.join(LOCK_FILE);
     let lock = acquire_lock(&lock_path)?;
+
+    // TODO: Add clean option to clear stale agent/pending directories on restart.
+    // See run_with_config for details.
 
     let agents_dir = root.join(AGENTS_DIR);
     fs::create_dir_all(&agents_dir)?;
@@ -255,12 +259,17 @@ pub fn run(root: impl AsRef<Path>) -> io::Result<Infallible> {
 ///
 /// Returns an error if the lock can't be acquired or an I/O error occurs.
 pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Result<Infallible> {
-    let root = root.as_ref().to_path_buf();
-
-    fs::create_dir_all(&root)?;
+    fs::create_dir_all(root.as_ref())?;
+    // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
+    // so FSEvent paths match our stored paths.
+    let root = fs::canonicalize(root.as_ref())?;
 
     let lock_path = root.join(LOCK_FILE);
     let _lock = acquire_lock(&lock_path)?;
+
+    // TODO: Add --clean flag to clear stale agent/pending directories on restart.
+    // Currently, leftover directories from previous runs are picked up by the scan
+    // and treated as live agents, which causes tasks to be assigned to non-existent agents.
 
     let agents_dir = root.join(AGENTS_DIR);
     fs::create_dir_all(&agents_dir)?;
@@ -448,20 +457,19 @@ fn io_loop(
 
         // Check for socket-based task submissions (non-blocking)
         if !signals.is_paused()
-            && let Some((content, respond_to)) = accept_socket_task(listener)?
+            && let Some((content, stream)) = accept_socket_task(listener)?
         {
-            let external_id = task_id_allocator.allocate_external();
-            if external_task_map
-                .register(external_id, respond_to, ExternalTaskData {
+            let external_id = external_task_map.register_socket(
+                stream,
+                ExternalTaskData {
                     content,
                     timeout: io_config.default_task_timeout,
-                })
-            {
-                debug!("socket task submitted: {:?}", external_id);
-                let _ = events_tx.send(Event::TaskSubmitted {
-                    task_id: TaskId::External(external_id),
-                });
-            }
+                },
+            );
+            info!(external_task_id = external_id.0, "socket task submitted");
+            let _ = events_tx.send(Event::TaskSubmitted {
+                task_id: TaskId::External(external_id),
+            });
         }
 
         // Process filesystem events (non-blocking drain)
@@ -715,7 +723,7 @@ fn scan_agents(
             continue;
         }
         if let Some(agent_id) = agent_map.register_directory(agent_path, ()) {
-            debug!(agent_id = agent_id.0, "agent registered via scan");
+            info!(agent_id = agent_id.0, "agent registered");
             // No heartbeat - let core try pending queue first
             let _ = events_tx.send(Event::AgentRegistered {
                 agent_id,
@@ -764,11 +772,16 @@ fn scan_pending(
 /// Accept a task from the socket listener (non-blocking).
 ///
 /// Returns the task content and the directory path for the response.
-fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, PathBuf)>> {
+/// Accept a socket task and return the content and stream.
+///
+/// The stream is kept alive so we can send the response back later.
+fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)>> {
     use std::io::{BufRead, BufReader, Read};
 
     match listener.accept() {
         Ok(stream) => {
+            // We need to read from stream but also keep it for sending response.
+            // BufReader borrows, so we use a reference and read into it.
             let mut reader = BufReader::new(&stream);
 
             let mut len_line = String::new();
@@ -776,27 +789,26 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, PathBuf
 
             let len: usize = match len_line.trim().parse() {
                 Ok(n) => n,
-                Err(_) => return Ok(None),
+                Err(e) => {
+                    warn!("invalid length prefix: {}", e);
+                    return Ok(None);
+                }
             };
 
             let mut content = vec![0u8; len];
             reader.read_exact(&mut content)?;
 
-            let Ok(_content) = String::from_utf8(content) else {
-                return Ok(None);
+            let content = match String::from_utf8(content) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("invalid UTF-8 in socket submission: {}", e);
+                    return Ok(None);
+                }
             };
 
-            // Create a temporary directory for this socket-based submission
-            // We'll write the response there when complete
-            let _submission_id = uuid::Uuid::new_v4().to_string();
-            // Store the stream handle somehow... this is tricky.
-            // For now, we'll need to refactor to handle socket responses differently.
-            // TODO: Handle socket-based responses properly
-
-            // TODO: Handle socket-based submissions properly
-            warn!("socket-based submissions not yet supported, task ignored");
-            drop(stream);
-            Ok(None)
+            // Drop reader to release borrow, then return owned stream
+            drop(reader);
+            Ok(Some((content, stream)))
         }
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(e) => Err(io::Error::new(

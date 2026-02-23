@@ -1,7 +1,7 @@
 #!/bin/bash
 # Agent that executes shell commands from tasks.
 #
-# Usage: ./command-agent.sh --pool <POOL_ID> --name <AGENT_NAME>
+# Usage: ./command-agent.sh --pool <POOL_ID>
 #
 # This agent:
 # 1. Connects to the pool and waits for tasks
@@ -20,43 +20,64 @@ set -e
 
 # Parse arguments
 POOL=""
-NAME=""
+LOG_FILE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --pool) POOL="$2"; shift 2 ;;
-        --name) NAME="$2"; shift 2 ;;
+        --log) LOG_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
-if [ -z "$POOL" ] || [ -z "$NAME" ]; then
-    echo "Usage: $0 --pool <POOL_ID> --name <AGENT_NAME>" >&2
+if [ -z "$POOL" ]; then
+    echo "Usage: $0 --pool <POOL_ID> [--log <LOG_FILE>]" >&2
     exit 1
+fi
+
+# Redirect all output to log file if specified
+if [ -n "$LOG_FILE" ]; then
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    echo "=== Agent started at $(date) ===" >&2
 fi
 
 # Use agent_pool from PATH, or override with AGENT_POOL env var
 AGENT_POOL="${AGENT_POOL:-agent_pool}"
 
-echo "[$NAME] Agent started, connected to pool $POOL" >&2
+# Agent name will be assigned on first get_task call
+NAME=""
 
 cleanup() {
-    echo "[$NAME] Deregistering and shutting down..." >&2
-    "$AGENT_POOL" deregister_agent --pool "$POOL" --name "$NAME" 2>/dev/null || true
+    if [ -n "$NAME" ]; then
+        echo "[$NAME] Deregistering and shutting down..." >&2
+        "$AGENT_POOL" deregister_agent --pool "$POOL" --name "$NAME" 2>/dev/null || true
+    fi
     exit 0
 }
 trap cleanup SIGINT SIGTERM
 
-while true; do
-    # Wait for a task
-    echo "[$NAME] Waiting for task..." >&2
-    TASK_JSON=$("$AGENT_POOL" get_task --pool "$POOL" --name "$NAME" 2>/dev/null)
+echo "[agent] Starting, connecting to pool $POOL..." >&2
 
-    # Extract response file path and command
+while true; do
+    # Wait for a task (each call creates a new agent identity)
+    echo "[agent] Calling get_task..." >&2
+    TASK_JSON=$("$AGENT_POOL" get_task --pool "$POOL" 2>&1)
+    GET_TASK_EXIT=$?
+    echo "[agent] get_task returned (exit=$GET_TASK_EXIT): $TASK_JSON" >&2
+
+    if [ $GET_TASK_EXIT -ne 0 ]; then
+        echo "[agent] get_task failed, exiting" >&2
+        exit 1
+    fi
+
+    # Extract agent name, response file path, and command
+    NAME=$(echo "$TASK_JSON" | jq -r '.agent_name')
     RESPONSE_FILE=$(echo "$TASK_JSON" | jq -r '.response_file')
-    CMD=$(echo "$TASK_JSON" | jq -r '.content.task.value.cmd // .content.cmd // empty')
+    CMD=$(echo "$TASK_JSON" | jq -r '.content.data.cmd // empty')
+
+    echo "[$NAME] Got task" >&2
 
     if [ -z "$CMD" ]; then
-        echo "[$NAME] No 'cmd' field in task, skipping" >&2
+        echo "[$NAME] No 'cmd' field in task, responding with empty" >&2
         echo "[]" > "$RESPONSE_FILE"
         continue
     fi
