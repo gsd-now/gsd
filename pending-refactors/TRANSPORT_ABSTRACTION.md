@@ -65,21 +65,7 @@ loop {
 
 ## Communication Patterns
 
-**Note:** This section describes internal implementation. External agents (like Claude Code) don't need to know any of this - they just use the CLI:
-
-```bash
-# Agent's entire interface:
-task=$(agent_pool get_task --pool $POOL --name $NAME)
-# ... do work ...
-echo "$result" > "$(echo $task | jq -r '.response_file')"
-# loop
-```
-
-The traits and abstractions below are about how we organize the code internally, not about agent requirements.
-
----
-
-There are two internal communication channels:
+There are three independent communication channels, each with transport choices:
 
 ### 1. Submitter → Daemon (task submission)
 
@@ -105,26 +91,53 @@ Submitter                 Daemon
 
 ### 2. Daemon → Agent (task dispatch)
 
-```
-Daemon                    Agent
-   |                         |
-   |---- dispatch task ----->|
-   |                         |
-   |<--- response -----------|
-   |                         |
-```
+How the daemon sends tasks to an agent.
 
-**Current (file-only):**
+**File transport (current):**
 - Daemon writes `agents/<name>/task.json`
-- Agent polls for task.json
-- Agent writes `response.json`
-- Daemon watches for response.json
+- Agent polls for task.json (via `get_task` CLI)
 
-**Potential socket transport:**
+**Socket transport (future):**
 - Agent connects to daemon, keeps connection open
 - Daemon writes task to agent's connection
-- Agent writes response back
-- Connection stays open for next task
+- Agent receives task immediately (no polling)
+
+### 3. Agent → Daemon (response)
+
+How the agent sends responses back. **This is orthogonal to task dispatch transport.**
+
+**File response (current):**
+- Agent writes to `response_file` path provided in task
+- Daemon watches for response.json
+- Works in sandboxes that block sockets but allow file writes
+
+**Inline response (future):**
+- Agent passes result via CLI: `agent_pool complete_task --result "..."`
+- Or pipes to stdin: `echo "$result" | agent_pool complete_task`
+- Faster than file I/O, but requires socket access
+
+**These can be mixed.** An agent could:
+- Receive tasks via socket (fast)
+- Respond via file (sandbox-compatible)
+
+### Agent CLI Interface
+
+Current interface (file task + file response):
+```bash
+task=$(agent_pool get_task --pool $POOL --name $NAME)
+# ... do work ...
+echo "$result" > "$(echo $task | jq -r '.response_file')"
+```
+
+Future interface with inline response:
+```bash
+task=$(agent_pool get_task --pool $POOL --name $NAME)
+# ... do work ...
+agent_pool complete_task --pool $POOL --name $NAME --result "$result"
+# Or: echo "$result" | agent_pool complete_task --pool $POOL --name $NAME
+```
+
+The `--file` vs `--result` choice for responses is independent of how tasks are received.
 
 ## Proposed Traits
 
