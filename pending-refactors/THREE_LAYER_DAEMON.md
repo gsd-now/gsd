@@ -575,18 +575,12 @@ impl AgentMap {
         id
     }
 
-    /// Returns true if this name is already registered.
-    fn contains_name(&self, name: &str) -> bool {
-        self.name_to_id.contains_key(name)
-    }
-
-    /// Register an agent. Panics if name is already registered.
-    /// Caller must check contains_name() first and deregister if needed.
+    /// Register an agent. Idempotent - returns existing ID if already registered.
+    /// Layer 3 always calls this and forwards the event; Layer 1 handles duplicates.
     fn register(&mut self, name: String) -> AgentId {
-        assert!(
-            !self.name_to_id.contains_key(&name),
-            "register() called for already-registered agent '{name}' - Layer 3 bug"
-        );
+        if let Some(&id) = self.name_to_id.get(&name) {
+            return id;
+        }
 
         let id = self.next_agent_id();
         self.id_to_name.insert(id, name.clone());
@@ -596,10 +590,6 @@ impl AgentMap {
 
     fn get_name(&self, id: AgentId) -> Option<&str> {
         self.id_to_name.get(&id).map(|s| s.as_str())
-    }
-
-    fn get_id(&self, name: &str) -> Option<AgentId> {
-        self.name_to_id.get(name).copied()
     }
 
     fn remove(&mut self, id: AgentId) {
