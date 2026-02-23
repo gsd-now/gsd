@@ -130,5 +130,4 @@ mod tests {
             matches!(parsed, Response::NotProcessed { reason } if reason == NotProcessedReason::Timeout)
         );
     }
-
 }

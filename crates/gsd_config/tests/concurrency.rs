@@ -145,8 +145,9 @@ fn work_distributed_across_agents() {
 
     gsd_config::run(&config, &schemas, runner_config).expect("run failed");
 
-    let total =
-        agent1_count.load(Ordering::SeqCst) + agent2_count.load(Ordering::SeqCst) + agent3_count.load(Ordering::SeqCst);
+    let total = agent1_count.load(Ordering::SeqCst)
+        + agent2_count.load(Ordering::SeqCst)
+        + agent3_count.load(Ordering::SeqCst);
 
     assert_eq!(total, 9, "All 9 tasks should be processed");
 
@@ -192,7 +193,8 @@ fn max_concurrency_limits_parallel_tasks() {
         // Update max if higher
         let mut max = max_clone.load(Ordering::SeqCst);
         while current > max {
-            match max_clone.compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst) {
+            match max_clone.compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => break,
                 Err(m) => max = m,
             }
@@ -342,18 +344,30 @@ fn nested_fan_out() {
     let processed_kinds = Arc::new(std::sync::Mutex::new(Vec::new()));
     let kinds_clone = processed_kinds.clone();
 
-    let _agent = GsdTestAgent::start(&root, "nested-agent", Duration::from_millis(10), move |payload| {
-        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-        let kind = v["task"]["kind"].as_str().unwrap_or("");
-        kinds_clone.lock().unwrap().push(kind.to_string());
+    let _agent = GsdTestAgent::start(
+        &root,
+        "nested-agent",
+        Duration::from_millis(10),
+        move |payload| {
+            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+            let kind = v["task"]["kind"].as_str().unwrap_or("");
+            kinds_clone.lock().unwrap().push(kind.to_string());
 
-        match kind {
-            "Root" => r#"[{"kind": "Branch1", "value": {}}, {"kind": "Branch2", "value": {}}]"#.to_string(),
-            "Branch1" => r#"[{"kind": "Leaf1A", "value": {}}, {"kind": "Leaf1B", "value": {}}]"#.to_string(),
-            "Branch2" => r#"[{"kind": "Leaf2A", "value": {}}, {"kind": "Leaf2B", "value": {}}]"#.to_string(),
-            _ => "[]".to_string(),
-        }
-    });
+            match kind {
+                "Root" => r#"[{"kind": "Branch1", "value": {}}, {"kind": "Branch2", "value": {}}]"#
+                    .to_string(),
+                "Branch1" => {
+                    r#"[{"kind": "Leaf1A", "value": {}}, {"kind": "Leaf1B", "value": {}}]"#
+                        .to_string()
+                }
+                "Branch2" => {
+                    r#"[{"kind": "Leaf2A", "value": {}}, {"kind": "Leaf2B", "value": {}}]"#
+                        .to_string()
+                }
+                _ => "[]".to_string(),
+            }
+        },
+    );
 
     thread::sleep(Duration::from_millis(200));
 

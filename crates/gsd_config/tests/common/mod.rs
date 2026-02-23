@@ -91,8 +91,7 @@ fn extract_task_envelope(raw: &str) -> TaskEnvelope {
 
         let content = envelope
             .get("content")
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| raw.to_string());
+            .map_or_else(|| raw.to_string(), serde_json::Value::to_string);
 
         return TaskEnvelope { kind, content };
     }

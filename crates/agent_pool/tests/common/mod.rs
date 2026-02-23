@@ -83,6 +83,7 @@ struct TaskEnvelope {
 ///
 /// The daemon writes `{"kind": "Task", "content": ...}` to task.json.
 /// Returns (kind, content) tuple.
+#[allow(clippy::option_if_let_else)] // if-let-else is clearer here
 fn extract_task_envelope(raw: &str) -> TaskEnvelope {
     if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(raw) {
         let kind = envelope
@@ -213,7 +214,6 @@ impl TestAgent {
             .expect("Agent thread panicked")
     }
 }
-
 
 // =============================================================================
 // Agent Pool Handle

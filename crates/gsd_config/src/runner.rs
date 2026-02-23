@@ -187,7 +187,10 @@ impl<'a> TaskRunner<'a> {
 
         let max_concurrency = config.options.max_concurrency.unwrap_or(usize::MAX);
 
-        info!(tasks = runner_config.initial_tasks.len(), "starting task queue");
+        info!(
+            tasks = runner_config.initial_tasks.len(),
+            "starting task queue"
+        );
 
         let (tx, rx) = mpsc::channel();
 
@@ -259,7 +262,11 @@ impl<'a> TaskRunner<'a> {
                 break;
             };
 
-            let QueuedTask { task, id: task_id, origin_id } = queued;
+            let QueuedTask {
+                task,
+                id: task_id,
+                origin_id,
+            } = queued;
 
             let Some(step) = self.step_map.get(task.step.as_str()) else {
                 error!(step = %task.step, "unknown step, skipping task");
@@ -292,7 +299,8 @@ impl<'a> TaskRunner<'a> {
 
                     thread::spawn(move || {
                         // Run pre hook if present
-                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value) {
+                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value)
+                        {
                             Ok(v) => v,
                             Err(e) => {
                                 let _ = tx.send(InFlightResult {
@@ -310,7 +318,12 @@ impl<'a> TaskRunner<'a> {
                         };
 
                         // Build payload with (possibly modified) value
-                        let payload = build_agent_payload_with_value(&step_name, &effective_value, &docs, timeout);
+                        let payload = build_agent_payload_with_value(
+                            &step_name,
+                            &effective_value,
+                            &docs,
+                            timeout,
+                        );
                         debug!(payload = %payload, "task payload");
 
                         let result = agent_pool::submit(&root, &payload);
@@ -337,7 +350,8 @@ impl<'a> TaskRunner<'a> {
 
                     thread::spawn(move || {
                         // Run pre hook if present
-                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value) {
+                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value)
+                        {
                             Ok(v) => v,
                             Err(e) => {
                                 let _ = tx.send(InFlightResult {
@@ -389,9 +403,7 @@ impl<'a> TaskRunner<'a> {
             false
         };
 
-        if should_run_finally
-            && let Some(state) = self.finally_tracking.remove(&oid)
-        {
+        if should_run_finally && let Some(state) = self.finally_tracking.remove(&oid) {
             self.run_finally_hook(state);
         }
     }
@@ -452,6 +464,7 @@ impl<'a> TaskRunner<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn process_result(&mut self, inflight: InFlightResult) -> TaskOutcome {
         let InFlightResult {
             task,
@@ -476,9 +489,14 @@ impl<'a> TaskRunner<'a> {
         let effective = EffectiveOptions::resolve(&self.config.options, &step.options);
 
         let (task_result, new_tasks, post_input) = match result {
-            SubmitResult::Pool(Ok(response)) => {
-                process_pool_response(response, &task, &effective_value, step, self.schemas, &effective)
-            }
+            SubmitResult::Pool(Ok(response)) => process_pool_response(
+                response,
+                &task,
+                &effective_value,
+                step,
+                self.schemas,
+                &effective,
+            ),
             SubmitResult::Pool(Err(e)) => {
                 error!(step = %task.step, error = %e, "submit failed");
                 let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
@@ -488,9 +506,14 @@ impl<'a> TaskRunner<'a> {
                 };
                 (result, tasks, post_input)
             }
-            SubmitResult::Command(Ok(stdout)) => {
-                process_command_response(&stdout, &task, &effective_value, step, self.schemas, &effective)
-            }
+            SubmitResult::Command(Ok(stdout)) => process_command_response(
+                &stdout,
+                &task,
+                &effective_value,
+                step,
+                self.schemas,
+                &effective,
+            ),
             SubmitResult::Command(Err(e)) => {
                 error!(step = %task.step, error = %e, "command failed");
                 let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
@@ -561,7 +584,10 @@ impl<'a> TaskRunner<'a> {
         // This task is done - decrement its origin's pending count
         self.decrement_origin(origin_id);
 
-        TaskOutcome { task, result: final_result }
+        TaskOutcome {
+            task,
+            result: final_result,
+        }
     }
 }
 
@@ -653,7 +679,13 @@ fn process_stdout(
                     output: output_value,
                     next: new_tasks.clone(),
                 };
-                (TaskResult::Completed { new_tasks: new_tasks.clone() }, new_tasks, post_input)
+                (
+                    TaskResult::Completed {
+                        new_tasks: new_tasks.clone(),
+                    },
+                    new_tasks,
+                    post_input,
+                )
             }
             Err(e) => {
                 warn!(step = %task.step, error = %e, "invalid response");
@@ -677,7 +709,11 @@ fn process_stdout(
     }
 }
 
-fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: FailureKind) -> (TaskResult, Vec<Task>) {
+fn process_retry(
+    task: &Task,
+    effective: &EffectiveOptions,
+    failure_kind: FailureKind,
+) -> (TaskResult, Vec<Task>) {
     let retry_allowed = match failure_kind {
         FailureKind::Timeout => effective.retry_on_timeout,
         FailureKind::InvalidResponse => effective.retry_on_invalid_response,
@@ -686,7 +722,12 @@ fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: Failur
 
     if !retry_allowed {
         warn!(step = %task.step, failure = ?failure_kind, "retry disabled, dropping task");
-        return (TaskResult::Dropped { reason: format!("retry disabled for {failure_kind:?}") }, vec![]);
+        return (
+            TaskResult::Dropped {
+                reason: format!("retry disabled for {failure_kind:?}"),
+            },
+            vec![],
+        );
     }
 
     let mut retry_task = task.clone();
@@ -700,10 +741,21 @@ fn process_retry(task: &Task, effective: &EffectiveOptions, failure_kind: Failur
             failure = ?failure_kind,
             "requeuing task"
         );
-        (TaskResult::Requeued { reason: format!("{failure_kind:?}"), retry_count: retry_task.retries }, vec![retry_task])
+        (
+            TaskResult::Requeued {
+                reason: format!("{failure_kind:?}"),
+                retry_count: retry_task.retries,
+            },
+            vec![retry_task],
+        )
     } else {
         error!(step = %task.step, retries = retry_task.retries, "max retries exceeded, dropping task");
-        (TaskResult::Dropped { reason: format!("max retries ({}) exceeded", effective.max_retries) }, vec![])
+        (
+            TaskResult::Dropped {
+                reason: format!("max retries ({}) exceeded", effective.max_retries),
+            },
+            vec![],
+        )
     }
 }
 
@@ -713,7 +765,9 @@ fn call_wake_script(script: &str) -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("wake script failed with status: {status}")))
+        Err(io::Error::other(format!(
+            "wake script failed with status: {status}"
+        )))
     }
 }
 
@@ -735,7 +789,11 @@ fn run_command_action(script: &str, task_json: &str) -> io::Result<String> {
         String::from_utf8(output.stdout).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(io::Error::other(format!("command failed with status {}: {}", output.status, stderr.trim())))
+        Err(io::Error::other(format!(
+            "command failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        )))
     }
 }
 
@@ -799,10 +857,7 @@ fn run_pre_hook(
 /// Run a post hook synchronously and return the (possibly modified) result.
 ///
 /// Post hooks can modify the `next` array to filter, add, or transform tasks.
-fn run_post_hook(
-    script: &str,
-    input: &PostHookInput,
-) -> Result<PostHookInput, String> {
+fn run_post_hook(script: &str, input: &PostHookInput) -> Result<PostHookInput, String> {
     info!(script = %script, kind = ?std::mem::discriminant(input), "running post hook");
 
     let input_json = serde_json::to_string(&input).unwrap_or_default();
@@ -884,6 +939,11 @@ mod tests {
 
         assert_eq!(parsed["task"]["kind"], "Test");
         assert_eq!(parsed["timeout_seconds"], 60);
-        assert!(parsed["instructions"].as_str().unwrap().contains("Test Step"));
+        assert!(
+            parsed["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("Test Step")
+        );
     }
 }

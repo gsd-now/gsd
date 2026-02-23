@@ -160,7 +160,10 @@ fn agent_recovery_after_timeout() {
     thread::sleep(Duration::from_millis(800));
 
     // Agent should be deregistered
-    assert!(!agent_dir.exists(), "Agent should be deregistered after timeout");
+    assert!(
+        !agent_dir.exists(),
+        "Agent should be deregistered after timeout"
+    );
 
     // Now start a real agent with the same name - should re-register
     let agent = TestAgent::echo(&root, "recovering-agent", Duration::from_millis(10));
@@ -257,16 +260,16 @@ fn no_periodic_health_check_to_busy_agent() {
     thread::sleep(Duration::from_millis(100));
 
     // Submit task - agent will be busy processing for 500ms
-    let handle = {
-        let root = root.clone();
-        thread::spawn(move || agent_pool::submit(&root, "Slow task"))
-    };
+    let handle = thread::spawn(move || agent_pool::submit(&root, "Slow task"));
 
     // Wait a bit - agent should be busy, no health check should be sent
     thread::sleep(Duration::from_millis(200));
 
     // Wait for task to complete
-    let response = handle.join().expect("Thread panicked").expect("Submit failed");
+    let response = handle
+        .join()
+        .expect("Thread panicked")
+        .expect("Submit failed");
     let Response::Processed { stdout, .. } = response else {
         panic!("Expected Processed response, got {response:?}");
     };

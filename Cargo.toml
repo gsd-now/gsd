@@ -27,6 +27,8 @@ uuid = { version = "1.0", features = ["v4"] }
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
+# Prefer explicit type names (InFlight::Task) over Self in match arms
+use_self = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

@@ -18,9 +18,7 @@
 //! handle.shutdown()?;  // Gracefully stops the daemon
 //! ```
 
-use crate::constants::{
-    AGENTS_DIR, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE,
-};
+use crate::constants::{AGENTS_DIR, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE};
 use crate::lock::acquire_lock;
 use crate::response::Response;
 use crate::submit_file::{PENDING_RESPONSE_FILE, PENDING_TASK_FILE};
@@ -426,10 +424,7 @@ impl PoolState {
     }
 
     fn in_flight_count(&self) -> usize {
-        self.agents
-            .values()
-            .filter(|a| !a.is_idle())
-            .count()
+        self.agents.values().filter(|a| !a.is_idle()).count()
     }
 
     fn scan_outputs(&mut self) -> io::Result<()> {
@@ -449,13 +444,20 @@ impl PoolState {
                 Err(e) => {
                     return Err(io::Error::new(
                         e.kind(),
-                        format!("failed to check response file {}: {e}", response_path.display()),
+                        format!(
+                            "failed to check response file {}: {e}",
+                            response_path.display()
+                        ),
                     ));
                 }
             };
             if exists {
-                self.complete_task(&agent_id, &response_path)
-                    .map_err(|e| io::Error::new(e.kind(), format!("complete_task for {agent_id} failed: {e}")))?;
+                self.complete_task(&agent_id, &response_path).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("complete_task for {agent_id} failed: {e}"),
+                    )
+                })?;
             }
         }
         Ok(())
@@ -579,7 +581,8 @@ impl PoolState {
             return Ok(());
         };
 
-        let AgentStatus::Busy(in_flight) = std::mem::replace(&mut agent.status, AgentStatus::Idle) else {
+        let AgentStatus::Busy(in_flight) = std::mem::replace(&mut agent.status, AgentStatus::Idle)
+        else {
             return Ok(());
         };
 
@@ -610,9 +613,9 @@ impl PoolState {
     }
 
     /// Check idle agents and dispatch health checks if stale.
-    fn check_periodic_health_checks(&mut self) -> io::Result<()> {
+    fn check_periodic_health_checks(&mut self) {
         if !self.config.periodic_health_check {
-            return Ok(());
+            return;
         }
 
         let interval = self.config.health_check_interval;
@@ -627,7 +630,6 @@ impl PoolState {
             debug!(agent_id, "sending periodic health check");
             let _ = self.dispatch_health_check(&agent_id);
         }
-        Ok(())
     }
 
     /// Check for health check timeouts and deregister unresponsive agents.
@@ -685,12 +687,14 @@ fn event_loop(
         // Block waiting for fs events (with timeout)
         match fs_events.recv_timeout(poll_timeout) {
             Ok(event) => {
-                handle_fs_event(&event, state)
-                    .map_err(|e| io::Error::new(e.kind(), format!("fs event handling failed: {e}")))?;
+                handle_fs_event(&event, state).map_err(|e| {
+                    io::Error::new(e.kind(), format!("fs event handling failed: {e}"))
+                })?;
                 // Drain any additional queued events
                 while let Ok(event) = fs_events.try_recv() {
-                    handle_fs_event(&event, state)
-                        .map_err(|e| io::Error::new(e.kind(), format!("fs event handling failed: {e}")))?;
+                    handle_fs_event(&event, state).map_err(|e| {
+                        io::Error::new(e.kind(), format!("fs event handling failed: {e}"))
+                    })?;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -703,21 +707,24 @@ fn event_loop(
 
         // Periodic scans for things FSEvents might miss
         if last_scan.elapsed() >= scan_interval {
-            state.scan_agents()
+            state
+                .scan_agents()
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_agents failed: {e}")))?;
-            state.scan_outputs()
+            state
+                .scan_outputs()
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_outputs failed: {e}")))?;
-            state.scan_pending()
+            state
+                .scan_pending()
                 .map_err(|e| io::Error::new(e.kind(), format!("scan_pending failed: {e}")))?;
-            state.check_periodic_health_checks()
-                .map_err(|e| io::Error::new(e.kind(), format!("check_periodic_health_checks failed: {e}")))?;
+            state.check_periodic_health_checks();
             state.check_health_check_timeouts();
             last_scan = Instant::now();
         }
 
         // Dispatch any pending tasks to available agents
         if !signals.is_paused() {
-            state.dispatch_pending()
+            state
+                .dispatch_pending()
                 .map_err(|e| io::Error::new(e.kind(), format!("dispatch_pending failed: {e}")))?;
         }
     }
@@ -753,7 +760,10 @@ fn accept_task(listener: &Listener) -> io::Result<Option<Task>> {
     match listener.accept() {
         Ok(stream) => read_task(stream),
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(e) => Err(io::Error::new(e.kind(), format!("socket accept failed: {e}"))),
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("socket accept failed: {e}"),
+        )),
     }
 }
 
@@ -793,14 +803,17 @@ fn send_response(target: ResponseTarget, response: &Response) -> io::Result<()> 
         }
         ResponseTarget::File(path) => {
             // Ensure parent directory exists (submitter may have been killed)
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
-                    warn!(path = %path.display(), "submission directory gone, submitter likely died");
-                    return Ok(()); // Submitter is gone, nothing to do
-                }
+            if let Some(parent) = path.parent()
+                && !parent.exists()
+            {
+                warn!(path = %path.display(), "submission directory gone, submitter likely died");
+                return Ok(()); // Submitter is gone, nothing to do
             }
             fs::write(&path, &json).map_err(|e| {
-                io::Error::new(e.kind(), format!("failed to write response to {}: {e}", path.display()))
+                io::Error::new(
+                    e.kind(),
+                    format!("failed to write response to {}: {e}", path.display()),
+                )
             })?;
             debug!(path = %path.display(), "wrote file-based response");
             Ok(())

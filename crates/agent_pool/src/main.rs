@@ -5,15 +5,14 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, DaemonConfig, RESPONSE_FILE, TASK_FILE,
-    cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool, run_with_config, stop,
-    submit, submit_file,
+    AGENTS_DIR, DaemonConfig, RESPONSE_FILE, TASK_FILE, cleanup_stopped, generate_id, id_to_path,
+    list_pools, resolve_pool, run_with_config, stop, submit, submit_file,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::{fs, thread};
 use std::time::Duration;
+use std::{fs, thread};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const AGENT_PROTOCOL: &str = include_str!("../AGENT_PROTOCOL.md");
@@ -305,7 +304,9 @@ fn main() -> ExitCode {
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
             // Remove the agent directory if it exists
-            if agent_dir.exists() && let Err(e) = fs::remove_dir_all(&agent_dir) {
+            if agent_dir.exists()
+                && let Err(e) = fs::remove_dir_all(&agent_dir)
+            {
                 eprintln!("Failed to remove agent directory: {e}");
                 return ExitCode::FAILURE;
             }

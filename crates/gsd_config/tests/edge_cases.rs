@@ -68,10 +68,8 @@ fn empty_runner_is_empty() {
 
     thread::sleep(Duration::from_millis(100));
 
-    let config: Config = serde_json::from_str(
-        r#"{"steps": [{"name": "X", "next": []}]}"#,
-    )
-    .expect("parse config");
+    let config: Config =
+        serde_json::from_str(r#"{"steps": [{"name": "X", "next": []}]}"#).expect("parse config");
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
@@ -84,7 +82,10 @@ fn empty_runner_is_empty() {
 
     assert!(runner.is_empty(), "Runner with no tasks should be empty");
     assert_eq!(runner.pending(), 0, "Pending count should be 0");
-    assert!(runner.next().is_none(), "next() should return None immediately");
+    assert!(
+        runner.next().is_none(),
+        "next() should return None immediately"
+    );
 
     cleanup_test_dir(&format!("{TEST_DIR}_empty_runner"));
 }
@@ -177,7 +178,7 @@ fn invalid_value_schema_skipped() {
         agent_pool_root: &root,
         wake_script: None,
         initial_tasks: vec![
-            Task::new("Validated", serde_json::json!({})),           // Missing required "name"
+            Task::new("Validated", serde_json::json!({})), // Missing required "name"
             Task::new("Validated", serde_json::json!({"name": "ok"})), // Valid
         ],
     };
@@ -210,22 +211,27 @@ fn large_fan_out() {
     let task_count = Arc::new(AtomicUsize::new(0));
     let count_clone = task_count.clone();
 
-    let _agent = GsdTestAgent::start(&root, "fanout-agent", Duration::from_millis(5), move |payload| {
-        count_clone.fetch_add(1, Ordering::SeqCst);
+    let _agent = GsdTestAgent::start(
+        &root,
+        "fanout-agent",
+        Duration::from_millis(5),
+        move |payload| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
 
-        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-        let kind = v["task"]["kind"].as_str().unwrap_or("");
+            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+            let kind = v["task"]["kind"].as_str().unwrap_or("");
 
-        if kind == "Distribute" {
-            // Fan out to 20 workers
-            let workers: Vec<String> = (0..20)
-                .map(|i| format!(r#"{{"kind": "Worker", "value": {{"id": {i}}}}}"#))
-                .collect();
-            format!("[{}]", workers.join(", "))
-        } else {
-            "[]".to_string()
-        }
-    });
+            if kind == "Distribute" {
+                // Fan out to 20 workers
+                let workers: Vec<String> = (0..20)
+                    .map(|i| format!(r#"{{"kind": "Worker", "value": {{"id": {i}}}}}"#))
+                    .collect();
+                format!("[{}]", workers.join(", "))
+            } else {
+                "[]".to_string()
+            }
+        },
+    );
 
     thread::sleep(Duration::from_millis(200));
 
@@ -356,10 +362,8 @@ fn pending_count_accurate() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let config: Config = serde_json::from_str(
-        r#"{"steps": [{"name": "Work", "next": []}]}"#,
-    )
-    .expect("parse config");
+    let config: Config =
+        serde_json::from_str(r#"{"steps": [{"name": "Work", "next": []}]}"#).expect("parse config");
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
