@@ -72,7 +72,7 @@ Daemon                    Agent
 
 **Agent commands:**
 - `register` - Initial connection, receives first task (health check)
-- `next` - Submit response to previous task, receive next task
+- `next_task` - Submit response to previous task, receive next task
 
 **CLI flags (same as submission):**
 - `--data "response"` = inline payload
@@ -84,11 +84,11 @@ Daemon                    Agent
 task=$(agent_pool register --pool $POOL --name $NAME)
 while true; do
     response=$(process "$task")
-    task=$(agent_pool next --pool $POOL --name $NAME --data "$response")
+    task=$(agent_pool next_task --pool $POOL --name $NAME --data "$response")
 done
 ```
 
-After `register`, every `next` call is symmetric: "here's my response, give me next task."
+After `register`, every `next_task` call is symmetric: "here's my response, give me next task."
 
 ## Sandbox Restrictions
 
@@ -168,9 +168,9 @@ agent_pool submit_task --pool $POOL --data "content" --notify file  # sandboxed
 agent_pool register --pool $POOL --name $NAME
 
 # Agent next task (submit response, get next task)
-agent_pool next --pool $POOL --name $NAME --data "response"
-agent_pool next --pool $POOL --name $NAME --file /path/to/response.json
-agent_pool next --pool $POOL --name $NAME --data "response" --notify file  # sandboxed
+agent_pool next_task --pool $POOL --name $NAME --data "response"
+agent_pool next_task --pool $POOL --name $NAME --file /path/to/response.json
+agent_pool next_task --pool $POOL --name $NAME --data "response" --notify file  # sandboxed
 ```
 
 **Unified flag names:**
