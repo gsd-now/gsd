@@ -37,6 +37,7 @@ mod stop;
 mod submit;
 mod submit_file;
 mod types;
+pub mod v2;
 
 pub use constants::{AGENTS_DIR, PENDING_DIR, RESPONSE_FILE, TASK_FILE};
 pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_with_config};
