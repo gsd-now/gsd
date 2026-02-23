@@ -60,8 +60,10 @@ echo "[agent] Starting, connecting to pool $POOL..." >&2
 while true; do
     # Wait for a task (each call creates a new agent identity)
     echo "[agent] Calling get_task..." >&2
+    set +e
     TASK_JSON=$("$AGENT_POOL" get_task --pool "$POOL" 2>&1)
     GET_TASK_EXIT=$?
+    set -e
     echo "[agent] get_task returned (exit=$GET_TASK_EXIT): $TASK_JSON" >&2
 
     if [ $GET_TASK_EXIT -ne 0 ]; then
