@@ -80,11 +80,15 @@ enum Command {
         no_heartbeat: bool,
         /// Clear existing pool directory before starting.
         /// Required if the directory exists but daemon is not running.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "force")]
         clear: bool,
         /// Stop existing daemon before starting. Requires --clear.
-        #[arg(long, requires = "clear")]
+        #[arg(long, requires = "clear", conflicts_with = "force")]
         stop: bool,
+        /// Force start: stop daemon if running, clear directory if exists.
+        /// Unlike --stop --clear, this never fails due to missing state.
+        #[arg(long, conflicts_with_all = ["clear", "stop"])]
+        force: bool,
     },
     /// Stop a running agent pool server
     Stop {
@@ -223,6 +227,7 @@ fn main() -> ExitCode {
             no_heartbeat,
             clear,
             stop: stop_flag,
+            force,
         } => {
             init_tracing(log_level);
 
@@ -248,8 +253,8 @@ fn main() -> ExitCode {
                 let daemon_running = is_daemon_running(&root);
 
                 if daemon_running {
-                    if stop_flag {
-                        // --stop --clear: Stop daemon, then clear
+                    if stop_flag || force {
+                        // --stop --clear or --force: Stop daemon, then clear
                         if let Err(e) = stop(&root) {
                             eprintln!("Failed to stop daemon: {e}");
                             return ExitCode::FAILURE;
@@ -268,16 +273,16 @@ fn main() -> ExitCode {
                         eprintln!("Stopped existing daemon");
                     } else if clear {
                         // --clear alone but daemon running
-                        eprintln!("Daemon is running. Use --stop --clear to stop and restart.");
+                        eprintln!("Daemon is running. Use --stop --clear or --force to stop and restart.");
                         return ExitCode::FAILURE;
                     } else {
                         // No flags, daemon running
-                        eprintln!("Daemon is already running. Use --stop --clear to restart.");
+                        eprintln!("Daemon is already running. Use --stop --clear or --force to restart.");
                         return ExitCode::FAILURE;
                     }
-                } else if !clear {
-                    // Directory exists, daemon not running, no --clear
-                    eprintln!("Pool directory exists with stale state. Use --clear to wipe and restart.");
+                } else if !clear && !force {
+                    // Directory exists, daemon not running, no --clear or --force
+                    eprintln!("Pool directory exists with stale state. Use --clear or --force to wipe and restart.");
                     return ExitCode::FAILURE;
                 }
 
@@ -288,7 +293,7 @@ fn main() -> ExitCode {
                 }
                 eprintln!("Cleared pool directory");
             } else if stop_flag {
-                // --stop but no directory exists
+                // --stop but no directory exists (--force doesn't fail here)
                 eprintln!("No pool directory exists. Nothing to stop.");
                 return ExitCode::FAILURE;
             }
