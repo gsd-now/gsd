@@ -219,9 +219,6 @@ pub struct PoolState {
     /// Registered agents and their current status.
     /// BTreeMap for deterministic iteration order (snapshots, debugging).
     agents: BTreeMap<AgentId, AgentState>,
-
-    /// Counter for generating unique IDs
-    next_id: u64,
 }
 
 /// Agent state - no I/O, no absolute time
@@ -560,16 +557,28 @@ pub fn event_loop(
 struct AgentMap {
     id_to_name: BTreeMap<AgentId, String>,
     name_to_id: HashMap<String, AgentId>,
-    next_id: u64,
+    next_id: u32,
 }
 
 impl AgentMap {
+    fn new() -> Self {
+        Self {
+            id_to_name: BTreeMap::new(),
+            name_to_id: HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    fn next_agent_id(&mut self) -> AgentId {
+        let id = AgentId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
     /// Register an agent. ALWAYS generates a new AgentId, even if name existed before.
     /// This ensures stale timeout events (with old AgentId) are ignored.
     fn register(&mut self, name: String) -> AgentId {
-        // Always generate new ID - never reuse
-        let id = AgentId(self.next_id);
-        self.next_id += 1;
+        let id = self.next_agent_id();
 
         // If name was previously registered, remove old mapping
         if let Some(old_id) = self.name_to_id.insert(name.clone(), id) {
@@ -597,7 +606,7 @@ struct TaskMap {
     /// For submissions: stores content and responder
     /// For health checks: not stored (Layer 3 generates content on dispatch)
     submissions: HashMap<TaskId, SubmissionData>,
-    next_id: u64,
+    next_id: u32,
 }
 
 struct SubmissionData {
@@ -611,9 +620,21 @@ enum Responder {
 }
 
 impl TaskMap {
-    fn register_submission(&mut self, content: String, responder: Responder) -> TaskId {
+    fn new() -> Self {
+        Self {
+            submissions: HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    fn next_task_id(&mut self) -> TaskId {
         let id = TaskId(self.next_id);
         self.next_id += 1;
+        id
+    }
+
+    fn register_submission(&mut self, content: String, responder: Responder) -> TaskId {
+        let id = self.next_task_id();
         self.submissions.insert(id, SubmissionData { content, responder });
         id
     }
@@ -709,12 +730,10 @@ fn execute_effect(
 ) -> io::Result<()> {
     match effect {
         Effect::DispatchTask { task_id, epoch } => {
-            let Some(name) = agent_map.get_name(epoch.agent_id) else {
-                return Ok(()); // Agent was removed
-            };
-            let Some(content) = task_map.get_content(task_id) else {
-                return Ok(()); // Task not found (shouldn't happen)
-            };
+            let name = agent_map.get_name(epoch.agent_id)
+                .expect("DispatchTask for unknown agent - Layer 1 bug");
+            let content = task_map.get_content(task_id)
+                .expect("DispatchTask for unknown task - Layer 1 bug");
             let envelope = serde_json::json!({
                 "kind": "Task",
                 "content": serde_json::from_str::<serde_json::Value>(content)
@@ -732,8 +751,9 @@ fn execute_effect(
         }
         Effect::TaskCompleted { agent_id, task_id } => {
             // Look up the pending response content
+            // This MUST exist - Layer 3 stored it when AgentResponded was parsed
             let response_content = pending_responses.remove(&agent_id)
-                .unwrap_or_default();
+                .expect("TaskCompleted for agent with no pending response - Layer 3 bug");
 
             // If this was a submission, send response to submitter
             // If this was a health check, task_map.complete returns None
@@ -755,9 +775,9 @@ fn execute_effect(
             // For health checks: nothing to do
         }
         Effect::DeregisterAgent { agent_id } => {
-            if let Some(name) = agent_map.get_name(agent_id) {
-                let _ = fs::remove_dir_all(agents_dir.join(name));
-            }
+            let name = agent_map.get_name(agent_id)
+                .expect("DeregisterAgent for unknown agent - Layer 1 bug");
+            let _ = fs::remove_dir_all(agents_dir.join(name));
             agent_map.remove(agent_id);
         }
         // TODO: Handle ShutdownComplete
@@ -1021,10 +1041,9 @@ crates/agent_pool/src/
 |------|-------|--------|
 | `pending_tasks: VecDeque<TaskId>` | 1 | Core queue logic (just IDs) |
 | `agents: BTreeMap<AgentId, AgentState>` | 1 | Core dispatch logic |
-| `next_id: u64` | 1 | ID generation is deterministic |
 | `IoConfig` | 3 | All policy (timeouts, health check settings) |
-| `TaskMap` | 3 | Maps TaskId to content + responder (submissions only) |
-| `AgentMap` | 3 | Maps AgentId to directory names (unique per registration) |
+| `TaskMap` (with `next_id: u32`) | 3 | Maps TaskId to content + responder; generates TaskIds |
+| `AgentMap` (with `next_id: u32`) | 3 | Maps AgentId to directory names; generates AgentIds |
 | `pending_responses` | 3 | Temporary storage for agent response content |
 | `Listener` | 3 | Socket I/O |
 | `Watcher` | 3 | FS I/O |
