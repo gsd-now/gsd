@@ -1,6 +1,6 @@
 # @gsd-now/gsd
 
-GSD CLI - Get Shit Done with AI agents.
+GSD CLI - Get Sh*** Done with AI agents.
 
 ## Installation
 
