@@ -17,25 +17,28 @@ A real task from a submitter:
 ```json
 {
   "kind": "Task",
-  "response_file": "/tmp/gsd/<POOL_ID>/agents/<YOUR_NAME>/response.json",
-  "content": {
-    "task": {"kind": "StepName", "value": {...}},
-    "instructions": "What you should do..."
+  "task": {
+    "instructions": "What you should do...",
+    "data": {"kind": "StepName", "value": {...}}
   }
 }
 ```
 
 ### Heartbeat
 
-A liveness check from the daemon. Respond with any valid JSON to confirm you're alive:
+A liveness check from the daemon:
 
 ```json
 {
-  "kind": "Heartbeat"
+  "kind": "Heartbeat",
+  "task": {
+    "instructions": "Respond with any valid JSON to confirm you're alive...",
+    "data": null
+  }
 }
 ```
 
-The daemon discards your response. This exists to detect stuck agents.
+Both Task and Heartbeat have the same structure under `task`. Follow the instructions - for heartbeats, just write any valid JSON to the response file.
 
 ### Kicked
 

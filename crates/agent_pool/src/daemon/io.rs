@@ -320,53 +320,55 @@ pub(super) fn execute_effect(
 
                     let content_value = serde_json::from_str::<serde_json::Value>(&task_data.content)
                         .unwrap_or_else(|_| serde_json::Value::String(task_data.content.clone()));
+
+                    // Extract instructions and data from the content
+                    let instructions = content_value
+                        .get("instructions")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let data = content_value
+                        .get("task")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+
                     let envelope = serde_json::json!({
                         "kind": "Task",
-                        "content": content_value,
+                        "task": {
+                            "instructions": instructions,
+                            "data": data,
+                        },
                     });
                     agent_map
                         .write_to(epoch.agent_id, TASK_FILE, &envelope.to_string())
                         .expect("TaskAssigned for unknown agent - core bug");
 
-                    debug!(
-                        agent_id = epoch.agent_id.0,
-                        external_task_id = external_id.0,
-                        "dispatched task"
-                    );
-
                     start_timeout_timer(events_tx.clone(), epoch, task_data.timeout);
                 }
-                TaskId::Heartbeat(heartbeat_id) => {
+                TaskId::Heartbeat(_) => {
                     let heartbeat = serde_json::json!({
                         "kind": "Heartbeat",
+                        "task": {
+                            "instructions": "Respond with any valid JSON to confirm you're alive. The daemon discards your response - this exists to detect stuck agents.",
+                            "data": null,
+                        },
                     });
                     agent_map
                         .write_to(epoch.agent_id, TASK_FILE, &heartbeat.to_string())
                         .expect("TaskAssigned for unknown agent - core bug");
-
-                    debug!(
-                        agent_id = epoch.agent_id.0,
-                        heartbeat_id = heartbeat_id.0,
-                        "dispatched heartbeat"
-                    );
 
                     start_timeout_timer(events_tx.clone(), epoch, config.idle_agent_timeout);
                 }
             }
         }
         Effect::AgentIdled { epoch } => {
-            let task_id = task_id_allocator.allocate_heartbeat();
+            let heartbeat_task_id = task_id_allocator.allocate_heartbeat();
+            trace!(?heartbeat_task_id, "allocated heartbeat for idle agent");
 
             start_idle_timer(
                 events_tx.clone(),
                 epoch,
-                task_id,
+                heartbeat_task_id,
                 config.idle_agent_timeout,
-            );
-            trace!(
-                agent_id = epoch.agent_id.0,
-                ?task_id,
-                "started idle timer"
             );
         }
         Effect::TaskCompleted { agent_id, task_id } => {
