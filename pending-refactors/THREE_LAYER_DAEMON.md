@@ -655,6 +655,12 @@ struct SubmissionData {
     responder: Responder,
 }
 
+// TODO: Unify Responder and AgentChannel into a single Channel enum.
+// Both are communication channels with write capabilities:
+// - Socket: write to stream
+// - Directory/File: write to filesystem
+// The main difference is submitters write to a file, agents write to task.json in a dir.
+// Consider making submitter protocol also directory-based for consistency.
 enum Responder {
     Socket(Stream),
     File(PathBuf),
@@ -1091,3 +1097,4 @@ crates/agent_pool/src/
 ## TODO
 
 - [ ] Extract architectural principles (serial event processing, Byzantine resilience, three-layer separation, IDs vs handles) to a prominent document (README.md or CLAUDE.md) for project-wide guidance.
+- [ ] Unify `Responder` and `AgentChannel` into a single `Channel` enum. Both are communication channels (Socket or filesystem-based). May require making submitter file protocol directory-based for consistency.
