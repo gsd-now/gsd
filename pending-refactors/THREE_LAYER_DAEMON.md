@@ -194,12 +194,21 @@ fn event_loop(
 /// Unique identifier for a task.
 /// Layer 3 maps this to content, responder, and task kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TaskId(u64);
+pub struct TaskId(u32);
 
 /// Unique identifier for an agent.
 /// Layer 3 maps this to the actual directory name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AgentId(u64);
+pub struct AgentId(u32);
+
+/// Agent epoch - identifies a specific point in an agent's lifecycle.
+/// Contains the agent_id so epochs from different agent registrations
+/// can never accidentally match. Cheap to clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Epoch {
+    pub agent_id: AgentId,
+    pub sequence: u32,
+}
 
 /// Pure pool state - only IDs, no content, no I/O, no time, no config
 pub struct PoolState {
@@ -220,7 +229,7 @@ pub struct AgentState {
     pub status: AgentStatus,
     /// Incremented on every state transition (idle→busy, busy→idle).
     /// Used to validate timeout events - stale timers have wrong epoch.
-    pub epoch: u64,
+    pub epoch: Epoch,
 }
 
 pub enum AgentStatus {
@@ -281,8 +290,7 @@ pub enum Event {
     ///
     /// Agents that are still alive will call get_task again and re-register.
     AgentTimedOut {
-        agent_id: AgentId,
-        epoch: u64,
+        epoch: Epoch,  // Contains agent_id
     },
 
     // TODO: Implement pause/resume/shutdown
@@ -302,17 +310,15 @@ pub enum Effect {
     /// Layer 3 looks up: agent directory name, task content from task_id.
     /// Layer 3 also starts a task timeout timer using the epoch.
     DispatchTask {
-        agent_id: AgentId,
         task_id: TaskId,
-        epoch: u64,
+        epoch: Epoch,  // Contains agent_id
     },
 
     /// Agent became idle (after registration or task completion).
     /// Layer 3 starts a timeout timer - if agent doesn't get work,
     /// they'll be deregistered. Alive agents will re-register.
     AgentBecameIdle {
-        agent_id: AgentId,
-        epoch: u64,
+        epoch: Epoch,  // Contains agent_id
     },
 
     /// Task completed successfully - send response to submitter (if any).
@@ -374,8 +380,8 @@ pub fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
         Event::AgentResponded { agent_id } => {
             handle_agent_responded(state, agent_id)
         }
-        Event::AgentTimedOut { agent_id, epoch } => {
-            handle_agent_timed_out(state, agent_id, epoch)
+        Event::AgentTimedOut { epoch } => {
+            handle_agent_timed_out(state, epoch)
         }
         // TODO: Implement pause/resume/shutdown handlers
     }
@@ -417,13 +423,14 @@ fn handle_agent_registered(
         return (state, vec![]);
     }
 
+    let epoch = Epoch { agent_id, sequence: 0 };
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Idle,
-        epoch: 0,
+        epoch,
     });
 
     let mut effects = vec![
-        Effect::AgentBecameIdle { agent_id, epoch: 0 },
+        Effect::AgentBecameIdle { epoch },
         Effect::Log {
             level: LogLevel::Info,
             message: format!("agent registered: {agent_id:?}"),
@@ -451,14 +458,14 @@ fn handle_agent_responded(
         return (state, vec![]);
     };
 
-    // Increment epoch on state transition - invalidates any pending TaskTimedOut
-    agent.epoch += 1;
+    // Increment epoch on state transition - invalidates any pending timeout
+    agent.epoch.sequence += 1;
     let new_epoch = agent.epoch;
 
     // Layer 3 looks up response content using agent_id
     let mut effects = vec![
         Effect::TaskCompleted { agent_id, task_id },
-        Effect::AgentBecameIdle { agent_id, epoch: new_epoch },
+        Effect::AgentBecameIdle { epoch: new_epoch },
         Effect::Log {
             level: LogLevel::Info,
             message: format!("task completed: agent={agent_id:?}, task={task_id:?}"),
@@ -473,9 +480,10 @@ fn handle_agent_responded(
 
 fn handle_agent_timed_out(
     mut state: PoolState,
-    agent_id: AgentId,
-    epoch: u64,
+    epoch: Epoch,
 ) -> (PoolState, Vec<Effect>) {
+    let agent_id = epoch.agent_id;
+
     let Some(agent) = state.agents.get(&agent_id) else {
         // Agent already removed, ignore
         return (state, vec![]);
@@ -521,10 +529,10 @@ fn try_dispatch(state: &mut PoolState) -> Vec<Effect> {
 
         if let Some(agent) = state.agents.get_mut(&agent_id) {
             // Increment epoch on state transition (idle → busy)
-            agent.epoch += 1;
+            agent.epoch.sequence += 1;
             agent.status = AgentStatus::Busy { task_id };
 
-            effects.push(Effect::DispatchTask { agent_id, task_id, epoch: agent.epoch });
+            effects.push(Effect::DispatchTask { task_id, epoch: agent.epoch });
             effects.push(Effect::Log {
                 level: LogLevel::Info,
                 message: format!("task dispatched: agent={agent_id:?}, task={task_id:?}"),
@@ -725,8 +733,8 @@ fn execute_effect(
     config: &IoConfig,
 ) -> io::Result<()> {
     match effect {
-        Effect::DispatchTask { agent_id, task_id, epoch } => {
-            let Some(name) = agent_map.get_name(agent_id) else {
+        Effect::DispatchTask { task_id, epoch } => {
+            let Some(name) = agent_map.get_name(epoch.agent_id) else {
                 return Ok(()); // Agent was removed
             };
             let Some(content) = task_map.get_content(task_id) else {
@@ -741,11 +749,11 @@ fn execute_effect(
             fs::write(&task_path, &envelope)?;
 
             // Start timeout timer
-            start_timeout_timer(events_tx.clone(), agent_id, epoch, config.agent_timeout);
+            start_timeout_timer(events_tx.clone(), epoch, config.agent_timeout);
         }
-        Effect::AgentBecameIdle { agent_id, epoch } => {
+        Effect::AgentBecameIdle { epoch } => {
             // Start timeout timer - if agent doesn't get work, they'll be deregistered
-            start_timeout_timer(events_tx.clone(), agent_id, epoch, config.agent_timeout);
+            start_timeout_timer(events_tx.clone(), epoch, config.agent_timeout);
         }
         Effect::TaskCompleted { agent_id, task_id } => {
             // Look up the pending response content
@@ -793,13 +801,12 @@ fn execute_effect(
 /// The timer is "fire and forget" - Layer 1 ignores it if epoch doesn't match.
 fn start_timeout_timer(
     events_tx: mpsc::Sender<Event>,
-    agent_id: AgentId,
-    epoch: u64,
+    epoch: Epoch,
     timeout: Duration,
 ) {
     thread::spawn(move || {
         thread::sleep(timeout);
-        let _ = events_tx.send(Event::AgentTimedOut { agent_id, epoch });
+        let _ = events_tx.send(Event::AgentTimedOut { epoch });
     });
 }
 ```
@@ -885,22 +892,22 @@ fn test_task_submitted_dispatches_to_idle_agent() {
     let agent_id = AgentId(1);
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Idle,
-        epoch: 0,
+        epoch: Epoch { agent_id, sequence: 0 },
     });
     let task_id = TaskId(42);
 
     let (state, effects) = step(state, Event::TaskSubmitted { task_id });
 
     assert!(state.pending_tasks.is_empty());
-    // Agent now busy, epoch incremented to 1
+    // Agent now busy, epoch sequence incremented to 1
     let agent = state.agents.get(&agent_id).unwrap();
     assert!(matches!(agent.status, AgentStatus::Busy { task_id: t } if t == task_id));
-    assert_eq!(agent.epoch, 1);
+    assert_eq!(agent.epoch.sequence, 1);
     // DispatchTask includes epoch for timeout timer
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::DispatchTask { agent_id: a, task_id: t, epoch: 1 }
-            if *a == agent_id && *t == task_id
+        Effect::DispatchTask { task_id: t, epoch }
+            if *t == task_id && epoch.agent_id == agent_id
     )));
 }
 
@@ -924,7 +931,7 @@ fn test_agent_responded_completes_task_and_increments_epoch() {
     let task_id = TaskId(42);
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Busy { task_id },
-        epoch: 5,
+        epoch: Epoch { agent_id, sequence: 5 },
     });
 
     let (state, effects) = step(state, Event::AgentResponded { agent_id });
@@ -932,7 +939,7 @@ fn test_agent_responded_completes_task_and_increments_epoch() {
     // Agent is now idle with incremented epoch
     let agent = state.agents.get(&agent_id).unwrap();
     assert!(matches!(agent.status, AgentStatus::Idle));
-    assert_eq!(agent.epoch, 6); // Incremented from 5 to 6
+    assert_eq!(agent.epoch.sequence, 6); // Incremented from 5 to 6
 
     // TaskCompleted and AgentBecameIdle effects emitted
     assert!(effects.iter().any(|e| matches!(
@@ -942,7 +949,7 @@ fn test_agent_responded_completes_task_and_increments_epoch() {
     )));
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::AgentBecameIdle { agent_id: a, epoch: 6 } if *a == agent_id
+        Effect::AgentBecameIdle { epoch } if epoch.agent_id == agent_id && epoch.sequence == 6
     )));
 }
 
@@ -951,12 +958,13 @@ fn test_busy_agent_timed_out_deregisters_and_fails_task() {
     let mut state = PoolState::new();
     let agent_id = AgentId(1);
     let task_id = TaskId(42);
+    let epoch = Epoch { agent_id, sequence: 7 };
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Busy { task_id },
-        epoch: 7,
+        epoch,
     });
 
-    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 7 });
+    let (state, effects) = step(state, Event::AgentTimedOut { epoch });
 
     // Agent removed
     assert!(!state.agents.contains_key(&agent_id));
@@ -969,12 +977,13 @@ fn test_busy_agent_timed_out_deregisters_and_fails_task() {
 fn test_idle_agent_timed_out_deregisters() {
     let mut state = PoolState::new();
     let agent_id = AgentId(1);
+    let epoch = Epoch { agent_id, sequence: 4 };
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Idle,
-        epoch: 4,
+        epoch,
     });
 
-    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 4 });
+    let (state, effects) = step(state, Event::AgentTimedOut { epoch });
 
     // Agent removed
     assert!(!state.agents.contains_key(&agent_id));
@@ -987,13 +996,14 @@ fn test_idle_agent_timed_out_deregisters() {
 fn test_stale_timeout_ignored() {
     let mut state = PoolState::new();
     let agent_id = AgentId(1);
-    // Agent has epoch 5, but timeout is for epoch 3 (stale)
+    // Agent has epoch sequence 5, but timeout is for sequence 3 (stale)
     state.agents.insert(agent_id, AgentState {
         status: AgentStatus::Busy { task_id: TaskId(99) },
-        epoch: 5,
+        epoch: Epoch { agent_id, sequence: 5 },
     });
 
-    let (state, effects) = step(state, Event::AgentTimedOut { agent_id, epoch: 3 });
+    let stale_epoch = Epoch { agent_id, sequence: 3 };
+    let (state, effects) = step(state, Event::AgentTimedOut { epoch: stale_epoch });
 
     // Agent still exists - stale timeout ignored
     assert!(state.agents.contains_key(&agent_id));
