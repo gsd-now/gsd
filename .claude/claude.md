@@ -28,6 +28,14 @@ This codebase has a small surface area. Every single component should be absolut
 
 See `CODING.md` for Rust-specific patterns and anti-patterns.
 
+## Documentation
+
+**Keep protocol docs in sync with code.** When modifying message formats, commands, or behaviors:
+- `crates/agent_pool/AGENT_PROTOCOL.md` - what agents receive and how to respond
+- `crates/agent_pool/SUBMISSION_PROTOCOL.md` - how to submit tasks
+
+If you add a new message type (like `Kicked`), document it immediately.
+
 ## Git practices
 
 **COMMIT AUTOMATICALLY AND CONSTANTLY.** Do not wait for the user to ask. Every single tiny change gets its own commit:
