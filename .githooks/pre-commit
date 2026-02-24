@@ -14,7 +14,7 @@ echo "Running cargo clippy..."
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "Running cargo test..."
-cargo test --workspace -- --test-threads=1
+cargo test --workspace
 
 echo "Running cargo udeps (requires nightly)..."
 if rustup run nightly cargo udeps --help > /dev/null 2>&1; then

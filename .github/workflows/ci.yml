@@ -42,7 +42,7 @@ jobs:
       - name: Build binaries
         run: cargo build -p agent_pool_cli -p gsd_cli
       - name: Run tests
-        run: cargo test --workspace -- --test-threads=1
+        run: cargo test --workspace
       - name: Upload debug binaries
         uses: actions/upload-artifact@v4
         with:
