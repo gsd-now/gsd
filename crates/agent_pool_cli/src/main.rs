@@ -109,10 +109,10 @@ enum Command {
         #[arg(long)]
         pool: String,
         /// Task content as inline string
-        #[arg(long)]
+        #[arg(long, conflicts_with = "file")]
         data: Option<String>,
         /// Path to file containing task JSON (daemon reads the file)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "data")]
         file: Option<PathBuf>,
         /// Notification mechanism: socket (default, faster) or file (works in sandboxes)
         #[arg(long, default_value = "socket")]
@@ -148,7 +148,7 @@ enum Command {
         #[arg(long)]
         name: String,
     },
-    /// Register as an agent and wait for first task (alias for get_task)
+    /// Register as an agent and wait for first task (alias for `get_task`)
     #[command(name = "register")]
     Register {
         /// Pool ID or path
@@ -168,10 +168,10 @@ enum Command {
         #[arg(long)]
         name: String,
         /// Response content as inline string
-        #[arg(long)]
+        #[arg(long, conflicts_with = "file")]
         data: Option<String>,
         /// Path to file containing response
-        #[arg(long)]
+        #[arg(long, conflicts_with = "data")]
         file: Option<PathBuf>,
     },
 }
@@ -200,10 +200,10 @@ fn wait_for_task(
 ) -> Result<String, String> {
     loop {
         // Ensure agent directory exists (may have been deleted by daemon restart)
-        if let Some(agent_dir) = task_file.parent() {
-            if !agent_dir.exists() {
-                let _ = fs::create_dir_all(agent_dir);
-            }
+        if let Some(agent_dir) = task_file.parent()
+            && !agent_dir.exists()
+        {
+            let _ = fs::create_dir_all(agent_dir);
         }
 
         // Wait for task.json to exist AND response.json to NOT exist
@@ -375,9 +375,8 @@ fn main() -> ExitCode {
 
             // Build payload from --data (inline) or --file (file reference)
             let payload = match (data, file) {
-                (Some(d), None) => Payload::inline(d),
+                (Some(d), _) => Payload::inline(d),
                 (None, Some(path)) => Payload::file_ref(path),
-                (Some(d), Some(_)) => Payload::inline(d), // --data takes precedence
                 (None, None) => {
                     eprintln!("Either --data or --file must be provided");
                     return ExitCode::FAILURE;
@@ -499,7 +498,7 @@ fn main() -> ExitCode {
 
             // Get response content from --data or --file
             let response_content = match (data, file) {
-                (Some(d), None) => d,
+                (Some(d), _) => d,
                 (None, Some(path)) => match fs::read_to_string(&path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -507,7 +506,6 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                 },
-                (Some(d), Some(_)) => d,
                 (None, None) => {
                     eprintln!("Either --data or --file must be provided");
                     return ExitCode::FAILURE;

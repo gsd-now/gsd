@@ -333,7 +333,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 // =============================================================================
 
 /// The main daemon function that orchestrates core and I/O.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn run_daemon(
     listener: Listener,
     fs_events: mpsc::Receiver<notify::Event>,
@@ -470,7 +470,7 @@ fn run_event_loop_with_shutdown(
 ///
 /// Uses the wake channel pattern: blocks until any event source has work,
 /// then drains all sources non-blocking. Only wakes on actual events.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn io_loop(
     wake_rx: &mpsc::Receiver<()>,
     fs_events: mpsc::Receiver<notify::Event>,
@@ -695,6 +695,7 @@ fn handle_agent_dir(
 }
 
 /// Handle an agent response file event.
+#[allow(clippy::too_many_arguments)]
 fn handle_agent_response(
     agent_path: &Path,
     response_path: &Path,
@@ -710,18 +711,18 @@ fn handle_agent_response(
     }
 
     // Register agent if not already known (response arrived before we saw the directory)
-    if agent_map.get_id_by_path(agent_path).is_none() {
-        if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
-            let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
-                Some(task_id_allocator.allocate_heartbeat())
-            } else {
-                None
-            };
-            let _ = events_tx.send(Event::AgentRegistered {
-                agent_id,
-                heartbeat_task_id,
-            });
-        }
+    if agent_map.get_id_by_path(agent_path).is_none()
+        && let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ())
+    {
+        let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
+            Some(task_id_allocator.allocate_heartbeat())
+        } else {
+            None
+        };
+        let _ = events_tx.send(Event::AgentRegistered {
+            agent_id,
+            heartbeat_task_id,
+        });
     }
 
     // Send response event (deduplicated)
@@ -1378,8 +1379,10 @@ mod tests {
         );
 
         // Should only get one event
-        let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
-        assert_eq!(events.len(), 1);
+        assert_eq!(
+            std::iter::from_fn(|| events_rx.try_recv().ok()).count(),
+            1
+        );
     }
 
     #[test]
@@ -1586,6 +1589,7 @@ mod tests {
     }
 
     /// Run the event loop with an initial state.
+    #[allow(clippy::needless_pass_by_value)]
     fn run_event_loop_with_state(
         mut state: PoolState,
         events_rx: mpsc::Receiver<Event>,
