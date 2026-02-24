@@ -61,14 +61,19 @@ fn valid_schema_passes() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent returns valid Output schema for Input, empty for Output
-    let agent = GsdTestAgent::start(&root, "schema-agent", Duration::from_millis(10), |payload| {
-        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-        let kind = v["task"]["kind"].as_str().unwrap_or("");
-        match kind {
-            "Input" => r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string(),
-            _ => "[]".to_string(),
-        }
-    });
+    let agent = GsdTestAgent::start(
+        &root,
+        "schema-agent",
+        Duration::from_millis(10),
+        |payload| {
+            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+            let kind = v["task"]["kind"].as_str().unwrap_or("");
+            match kind {
+                "Input" => r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string(),
+                _ => "[]".to_string(),
+            }
+        },
+    );
 
     thread::sleep(Duration::from_millis(200));
 
