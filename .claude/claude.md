@@ -32,6 +32,47 @@ This codebase has a small surface area. Every single component should be absolut
 
 See `CODING.md` for Rust-specific patterns and anti-patterns.
 
+### Synchronization: Channels over spinning
+
+**NEVER spin/poll with `thread::sleep` in a loop.** This is amateur-hour code. Use proper synchronization primitives:
+
+**Bad (spinning):**
+```rust
+// DON'T DO THIS
+while !ready_flag.load(Ordering::SeqCst) {
+    thread::sleep(Duration::from_millis(10));
+}
+```
+
+**Good (oneshot channel for readiness):**
+```rust
+let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
+
+thread::spawn(move || {
+    // ... setup work ...
+    let _ = ready_tx.send(());  // Signal ready
+    // ... continue ...
+});
+
+ready_rx.recv().unwrap();  // Blocks until ready, no polling
+```
+
+**Good (wake channel for event loops):**
+```rust
+let (wake_tx, wake_rx) = mpsc::channel();
+
+// Event sources send to wake_tx when they have work
+// Main loop blocks on wake_rx instead of polling
+loop {
+    wake_rx.recv()?;  // Blocks until something happens
+    // ... handle events ...
+}
+```
+
+These patterns are used throughout the daemon:
+- `ready_tx/ready_rx` in `spawn_with_config` for daemon readiness
+- `wake_tx/wake_rx` in the I/O loop for event-driven processing
+
 ## Documentation
 
 **Keep protocol docs in sync with code.** When modifying message formats, commands, or behaviors:
