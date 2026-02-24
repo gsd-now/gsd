@@ -61,7 +61,7 @@ echo ""
 submit_task() {
     local task="$1"
     local start=$(date +%s.%N)
-    result=$($AGENT_POOL submit_task --pool "$ROOT" --input "$task")
+    result=$($AGENT_POOL submit_task --pool "$ROOT" --data "$task")
     local end=$(date +%s.%N)
     local elapsed=$(echo "$end - $start" | bc)
     echo "[${elapsed}s] $result"

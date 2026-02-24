@@ -87,12 +87,12 @@ enum DaemonState {
 }
 
 impl DaemonState {
+    #[allow(clippy::missing_const_for_fn)]
     fn from_u32(value: u32) -> Self {
         match value {
             0 => Self::Playing,
             1 => Self::Paused,
-            2 => Self::Shutdown,
-            _ => Self::Shutdown, // Invalid state treated as shutdown
+            _ => Self::Shutdown, // 2 or invalid state treated as shutdown
         }
     }
 }
@@ -333,6 +333,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 // =============================================================================
 
 /// The main daemon function that orchestrates core and I/O.
+#[allow(clippy::too_many_arguments)]
 fn run_daemon(
     listener: Listener,
     fs_events: mpsc::Receiver<notify::Event>,

@@ -54,7 +54,7 @@ sleep 0.3
 # Submit a task
 echo ""
 echo "Submitting task: 'Hello, World!'"
-result=$($AGENT_POOL submit_task --pool "$ROOT" --input "Hello, World!")
+result=$($AGENT_POOL submit_task --pool "$ROOT" --data "Hello, World!")
 echo "Result: $result"
 echo ""
 echo "=== Success! ==="

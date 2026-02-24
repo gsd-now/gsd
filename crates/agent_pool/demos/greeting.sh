@@ -48,12 +48,12 @@ sleep 0.3
 # Submit greeting requests
 echo ""
 echo "Requesting casual greeting..."
-result=$($AGENT_POOL submit_task --pool "$ROOT" --input "casual")
+result=$($AGENT_POOL submit_task --pool "$ROOT" --data "casual")
 echo "Response: $result"
 echo ""
 
 echo "Requesting formal greeting..."
-result=$($AGENT_POOL submit_task --pool "$ROOT" --input "formal")
+result=$($AGENT_POOL submit_task --pool "$ROOT" --data "formal")
 echo "Response: $result"
 echo ""
 

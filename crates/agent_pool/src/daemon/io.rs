@@ -159,7 +159,7 @@ impl TaskIdAllocator {
         id
     }
 
-    /// Allocate a heartbeat ID (as TaskId for sending to core).
+    /// Allocate a heartbeat ID (as `TaskId` for sending to core).
     #[allow(clippy::missing_const_for_fn)]
     pub fn allocate_heartbeat(&mut self) -> TaskId {
         let id = HeartbeatId(self.next_heartbeat_id);
@@ -366,6 +366,7 @@ impl ExternalTaskMap {
 /// Panics if the effect references an ID that doesn't exist. This indicates a
 /// core bug, since core should only emit effects for IDs it knows about.
 #[allow(clippy::expect_used)] // Internal invariants - effects reference valid IDs
+#[allow(clippy::too_many_lines)] // Large match on Effect variants
 pub(super) fn execute_effect(
     effect: Effect,
     agent_map: &mut AgentMap,

@@ -62,7 +62,7 @@ echo ""
 
 submit_task() {
     local task="$1"
-    result=$($AGENT_POOL submit_task --pool "$ROOT" --input "$task")
+    result=$($AGENT_POOL submit_task --pool "$ROOT" --data "$task")
     echo "Result: $result"
 }
 
