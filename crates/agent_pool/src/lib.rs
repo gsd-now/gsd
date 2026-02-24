@@ -39,6 +39,7 @@ mod constants;
 mod lock;
 mod pool;
 mod response;
+mod transport;
 mod types;
 
 // Grouped modules
@@ -51,4 +52,5 @@ pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_
 pub use lock::is_daemon_running;
 pub use pool::{PoolInfo, cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool};
 pub use response::{NotProcessedReason, Response, ResponseKind};
+pub use transport::Transport;
 pub use types::{AgentName, PoolId};

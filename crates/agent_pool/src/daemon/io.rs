@@ -19,6 +19,7 @@ use std::time::Duration;
 use interprocess::local_socket::Stream;
 use tracing::{debug, info, trace, warn};
 
+use crate::Transport;
 use crate::constants::{RESPONSE_FILE, TASK_FILE};
 
 use super::core::{AgentId, Effect, Epoch, Event, ExternalTaskId, HeartbeatId, TaskId};
@@ -48,73 +49,6 @@ impl Default for IoConfig {
             default_task_timeout: Duration::from_secs(300),
             immediate_heartbeat_enabled: true,
             periodic_heartbeat_enabled: true,
-        }
-    }
-}
-
-// =============================================================================
-// Transport
-// =============================================================================
-
-/// Communication transport for agents and submissions.
-pub(super) enum Transport {
-    /// Filesystem-based transport using a directory.
-    Directory(PathBuf),
-    /// Socket-based transport for direct RPC.
-    Socket(Stream),
-}
-
-// Manual Debug impl because Stream doesn't implement Debug
-impl std::fmt::Debug for Transport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Transport::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
-            Transport::Socket(_) => f.debug_tuple("Socket").field(&"...").finish(),
-        }
-    }
-}
-
-impl Transport {
-    /// Read content from a file in this transport.
-    ///
-    /// Only valid for directory-based transports.
-    pub fn read(&self, filename: &str) -> io::Result<String> {
-        match self {
-            Transport::Directory(path) => fs::read_to_string(path.join(filename)),
-            Transport::Socket(_) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "cannot read files from socket transport",
-            )),
-        }
-    }
-
-    /// Write content to a file in this transport atomically.
-    ///
-    /// Writes to a temp file first, then renames. This prevents readers from
-    /// seeing partial writes (e.g., empty file during truncation).
-    ///
-    /// Only valid for directory-based transports.
-    pub fn write(&self, filename: &str, content: &str) -> io::Result<()> {
-        match self {
-            Transport::Directory(path) => {
-                let target = path.join(filename);
-                let temp = path.join(format!(".{filename}.tmp"));
-                fs::write(&temp, content)?;
-                fs::rename(&temp, &target)
-            }
-            Transport::Socket(_) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "cannot write files to socket transport",
-            )),
-        }
-    }
-
-    /// Get the path for directory-based transports.
-    /// Returns `None` for socket-based transports.
-    pub fn path(&self) -> Option<&Path> {
-        match self {
-            Transport::Directory(path) => Some(path),
-            Transport::Socket(_) => None,
         }
     }
 }
