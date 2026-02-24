@@ -42,9 +42,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run tests
-        run: cargo test --workspace -- --nocapture
-        env:
-          RUST_LOG: debug
+        run: cargo test --workspace
 
   demos:
     runs-on: ubuntu-latest
@@ -73,7 +71,6 @@ jobs:
         env:
           AGENT_POOL: ${{ github.workspace }}/bin/agent_pool
           GSD: ${{ github.workspace }}/bin/gsd
-          RUST_LOG: debug
         run: ./scripts/run-all-demos.sh
 
   build-macos-x64:
