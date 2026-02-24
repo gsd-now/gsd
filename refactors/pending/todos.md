@@ -428,7 +428,7 @@ The default step should probably require `value_schema` to either be absent or a
 
 ## Agent Health Checks
 
-**Status: COMPLETE** - see `pending-refactors/HEALTH_CHECK_PLAN.md`.
+**Status: COMPLETE** - see `refactors/past/HEALTH_CHECK_PLAN.md`.
 
 Task-based ping-pong health checks. Benefits:
 - Initial health check gets tool-use approvals out of the way

@@ -195,7 +195,7 @@ Big refactors follow a two-phase process:
 
 ### Phase 1: Architecture document
 
-Create a markdown file in `pending-refactors/` describing:
+Create a markdown file in `refactors/pending/` describing:
 - Motivation and goals
 - Current state (with line numbers and code snippets)
 - Proposed changes at the architectural level
@@ -251,7 +251,7 @@ Each subtask should be small enough that someone could implement it without aski
 - Complications or edge cases
 - How to test the change
 
-For examples, search git history for `TRANSPORT_ABSTRACTION.md` and `DAEMON_REFACTOR.md` in `pending-refactors/`.
+For examples, see `TRANSPORT_ABSTRACTION.md` and `DAEMON_REFACTOR.md` in `refactors/past/`.
 
 ### Extract independent work
 
@@ -275,4 +275,8 @@ The goal: by the time you start the "real" refactor, as much preliminary work as
 - Independent changes can be tested in isolation
 - If the main refactor is abandoned, the preliminary work still has value
 - Reduces risk by making each change smaller
+
+### Completing refactors
+
+When a refactor is complete, move it from `refactors/pending/` to `refactors/past/`. This keeps the pending folder focused on active work and preserves completed designs for reference.
 
