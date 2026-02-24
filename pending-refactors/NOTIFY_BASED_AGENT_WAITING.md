@@ -432,14 +432,14 @@ rg "Duration::from_secs" --type rust
 
 ## Implementation Order
 
-1. **Task 1: Move Transport** - Mechanical refactor, no behavior change
-2. **Task 2: Create agent module** - New code using Transport, can be tested in isolation
-3. **Task 3: Update CLI** - Use Transport and agent module, existing tests verify it works
-4. **Task 4: Update test agents** - Make tests use CLI subprocess
-5. **Task 5: Audit sleeps** - Final cleanup pass
+1. ✅ **Task 1: Move Transport** - Mechanical refactor, no behavior change
+2. ✅ **Task 2: Create agent module** - New code using Transport, can be tested in isolation
+3. ✅ **Task 3: Update CLI** - Use Transport and agent module, existing tests verify it works
+4. ✅ **Task 4: Update test agents** - Use notify-based waiting (via `wait_for_task_with_timeout`)
+5. ✅ **Task 5: Audit sleeps** - Completed; remaining sleeps are legitimate (timeouts, test delays)
 
 ## Notes
 
 - The socket mechanism for task submission is separate and unrelated to agent waiting
-- Test agents calling the CLI binary ensures they exercise the same code path as real agents
-- The `running` flag pattern becomes unnecessary when test agents are subprocesses - just kill the process to stop
+- Test agents now use `wait_for_task_with_timeout` directly instead of spawning CLI subprocesses (simpler implementation)
+- The `running` flag is checked periodically via timeout on the receive
