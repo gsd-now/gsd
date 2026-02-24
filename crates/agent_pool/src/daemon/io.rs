@@ -467,8 +467,8 @@ pub(super) fn execute_effect(
             }
             TaskId::External(external_id) => {
                 let error = serde_json::json!({
-                    "status": "NotProcessed",
-                    "reason": "AgentTimeout"
+                    "kind": "NotProcessed",
+                    "reason": "timeout"
                 });
                 external_task_map.finish(external_id, &error.to_string())?;
 
