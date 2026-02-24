@@ -7,6 +7,7 @@
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::io;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use crate::{RESPONSE_FILE, TASK_FILE, Transport};
 
@@ -104,6 +105,51 @@ pub fn wait_for_task(
                 return Err(io::Error::other(e));
             }
             Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "watcher channel closed",
+                ));
+            }
+        }
+    }
+}
+
+/// Wait for a task to be ready with a timeout.
+///
+/// Like `wait_for_task`, but returns `Ok(false)` on timeout instead of blocking
+/// forever. This allows callers to periodically check a shutdown flag.
+///
+/// Returns:
+/// - `Ok(true)` when a task is ready
+/// - `Ok(false)` on timeout (no task ready yet)
+/// - `Err(...)` on watcher error or channel close
+///
+/// # Errors
+///
+/// Returns an error if the watcher encounters an error or the channel closes.
+pub fn wait_for_task_with_timeout(
+    transport: &Transport,
+    events_rx: &mpsc::Receiver<AgentEvent>,
+    timeout: Duration,
+) -> io::Result<bool> {
+    if is_task_ready(transport) {
+        return Ok(true);
+    }
+
+    loop {
+        match events_rx.recv_timeout(timeout) {
+            Ok(AgentEvent::FileChanged) => {
+                if is_task_ready(transport) {
+                    return Ok(true);
+                }
+            }
+            Ok(AgentEvent::WatchError(e)) => {
+                return Err(io::Error::other(e));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Ok(false);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "watcher channel closed",
