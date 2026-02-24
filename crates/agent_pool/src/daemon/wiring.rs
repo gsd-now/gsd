@@ -8,8 +8,7 @@ use std::convert::Infallible;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -71,54 +70,51 @@ impl From<DaemonConfig> for IoConfig {
 }
 
 // =============================================================================
-// Daemon State
+// Unified Event Type
 // =============================================================================
+
+/// Unified event type for all I/O sources.
+///
+/// Instead of multiple channels plus a wake channel, all event sources send to a single
+/// channel. The main loop blocks on `recv()`. Shutdown is signaled by closing the channel.
+enum IoEvent {
+    /// Filesystem event from notify watcher.
+    Fs(notify::Event),
+    /// Socket connection with task payload.
+    Socket(String, Stream),
+    /// Effect from the core event loop.
+    Effect(Effect),
+}
 
 // =============================================================================
 // Public API
 // =============================================================================
 
-/// Shared shutdown signal for the daemon.
-#[derive(Clone)]
-struct ShutdownSignal {
-    triggered: Arc<AtomicBool>,
-}
-
-impl ShutdownSignal {
-    fn new() -> Self {
-        Self {
-            triggered: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    fn trigger(&self) {
-        self.triggered.store(true, Ordering::SeqCst);
-    }
-
-    fn is_triggered(&self) -> bool {
-        self.triggered.load(Ordering::SeqCst)
-    }
-}
-
 /// Handle to a running daemon, allowing graceful shutdown.
 pub struct DaemonHandle {
-    shutdown: ShutdownSignal,
+    /// Dropping this sender closes the channel, signaling shutdown.
+    _shutdown_tx: mpsc::Sender<IoEvent>,
     thread: Option<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl DaemonHandle {
     /// Request graceful shutdown and wait for the daemon to stop.
     ///
+    /// Dropping the sender closes the channel, which causes the daemon's
+    /// event loop to exit. Then we join the thread.
+    ///
     /// # Errors
     ///
     /// Returns an error if the daemon thread panicked or encountered an I/O error.
-    pub fn shutdown(mut self) -> io::Result<()> {
-        self.shutdown.trigger();
-        self.join()
-    }
+    pub fn shutdown(self) -> io::Result<()> {
+        let Self {
+            _shutdown_tx: shutdown_tx,
+            thread,
+        } = self;
+        // Dropping shutdown_tx closes the channel, signaling shutdown
+        drop(shutdown_tx);
 
-    fn join(&mut self) -> io::Result<()> {
-        if let Some(handle) = self.thread.take() {
+        if let Some(handle) = thread {
             handle
                 .join()
                 .map_err(|_| io::Error::other("daemon thread panicked"))?
@@ -162,23 +158,24 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
         fs::remove_file(&socket_path)?;
     }
 
-    // Create wake channel for event-driven I/O
-    let (wake_tx, wake_rx) = mpsc::channel();
+    // Create unified event channel - all sources send here, main loop receives
+    let (io_tx, io_rx) = mpsc::channel();
 
     let listener = create_socket_listener(&socket_path)?;
-    let (watcher, fs_events) = create_fs_watcher(&root, wake_tx.clone())?;
+    let fs_watcher = create_fs_watcher(&root, io_tx.clone())?;
 
     let pending_dir = root.join(PENDING_DIR);
-    let shutdown = ShutdownSignal::new();
-    let shutdown_clone = shutdown.clone();
 
     // Use a oneshot channel to signal readiness or early error
     let (ready_tx, ready_rx) = mpsc::sync_channel::<io::Result<()>>(0);
 
+    // Clone sender for the daemon thread
+    let daemon_io_tx = io_tx.clone();
+
     let thread = thread::spawn(move || {
         let _lock = lock;
         let _cleanup = SocketCleanup(socket_path.clone());
-        let _watcher = watcher;
+        let _watcher = fs_watcher;
 
         // Create pending_dir AFTER watcher is running.
         // Clients use pending_dir existence as the "ready" signal.
@@ -194,13 +191,11 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
 
         run_daemon(
             listener,
-            fs_events,
-            wake_rx,
-            wake_tx,
+            io_rx,
+            daemon_io_tx,
             &agents_dir,
             &pending_dir,
             &config.into(),
-            &shutdown_clone,
         )
     });
 
@@ -211,7 +206,7 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
         .map_err(|_| io::Error::other("daemon thread died during startup"))??;
 
     Ok(DaemonHandle {
-        shutdown,
+        _shutdown_tx: io_tx,
         thread: Some(thread),
     })
 }
@@ -253,12 +248,11 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     let _cleanup = SocketCleanup(socket_path.clone());
 
-    // Create wake channel for event-driven I/O
-    let (wake_tx, wake_rx) = mpsc::channel();
+    // Create unified event channel
+    let (io_tx, io_rx) = mpsc::channel();
 
     let listener = create_socket_listener(&socket_path)?;
-    let (watcher, fs_events) = create_fs_watcher(&root, wake_tx.clone())?;
-    let _watcher = watcher;
+    let _fs_watcher = create_fs_watcher(&root, io_tx.clone())?;
 
     // Create pending_dir AFTER watcher is running.
     // Clients use pending_dir existence as the "ready" signal.
@@ -267,17 +261,14 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     info!(socket = %socket_path.display(), "daemon listening");
 
-    let shutdown = ShutdownSignal::new();
     let io_config = config.into();
     match run_daemon(
         listener,
-        fs_events,
-        wake_rx,
-        wake_tx,
+        io_rx,
+        io_tx,
         &agents_dir,
         &pending_dir,
         &io_config,
-        &shutdown,
     ) {
         Ok(()) => unreachable!("event loop returned without shutdown signal"),
         Err(e) => Err(e),
@@ -292,21 +283,18 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn run_daemon(
     listener: Listener,
-    fs_events: mpsc::Receiver<notify::Event>,
-    wake_rx: mpsc::Receiver<()>,
-    wake_tx: mpsc::Sender<()>,
+    io_rx: mpsc::Receiver<IoEvent>,
+    io_tx: mpsc::Sender<IoEvent>,
     agents_dir: &Path,
     pending_dir: &Path,
     io_config: &IoConfig,
-    shutdown: &ShutdownSignal,
 ) -> io::Result<()> {
-    // Create channels between event loop and I/O
+    // Create channel for core events (from I/O to event loop)
     let (events_tx, events_rx) = mpsc::channel::<Event>();
-    let (effects_tx, effects_rx) = mpsc::channel::<Effect>();
 
-    // Create socket channel and spawn accept thread
-    let (socket_tx, socket_rx) = mpsc::channel();
-    let _socket_thread = spawn_socket_accept_thread(listener, socket_tx, wake_tx.clone());
+    // Spawn socket accept thread - sends IoEvent::Socket to unified channel
+    let socket_io_tx = io_tx.clone();
+    let _socket_thread = spawn_socket_accept_thread(listener, socket_io_tx);
 
     // I/O state
     let mut agent_map = AgentMap::new();
@@ -318,13 +306,8 @@ fn run_daemon(
     // Track kicked agent paths to reject re-registration attempts
     let mut kicked_paths: HashSet<PathBuf> = HashSet::new();
 
-    // Clone shutdown signal for the event loop thread
-    let event_loop_shutdown = shutdown.clone();
-
-    // Spawn event loop in a separate thread
-    let event_loop_handle = thread::spawn(move || {
-        run_event_loop_with_shutdown(events_rx, effects_tx, wake_tx, event_loop_shutdown)
-    });
+    // Spawn event loop in a separate thread - sends IoEvent::Effect to unified channel
+    let event_loop_handle = thread::spawn(move || run_event_loop(events_rx, io_tx));
 
     // Do initial scan of existing agents (kicked_paths is empty at startup)
     scan_agents(
@@ -336,12 +319,9 @@ fn run_daemon(
         io_config,
     )?;
 
-    // Run the I/O loop
+    // Run the I/O loop - receives from unified channel
     let result = io_loop(
-        &wake_rx,
-        fs_events,
-        socket_rx,
-        effects_rx,
+        io_rx,
         &events_tx,
         &mut agent_map,
         &mut external_task_map,
@@ -351,10 +331,9 @@ fn run_daemon(
         agents_dir,
         pending_dir,
         io_config,
-        shutdown,
     );
 
-    // Wait for event loop to finish (it will exit when it sees shutdown signal)
+    // Wait for event loop to finish (it exits when channel closes)
     let final_state = event_loop_handle
         .join()
         .map_err(|_| io::Error::other("event loop thread panicked"))?;
@@ -368,46 +347,31 @@ fn run_daemon(
     result
 }
 
-/// Run the event loop with shutdown signal checking.
+/// Run the core event loop.
 ///
-/// This wraps the pure event loop to add shutdown signal checking,
-/// since timer threads keep the events channel alive.
+/// Receives core events, runs the state machine, and sends effects
+/// to the unified I/O channel. Exits when the events channel closes.
 #[allow(clippy::needless_pass_by_value)] // We take ownership intentionally - runs in spawned thread
-fn run_event_loop_with_shutdown(
+fn run_event_loop(
     events_rx: mpsc::Receiver<Event>,
-    effects_tx: mpsc::Sender<Effect>,
-    wake_tx: mpsc::Sender<()>,
-    shutdown: ShutdownSignal,
+    io_tx: mpsc::Sender<IoEvent>,
 ) -> super::core::PoolState {
     use super::core::{PoolState, step};
 
     let mut state = PoolState::new();
 
-    loop {
-        // Check shutdown signal
-        if shutdown.is_triggered() {
-            debug!("event loop: shutdown signal received");
-            break;
-        }
+    // Block on recv - channel closing signals shutdown
+    while let Ok(event) = events_rx.recv() {
+        trace!(?event, "received event");
+        let (new_state, effects) = step(state, event);
+        state = new_state;
 
-        // Use recv_timeout to periodically check shutdown signal
-        match events_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => {
-                trace!(?event, "received event");
-                let (new_state, effects) = step(state, event);
-                state = new_state;
-
-                for effect in effects {
-                    trace!(?effect, "emitting effect");
-                    let _ = effects_tx.send(effect);
-                    let _ = wake_tx.send(()); // Wake main loop
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Continue to check shutdown signal
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                debug!("event loop: channel disconnected");
+        for effect in effects {
+            trace!(?effect, "emitting effect");
+            // Send effect to unified I/O channel
+            if io_tx.send(IoEvent::Effect(effect)).is_err() {
+                // I/O loop is gone, exit
+                debug!("event loop: I/O channel closed");
                 break;
             }
         }
@@ -422,16 +386,12 @@ fn run_event_loop_with_shutdown(
     state
 }
 
-/// The I/O loop that handles filesystem events, socket connections, and effects.
+/// The I/O loop that handles all events from the unified channel.
 ///
-/// Uses the wake channel pattern: blocks until any event source has work,
-/// then drains all sources non-blocking. Only wakes on actual events.
+/// Blocks on `recv()` from the unified `IoEvent` channel. Channel closing signals shutdown.
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn io_loop(
-    wake_rx: &mpsc::Receiver<()>,
-    fs_events: mpsc::Receiver<notify::Event>,
-    socket_rx: mpsc::Receiver<(String, Stream)>,
-    effects_rx: mpsc::Receiver<Effect>,
+    io_rx: mpsc::Receiver<IoEvent>,
     events_tx: &mpsc::Sender<Event>,
     agent_map: &mut AgentMap,
     external_task_map: &mut ExternalTaskMap,
@@ -441,96 +401,72 @@ fn io_loop(
     agents_dir: &Path,
     pending_dir: &Path,
     io_config: &IoConfig,
-    shutdown: &ShutdownSignal,
 ) -> io::Result<()> {
     debug!(
         "io_loop starting, agents_dir={:?}, pending_dir={:?}",
         agents_dir, pending_dir
     );
 
-    loop {
-        // Block until woken or timeout (for shutdown check)
-        match wake_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(()) => {} // Woken by an event source
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Check shutdown on timeout
-                if shutdown.is_triggered() {
-                    info!("shutdown requested");
-                    return Ok(());
+    // Block on recv - channel closing signals shutdown
+    while let Ok(io_event) = io_rx.recv() {
+        match io_event {
+            IoEvent::Fs(event) => {
+                trace!(kind = ?event.kind, "fs event");
+                handle_fs_event(
+                    &event,
+                    events_tx,
+                    agent_map,
+                    external_task_map,
+                    task_id_allocator,
+                    pending_responses,
+                    kicked_paths,
+                    agents_dir,
+                    pending_dir,
+                    io_config,
+                );
+            }
+            IoEvent::Socket(raw, stream) => {
+                let content = match resolve_payload(&raw) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(error = %e, "failed to resolve socket payload");
+                        continue;
+                    }
+                };
+
+                let external_id = external_task_map.register_socket(
+                    stream,
+                    ExternalTaskData {
+                        content,
+                        timeout: io_config.default_task_timeout,
+                    },
+                );
+                info!(external_task_id = external_id.0, "socket task submitted");
+                let _ = events_tx.send(Event::TaskSubmitted {
+                    task_id: TaskId::External(external_id),
+                });
+            }
+            IoEvent::Effect(effect) => {
+                trace!(?effect, "executing effect");
+                // Clear pending response tracking when TaskCompleted cleans up the response file
+                if let Effect::TaskCompleted { agent_id, .. } = &effect {
+                    pending_responses.remove(agent_id);
                 }
-                continue;
+                execute_effect(
+                    effect,
+                    agent_map,
+                    external_task_map,
+                    task_id_allocator,
+                    kicked_paths,
+                    events_tx,
+                    io_config,
+                )?;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // All senders dropped, shutdown
-                info!("wake channel disconnected, shutting down");
-                return Ok(());
-            }
-        }
-
-        // Check shutdown after being woken
-        if shutdown.is_triggered() {
-            info!("shutdown requested");
-            return Ok(());
-        }
-
-        // Drain socket submissions (non-blocking)
-        while let Ok((raw, stream)) = socket_rx.try_recv() {
-            let content = match resolve_payload(&raw) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(error = %e, "failed to resolve socket payload");
-                    continue;
-                }
-            };
-
-            let external_id = external_task_map.register_socket(
-                stream,
-                ExternalTaskData {
-                    content,
-                    timeout: io_config.default_task_timeout,
-                },
-            );
-            info!(external_task_id = external_id.0, "socket task submitted");
-            let _ = events_tx.send(Event::TaskSubmitted {
-                task_id: TaskId::External(external_id),
-            });
-        }
-
-        // Drain filesystem events (non-blocking)
-        while let Ok(event) = fs_events.try_recv() {
-            trace!(kind = ?event.kind, "fs event");
-            handle_fs_event(
-                &event,
-                events_tx,
-                agent_map,
-                external_task_map,
-                task_id_allocator,
-                pending_responses,
-                kicked_paths,
-                agents_dir,
-                pending_dir,
-                io_config,
-            );
-        }
-
-        // Drain effects from event loop (non-blocking)
-        while let Ok(effect) = effects_rx.try_recv() {
-            trace!(?effect, "executing effect");
-            // Clear pending response tracking when TaskCompleted cleans up the response file
-            if let Effect::TaskCompleted { agent_id, .. } = &effect {
-                pending_responses.remove(agent_id);
-            }
-            execute_effect(
-                effect,
-                agent_map,
-                external_task_map,
-                task_id_allocator,
-                kicked_paths,
-                events_tx,
-                io_config,
-            )?;
         }
     }
+
+    info!("I/O channel closed, shutting down");
+    Ok(())
 }
 
 // =============================================================================
@@ -817,25 +753,23 @@ fn is_kicked_agent(agent_path: &Path) -> bool {
 // Socket Handling
 // =============================================================================
 
-/// Spawn a thread that accepts socket connections and forwards them to the main loop.
+/// Spawn a thread that accepts socket connections and sends them to the unified channel.
 fn spawn_socket_accept_thread(
     listener: Listener,
-    socket_tx: mpsc::Sender<(String, Stream)>,
-    wake_tx: mpsc::Sender<()>,
+    io_tx: mpsc::Sender<IoEvent>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         loop {
             match accept_socket_task(&listener) {
                 Ok(Some((raw, stream))) => {
-                    if socket_tx.send((raw, stream)).is_err() {
+                    if io_tx.send(IoEvent::Socket(raw, stream)).is_err() {
                         // Receiver dropped, shutdown
                         break;
                     }
-                    let _ = wake_tx.send(());
                 }
                 Ok(None) => {
                     // Non-blocking, no connection waiting
-                    thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) => {
                     warn!("Socket accept error: {}", e);
@@ -934,19 +868,14 @@ fn create_socket_listener(socket_path: &Path) -> io::Result<Listener> {
     Ok(listener)
 }
 
-fn create_fs_watcher(
-    root: &Path,
-    wake_tx: mpsc::Sender<()>,
-) -> io::Result<(RecommendedWatcher, mpsc::Receiver<notify::Event>)> {
-    let (tx, rx) = mpsc::channel();
-
-    let config = notify::Config::default().with_poll_interval(Duration::from_millis(100));
+fn create_fs_watcher(root: &Path, io_tx: mpsc::Sender<IoEvent>) -> io::Result<RecommendedWatcher> {
+    let config =
+        notify::Config::default().with_poll_interval(std::time::Duration::from_millis(100));
 
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             if let Ok(event) = res {
-                let _ = tx.send(event);
-                let _ = wake_tx.send(()); // Wake main loop
+                let _ = io_tx.send(IoEvent::Fs(event));
             }
         },
         config,
@@ -958,7 +887,7 @@ fn create_fs_watcher(
         .watch(root, RecursiveMode::Recursive)
         .map_err(io::Error::other)?;
 
-    Ok((watcher, rx))
+    Ok(watcher)
 }
 
 struct SocketCleanup(PathBuf);
