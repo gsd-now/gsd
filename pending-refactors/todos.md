@@ -29,18 +29,26 @@ Currently when the daemon stops (via SIGTERM/Ctrl+C or `agent_pool stop`), the p
 
 ## Socket-Based Task Submissions
 
-**Status: NOT IMPLEMENTED** - The daemon creates a socket and listens on it, but socket-based task submissions are stubbed out with a warning. Only file-based submissions (`pending/` directory) work.
+**Status: COMPLETE** - Socket-based task submissions work. The `submit_task` command uses sockets by default (`--notify socket`), with file-based as fallback (`--notify file`) for sandboxed environments.
 
-The infrastructure is in place:
-- `cli/submit.rs` has the client-side socket code
-- `daemon/wiring.rs` accepts socket connections but drops task submissions
+---
 
-What needs to be done:
-1. Store the socket stream handle when a submission arrives
-2. Map TaskId to the stream so responses can be sent back
-3. Handle the response path in `execute_effect` for `TaskCompleted`
+## Socket-Based Agent Notifications
 
-This is lower priority since file-based submissions work well, but socket submissions would be faster (no filesystem polling).
+**Status: NOT IMPLEMENTED** - Agent commands (`get_task`, `next_task`) are file-based only. No `--notify` flag exists on these commands.
+
+**Potential benefit:** Instead of agents polling for `task.json`, the daemon could push tasks to agents via socket. This would be faster and more efficient.
+
+**What needs to be done:**
+1. Add `--notify socket` flag to `get_task` and `next_task` commands
+2. Agent opens socket connection to daemon
+3. Daemon pushes tasks to connected agents instead of writing `task.json`
+4. Agent sends responses over socket instead of writing `response.json`
+
+**Considerations:**
+- File-based should remain the default (works in sandboxed environments)
+- Socket mode is opt-in for when sockets are available
+- Need to handle reconnection if socket drops
 
 ---
 

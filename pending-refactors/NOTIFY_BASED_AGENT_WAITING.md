@@ -30,9 +30,9 @@ The daemon deletes task.json first, then response.json. This means `(absent, pre
 
 Agent-side operations are entirely file-based:
 - `get_task` / `register` - polls for `task.json` (file-based)
-- `next_task` - writes `response.json`, waits for cleanup, polls for next task (file-based)
+- `next_task` - writes `response.json`, polls for next task (file-based)
 
-This is intentional: file-based communication works in sandboxed environments where sockets are blocked.
+**TODO:** Add `--notify socket` option to agent commands (`get_task`, `next_task`) for environments where sockets are available. This would allow the daemon to push tasks to agents instead of agents polling.
 
 ### Existing Daemon Abstractions
 
@@ -203,6 +203,10 @@ pub fn is_task_ready(agent_dir: &Path) -> bool {
 }
 
 /// Wait for a task to be ready (blocks until ready).
+///
+/// The condition `task.exists() && !response.exists()` handles all cases:
+/// - After writing response: keeps waiting until daemon cleans up and assigns new task
+/// - Fresh start: waits for first task assignment
 pub fn wait_for_task(
     agent_dir: &Path,
     events_rx: &mpsc::Receiver<AgentEvent>,
@@ -215,37 +219,6 @@ pub fn wait_for_task(
         match events_rx.recv() {
             Ok(AgentEvent::FileChanged) => {
                 if is_task_ready(agent_dir) {
-                    return Ok(());
-                }
-            }
-            Ok(AgentEvent::WatchError(e)) => {
-                return Err(io::Error::other(e));
-            }
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher channel closed",
-                ));
-            }
-        }
-    }
-}
-
-/// Wait for task.json to be deleted (daemon acknowledged response).
-pub fn wait_for_cleanup(
-    agent_dir: &Path,
-    events_rx: &mpsc::Receiver<AgentEvent>,
-) -> io::Result<()> {
-    let task_file = agent_dir.join(TASK_FILE);
-
-    if !task_file.exists() {
-        return Ok(());
-    }
-
-    loop {
-        match events_rx.recv() {
-            Ok(AgentEvent::FileChanged) => {
-                if !task_file.exists() {
                     return Ok(());
                 }
             }
@@ -283,7 +256,7 @@ fn wait_for_task(...) -> Result<String, String> {
 
 **After:**
 ```rust
-use agent_pool::{create_agent_watcher, wait_for_task, wait_for_cleanup, is_task_ready};
+use agent_pool::{create_agent_watcher, wait_for_task, is_task_ready};
 
 fn wait_for_task_event_driven(agent_dir: &Path, name: &str) -> Result<String, String> {
     let (watcher, events_rx) = create_agent_watcher(agent_dir)
@@ -299,7 +272,7 @@ fn wait_for_task_event_driven(agent_dir: &Path, name: &str) -> Result<String, St
 }
 ```
 
-Also update `next_task` command to use `wait_for_cleanup` followed by `wait_for_task`.
+The `next_task` command just writes the response and calls `wait_for_task` - no explicit cleanup wait needed. The `task.exists() && !response.exists()` condition handles the transition automatically.
 
 ### Task 3: Update Test Agents to Call CLI Binary
 
