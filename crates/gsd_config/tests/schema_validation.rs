@@ -60,9 +60,14 @@ fn valid_schema_passes() {
 
     let _pool = AgentPoolHandle::start(&root);
 
-    // Agent returns valid Output schema
-    let agent = GsdTestAgent::start(&root, "schema-agent", Duration::from_millis(10), |_| {
-        r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string()
+    // Agent returns valid Output schema for Input, empty for Output
+    let agent = GsdTestAgent::start(&root, "schema-agent", Duration::from_millis(10), |payload| {
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
+        match kind {
+            "Input" => r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string(),
+            _ => "[]".to_string(),
+        }
     });
 
     thread::sleep(Duration::from_millis(200));
@@ -169,7 +174,9 @@ fn invalid_response_causes_retry() {
         initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped after all retries
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     let processed = agent.stop();
     // Initial + 2 retries = 3 attempts

@@ -165,6 +165,9 @@ impl GsdTestAgent {
                     thread::sleep(processing_delay);
 
                     let response = processor(&envelope.content);
+
+                    // Push BEFORE writing response to avoid race where daemon sees
+                    // response but agent is stopped before incrementing count
                     processed_tasks.push(envelope.content.trim().to_string());
 
                     // Write response (daemon handles cleanup of both files)
@@ -256,9 +259,23 @@ pub struct AgentPoolHandle {
 }
 
 impl AgentPoolHandle {
-    /// Start the agent pool daemon.
+    /// Start the agent pool daemon and wait for it to be ready.
+    ///
+    /// Readiness is signaled by the pending directory existing.
     pub fn start(root: &Path) -> Self {
         let handle = agent_pool::spawn(root).expect("Failed to start daemon");
+
+        // Wait for daemon to be ready (pending dir exists)
+        let pending_dir = root.join(agent_pool::PENDING_DIR);
+        let mut attempts = 0;
+        while !pending_dir.exists() && attempts < 100 {
+            thread::sleep(Duration::from_millis(10));
+            attempts += 1;
+        }
+        if !pending_dir.exists() {
+            panic!("Daemon failed to become ready within 1s");
+        }
+
         Self {
             handle: Some(handle),
         }

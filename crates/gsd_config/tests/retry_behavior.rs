@@ -78,7 +78,9 @@ fn retry_on_invalid_response_false_drops_task() {
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // With retry_on_invalid_response=false, should only try once
     assert_eq!(
@@ -148,7 +150,9 @@ fn retry_on_invalid_response_true_retries() {
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped after all retries
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // With max_retries=3, should try 1 original + 3 retries = 4 total
     assert_eq!(
@@ -213,7 +217,9 @@ fn malformed_json_triggers_retry() {
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped after all retries
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // 1 original + 2 retries = 3 total
     assert_eq!(
@@ -288,7 +294,9 @@ fn per_step_options_override_global() {
         initial_tasks: vec![Task::new("NoRetryStep", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // Per-step override should prevent retries
     assert_eq!(
@@ -423,7 +431,9 @@ fn max_retries_zero_no_retries() {
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    // Run should return error because task is dropped
+    let result = gsd_config::run(&config, &schemas, runner_config);
+    assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // max_retries=0 means only the original attempt
     assert_eq!(
