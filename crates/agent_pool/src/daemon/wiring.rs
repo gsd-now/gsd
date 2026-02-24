@@ -382,7 +382,7 @@ fn run_daemon(
 
     // Run the I/O loop
     let result = io_loop(
-        wake_rx,
+        &wake_rx,
         fs_events,
         socket_rx,
         effects_rx,
@@ -472,7 +472,7 @@ fn run_event_loop_with_shutdown(
 /// then drains all sources non-blocking. Only wakes on actual events.
 #[allow(clippy::too_many_arguments)]
 fn io_loop(
-    wake_rx: mpsc::Receiver<()>,
+    wake_rx: &mpsc::Receiver<()>,
     fs_events: mpsc::Receiver<notify::Event>,
     socket_rx: mpsc::Receiver<(String, Stream)>,
     effects_rx: mpsc::Receiver<Effect>,
