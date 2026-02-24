@@ -5,9 +5,9 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, DaemonConfig, Payload, RESPONSE_FILE, TASK_FILE, cleanup_stopped, generate_id,
-    id_to_path, is_daemon_running, list_pools, resolve_pool, run_with_config, stop, submit,
-    submit_file,
+    AGENTS_DIR, DaemonConfig, PENDING_DIR, Payload, RESPONSE_FILE, SOCKET_NAME, TASK_FILE,
+    cleanup_stopped, generate_id, id_to_path, is_daemon_running, list_pools, resolve_pool,
+    run_with_config, stop, submit, submit_file,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -278,6 +278,7 @@ fn main() -> ExitCode {
             // Check startup conditions based on directory and daemon state
             if root.exists() {
                 let daemon_running = is_daemon_running(&root);
+                let has_state = has_pool_state(&root);
 
                 if daemon_running {
                     if stop_flag || force {
@@ -311,20 +312,23 @@ fn main() -> ExitCode {
                         );
                         return ExitCode::FAILURE;
                     }
-                } else if !clear && !force {
-                    // Directory exists, daemon not running, no --clear or --force
+                } else if has_state && !clear && !force {
+                    // Directory exists with actual state, daemon not running, no --clear or --force
                     eprintln!(
                         "Pool directory exists with stale state. Use --clear or --force to wipe and restart."
                     );
                     return ExitCode::FAILURE;
                 }
+                // else: directory exists but is empty (no state) - that's fine
 
-                // Clear the directory
-                if let Err(e) = fs::remove_dir_all(&root) {
-                    eprintln!("Failed to clear pool directory: {e}");
-                    return ExitCode::FAILURE;
+                // Clear the directory if it has state
+                if has_state {
+                    if let Err(e) = fs::remove_dir_all(&root) {
+                        eprintln!("Failed to clear pool directory: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                    eprintln!("Cleared pool directory");
                 }
-                eprintln!("Cleared pool directory");
             } else if stop_flag {
                 // --stop but no directory exists (--force doesn't fail here)
                 eprintln!("No pool directory exists. Nothing to stop.");
@@ -535,4 +539,12 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// Check if a pool directory has any state (agents, pending tasks, socket).
+/// An empty directory doesn't count as having state.
+fn has_pool_state(root: &std::path::Path) -> bool {
+    root.join(AGENTS_DIR).exists()
+        || root.join(PENDING_DIR).exists()
+        || root.join(SOCKET_NAME).exists()
 }
