@@ -591,6 +591,12 @@ The CLI commands (`register`, `get_task`, `complete_task`) already abstract away
 
 ---
 
+## CI Step Time Limits
+
+Add a 5-minute timeout to each step in CI workflows. This prevents hung builds from consuming resources and provides faster feedback when something is stuck.
+
+---
+
 ## Parallelize Pre-Commit Hook Checks
 
 The pre-commit hook in `.githooks/pre-commit` runs checks sequentially:

@@ -35,6 +35,7 @@
 //! ```
 
 // Shared modules
+mod agent;
 mod constants;
 mod lock;
 mod pool;
@@ -46,6 +47,7 @@ mod types;
 mod client;
 mod daemon;
 
+pub use agent::{AgentEvent, create_watcher, is_task_ready, wait_for_task};
 pub use client::{Payload, cleanup_submission, stop, submit, submit_file};
 pub use constants::{AGENTS_DIR, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, TASK_FILE};
 pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_with_config};
