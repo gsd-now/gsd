@@ -793,7 +793,8 @@ fn run_command_action(script: &str, task_json: &str) -> io::Result<String> {
         .spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(task_json.as_bytes())?;
+        // Ignore BrokenPipe - command may exit without reading stdin (e.g., `echo '[]'`)
+        let _ = stdin.write_all(task_json.as_bytes());
     }
 
     let output = child.wait_with_output()?;
