@@ -62,7 +62,8 @@ echo ""
 
 submit_task() {
     local task="$1"
-    result=$($AGENT_POOL submit_task --pool "$ROOT" --data "$task")
+    local json="{\"kind\":\"Task\",\"task\":{\"instructions\":\"Echo this back\",\"data\":\"$task\"}}"
+    result=$($AGENT_POOL submit_task --pool "$ROOT" --data "$json")
     echo "Result: $result"
 }
 
