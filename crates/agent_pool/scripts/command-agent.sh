@@ -67,62 +67,68 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-echo "[agent] Starting as $NAME, connecting to pool $POOL..." >&2
+RECONNECT_DELAY=2
 
+# Outer loop: reconnect on eviction or failure
 while true; do
-    echo "[agent] Calling get_task..." >&2
-    set +e
-    TASK_JSON=$("$AGENT_POOL" get_task --pool "$POOL" --name "$NAME" 2>&1)
-    GET_TASK_EXIT=$?
-    set -e
-    echo "[agent] get_task returned (exit=$GET_TASK_EXIT): $TASK_JSON" >&2
+    echo "[$NAME] Connecting to pool $POOL..." >&2
 
-    if [ $GET_TASK_EXIT -ne 0 ]; then
-        echo "[agent] get_task failed, exiting" >&2
-        exit 1
-    fi
+    # Inner loop: process tasks
+    while true; do
+        set +e
+        TASK_JSON=$("$AGENT_POOL" get_task --pool "$POOL" --name "$NAME" 2>&1)
+        GET_TASK_EXIT=$?
+        set -e
 
-    # Extract response file path, kind, and command
-    RESPONSE_FILE=$(echo "$TASK_JSON" | jq -r '.response_file')
-    AGENT_DIR=$(dirname "$RESPONSE_FILE")
-    KIND=$(echo "$TASK_JSON" | jq -r '.kind // "Task"')
-    CMD=$(echo "$TASK_JSON" | jq -r '.content.data.cmd // empty')
+        if [ $GET_TASK_EXIT -ne 0 ]; then
+            echo "[$NAME] get_task failed (exit=$GET_TASK_EXIT), reconnecting in ${RECONNECT_DELAY}s..." >&2
+            sleep "$RECONNECT_DELAY"
+            break  # Break inner loop to reconnect
+        fi
 
-    echo "[$NAME] Got task (kind=$KIND)" >&2
+        # Extract response file path, kind, and command
+        RESPONSE_FILE=$(echo "$TASK_JSON" | jq -r '.response_file')
+        AGENT_DIR=$(dirname "$RESPONSE_FILE")
+        KIND=$(echo "$TASK_JSON" | jq -r '.kind // "Task"')
+        CMD=$(echo "$TASK_JSON" | jq -r '.content.data.cmd // empty')
 
-    # Handle kicked - exit gracefully
-    if [ "$KIND" = "Kicked" ]; then
-        echo "[$NAME] Kicked by daemon, exiting" >&2
-        exit 0
-    fi
+        echo "[$NAME] Got task (kind=$KIND)" >&2
 
-    # Handle heartbeat - respond immediately
-    if [ "$KIND" = "Heartbeat" ]; then
-        echo "[$NAME] Heartbeat, responding" >&2
-        echo "{}" > "$RESPONSE_FILE"
-        continue
-    fi
+        # Handle kicked - reconnect
+        if [ "$KIND" = "Kicked" ]; then
+            echo "[$NAME] Kicked by daemon, reconnecting in ${RECONNECT_DELAY}s..." >&2
+            sleep "$RECONNECT_DELAY"
+            break  # Break inner loop to reconnect
+        fi
 
-    if [ -z "$CMD" ]; then
-        echo "[$NAME] No 'cmd' field in task, responding with empty" >&2
-        echo "[]" > "$RESPONSE_FILE"
-        continue
-    fi
+        # Handle heartbeat - respond immediately
+        if [ "$KIND" = "Heartbeat" ]; then
+            echo "[$NAME] Heartbeat" >&2
+            echo "{}" > "$RESPONSE_FILE"
+            continue
+        fi
 
-    echo "[$NAME] Executing: $CMD" >&2
+        if [ -z "$CMD" ]; then
+            echo "[$NAME] No 'cmd' field in task, responding with empty" >&2
+            echo "[]" > "$RESPONSE_FILE"
+            continue
+        fi
 
-    # Execute the command and capture output
-    set +e
-    OUTPUT=$(bash -c "$CMD" 2>&1)
-    EXIT_CODE=$?
-    set -e
+        echo "[$NAME] Executing: $CMD" >&2
 
-    if [ $EXIT_CODE -eq 0 ]; then
-        echo "[$NAME] Command succeeded" >&2
-    else
-        echo "[$NAME] Command failed with exit code $EXIT_CODE" >&2
-    fi
+        # Execute the command and capture output
+        set +e
+        OUTPUT=$(bash -c "$CMD" 2>&1)
+        EXIT_CODE=$?
+        set -e
 
-    # Write response (just the output - agent_pool wraps it)
-    echo "$OUTPUT" > "$RESPONSE_FILE"
+        if [ $EXIT_CODE -eq 0 ]; then
+            echo "[$NAME] Command succeeded" >&2
+        else
+            echo "[$NAME] Command failed with exit code $EXIT_CODE" >&2
+        fi
+
+        # Write response (just the output - agent_pool wraps it)
+        echo "$OUTPUT" > "$RESPONSE_FILE"
+    done
 done
