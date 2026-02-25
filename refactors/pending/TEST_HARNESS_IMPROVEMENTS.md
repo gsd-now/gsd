@@ -10,31 +10,36 @@ This document describes improvements needed to get the agent_pool tests into a r
 
 ### Current Tests
 
-| File | Test | What It Tests | Submission Mode | Agent Mode |
-|------|------|---------------|-----------------|------------|
-| `greeting.rs` | `greeting_casual_and_formal` | Custom processor (greeting agent with casual/formal) | rstest × 4 | CLI |
-| `single_basic.rs` | `single_agent_single_task` | Basic single agent, single task | rstest × 4 | CLI |
-| `single_agent_queue.rs` | `single_agent_queues_multiple_tasks` | Single agent processes 4 tasks (queuing) | rstest × 4 | CLI |
-| `many_agents.rs` | `multiple_agents_parallel_tasks` | 3 agents process 6 tasks in parallel | rstest × 4 | CLI |
-| `integration.rs` | `basic_submit` | Basic submit/response flow | rstest × 4 | CLI |
-| `integration.rs` | `single_agent_multiple_tasks` | Sequential tasks to single agent | rstest × 4 | CLI |
-| `integration.rs` | `multiple_agents_parallel` | 2 agents process 4 tasks in parallel | rstest × 4 | CLI |
-| `integration.rs` | `agent_deregistration` | Agent stops, new agent picks up work | rstest × 4 | CLI |
-| `integration.rs` | `tasks_queued_before_agents` | Tasks submitted before agent registers | rstest × 4 | CLI |
-| `integration.rs` | `rapid_task_burst` | 10 tasks submitted rapidly | rstest × 4 | CLI |
-| `integration.rs` | `identical_task_content` | 5 tasks with identical content | rstest × 4 | CLI |
-| `integration.rs` | `agent_joins_mid_processing` | Second agent joins while first is processing | rstest × 4 | CLI |
-| `integration.rs` | `response_isolation` | Responses go to correct submitters | rstest × 4 | CLI |
+| File | Test | What It Tests | Submission Modes | Agent Mode |
+|------|------|---------------|------------------|------------|
+| `greeting.rs` | `greeting_casual_and_formal` | Custom processor (greeting agent with casual/formal) | rstest × 6 | CLI |
+| `single_basic.rs` | `single_agent_single_task` | Basic single agent, single task | rstest × 6 | CLI |
+| `single_agent_queue.rs` | `single_agent_queues_multiple_tasks` | Single agent processes 4 tasks (queuing) | rstest × 6 | CLI |
+| `many_agents.rs` | `multiple_agents_parallel_tasks` | 3 agents process 6 tasks in parallel | rstest × 6 | CLI |
+| `integration.rs` | `basic_submit` | Basic submit/response flow | rstest × 6 | CLI |
+| `integration.rs` | `single_agent_multiple_tasks` | Sequential tasks to single agent | rstest × 6 | CLI |
+| `integration.rs` | `multiple_agents_parallel` | 2 agents process 4 tasks in parallel | rstest × 6 | CLI |
+| `integration.rs` | `agent_deregistration` | Agent stops, new agent picks up work | rstest × 6 | CLI |
+| `integration.rs` | `tasks_queued_before_agents` | Tasks submitted before agent registers | rstest × 6 | CLI |
+| `integration.rs` | `rapid_task_burst` | 10 tasks submitted rapidly | rstest × 6 | CLI |
+| `integration.rs` | `identical_task_content` | 5 tasks with identical content | rstest × 6 | CLI |
+| `integration.rs` | `agent_joins_mid_processing` | Second agent joins while first is processing | rstest × 6 | CLI |
+| `integration.rs` | `response_isolation` | Responses go to correct submitters | rstest × 6 | CLI |
 
-### Submission Modes (rstest × 4)
+### Submission Modes (rstest × 6)
 
-Currently all tests use rstest with 4 submission modes:
-- `DataSocket` - `--data` with `--notify socket`
-- `DataFile` - `--data` with `--notify file`
-- `FileSocket` - `--file` with `--notify socket`
-- `FileFile` - `--file` with `--notify file`
+Tests use rstest with a cross-product of two enums:
 
-**Missing:** Raw file protocol (direct writes to `pending/` directory)
+**DataSource** (2 options):
+- `Inline` - Content passed inline (`--data` or `{"kind": "Inline", "content": ...}`)
+- `FileReference` - Content in separate file (`--file` or `{"kind": "FileReference", "path": ...}`)
+
+**NotifyMethod** (3 options):
+- `Socket` - CLI with `--notify socket`
+- `File` - CLI with `--notify file`
+- `Raw` - Direct write to `pending/`, wait with notify
+
+This gives 2 × 3 = 6 combinations per test.
 
 ### Agent Modes
 
@@ -46,17 +51,16 @@ Currently all agents use the CLI (`register`, `next_task`).
 
 ## Mode Matrix
 
-The full matrix should cover:
+### Submission Modes (DataSource × NotifyMethod = 6)
 
-### Submission Modes (5 total)
-
-| Mode | CLI Flag | Description |
-|------|----------|-------------|
-| `DataSocket` | `--data --notify socket` | Inline JSON, socket notification |
-| `DataFile` | `--data --notify file` | Inline JSON, file notification |
-| `FileSocket` | `--file --notify socket` | JSON from file, socket notification |
-| `FileFile` | `--file --notify file` | JSON from file, file notification |
-| `RawFile` | N/A (direct write) | Write directly to `pending/<task_id>/task.json` |
+| DataSource | NotifyMethod | CLI Flag / Protocol | Description |
+|------------|--------------|---------------------|-------------|
+| `Inline` | `Socket` | `--data --notify socket` | Inline JSON, socket notification |
+| `Inline` | `File` | `--data --notify file` | Inline JSON, file notification |
+| `Inline` | `Raw` | Direct write (Inline envelope) | Write `{"kind":"Inline","content":...}` to `pending/<task_id>/task.json` |
+| `FileReference` | `Socket` | `--file --notify socket` | JSON from file, socket notification |
+| `FileReference` | `File` | `--file --notify file` | JSON from file, file notification |
+| `FileReference` | `Raw` | Direct write (FileReference envelope) | Write `{"kind":"FileReference","path":...}` to `pending/<task_id>/task.json` |
 
 ### Agent Modes (2 total)
 
@@ -68,12 +72,10 @@ The full matrix should cover:
 ### Coverage Goal
 
 Run each test scenario with:
-- 5 submission modes
-- 2 agent modes
+- 6 submission modes (done)
+- 2 agent modes (TODO)
 
-= 10 combinations per test
-
-**Note:** Not all combinations make equal sense. For example, `RawFile` submission with socket notification doesn't exist. We should test the realistic combinations.
+= 12 combinations per test
 
 ---
 
@@ -86,13 +88,29 @@ TestAgent uses CLI commands (`register`, `next_task`).
 All tests use `submit_with_mode()` instead of library functions.
 
 ### 3. Multi-Mode Testing with rstest (DONE)
-All tests use `#[rstest]` with 4 submission modes.
+All tests use `#[rstest]` with 6 submission modes (DataSource × NotifyMethod).
 
 ### 4. CLI Rename (DONE)
 `get_task` renamed to `register`.
 
 ### 5. Raw File Submission Mode (DONE)
-Added `SubmitMode::RawFile` that writes directly to `pending/<task_id>/task.json` and waits for response using notify.
+Added `NotifyMethod::Raw` that writes directly to `pending/<task_id>/task.json` and waits for response using notify.
+
+### 6. Two-Enum Refactor (DONE)
+Split single `SubmitMode` enum into `DataSource` × `NotifyMethod` for clearer semantics.
+
+```rust
+pub enum DataSource {
+    Inline,        // --data or {"kind": "Inline", ...}
+    FileReference, // --file or {"kind": "FileReference", ...}
+}
+
+pub enum NotifyMethod {
+    Socket, // --notify socket
+    File,   // --notify file
+    Raw,    // direct write to pending/
+}
+```
 
 ---
 
@@ -100,41 +118,7 @@ Added `SubmitMode::RawFile` that writes directly to `pending/<task_id>/task.json
 
 ### Task 1: Add Raw File Protocol to Agent Modes
 
-Add a 5th submission mode that writes directly to the `pending/` directory:
-
-```rust
-pub enum SubmitMode {
-    DataSocket,
-    DataFile,
-    FileSocket,
-    FileFile,
-    RawFile,  // NEW: Direct write to pending/
-}
-```
-
-Implementation for `RawFile`:
-```rust
-SubmitMode::RawFile => {
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let submission_dir = root.join(PENDING_DIR).join(&task_id);
-    fs::create_dir_all(&submission_dir)?;
-
-    // Write payload wrapped in Inline envelope
-    let payload = serde_json::json!({
-        "kind": "Inline",
-        "content": payload_json
-    });
-    fs::write(submission_dir.join(TASK_FILE), payload.to_string())?;
-
-    // Poll for response (or use notify)
-    let response_file = submission_dir.join(RESPONSE_FILE);
-    // ... wait for response ...
-}
-```
-
-### Task 2: Add Raw File Protocol to Agent Modes
-
-Add a `RawFileAgent` variant that writes directly to `agents/<name>/response.json`:
+Add `AgentMode` enum to test agents using raw file protocol:
 
 ```rust
 pub enum AgentMode {
@@ -152,9 +136,9 @@ impl TestAgent {
 }
 ```
 
-### Task 3: CLI Command Improvements
+### Task 2: CLI Command Improvements
 
-#### 3.1: Consider `complete_task` for final response
+#### 2.1: Consider `complete_task` for final response
 
 Current lifecycle:
 ```
@@ -173,9 +157,9 @@ register -> (next_task --data <response>)* -> deregister --data <final_response>
 
 **Open question:** What's the cleanest API?
 
-### Task 4: Test Output Improvements
+### Task 3: Test Output Improvements
 
-#### 4.1: Structured logging with tracing
+#### 3.1: Structured logging with tracing
 
 Replace `eprintln!()` with structured tracing:
 ```rust
@@ -183,7 +167,7 @@ use tracing::{info, debug};
 info!(agent = %agent_id, "received task");
 ```
 
-#### 4.2: Tracing subscriber setup
+#### 3.2: Tracing subscriber setup
 
 Add test helper:
 ```rust
@@ -195,11 +179,11 @@ pub fn init_test_tracing() {
 }
 ```
 
-### Task 5: Proper Teardown
+### Task 4: Proper Teardown
 
 Ensure tests clean up properly even on panic. Use `scopeguard` or similar.
 
-### Task 6: Missing Test Scenarios
+### Task 5: Missing Test Scenarios
 
 | Scenario | Priority | Notes |
 |----------|----------|-------|
@@ -213,12 +197,11 @@ Ensure tests clean up properly even on panic. Use `scopeguard` or similar.
 
 ## Implementation Order
 
-1. **Task 1: Raw File Submission** - Complete the mode matrix
-2. **Task 2: Raw File Agent** - Complete the mode matrix
-3. **Task 5: Proper Teardown** - Reliability
-4. **Task 6: Missing Scenarios** - Coverage
-5. **Task 4: Test Output** - Debugging
-6. **Task 3: CLI Improvements** - UX
+1. **Task 1: Raw File Agent** - Complete the mode matrix
+2. **Task 4: Proper Teardown** - Reliability
+3. **Task 5: Missing Scenarios** - Coverage
+4. **Task 3: Test Output** - Debugging
+5. **Task 2: CLI Improvements** - UX
 
 ---
 
