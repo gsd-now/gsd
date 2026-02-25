@@ -347,9 +347,35 @@ impl TestAgent {
 
     /// Stop the agent and return the list of tasks it processed.
     pub fn stop(mut self) -> Vec<String> {
-        // Deregister FIRST so daemon won't dispatch more tasks to this agent.
-        // This prevents a race where the agent receives a task between deciding
-        // to stop and actually killing the process.
+        // Write a "Kicked" message to the agent's task.json to signal it to exit.
+        // This makes the CLI exit cleanly and prevents the daemon from dispatching
+        // more tasks to this agent.
+        let agent_dir = self.root.join("agents").join(&self.agent_id);
+        let kicked = serde_json::json!({
+            "kind": "Kicked",
+            "reason": "Test shutdown"
+        });
+        let _ = fs::write(agent_dir.join("task.json"), kicked.to_string());
+
+        self.running.store(false, Ordering::SeqCst);
+
+        // Give the CLI a moment to see the Kicked message and exit cleanly
+        thread::sleep(Duration::from_millis(50));
+
+        // Kill any running CLI subprocess (in case it didn't see the Kicked message)
+        let pid = self.current_pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        }
+
+        let result = self
+            .handle
+            .take()
+            .expect("Agent already stopped")
+            .join()
+            .expect("Agent thread panicked");
+
+        // Now deregister from the daemon (removes the directory)
         let bin = find_agent_pool_binary();
         let _ = Command::new(&bin)
             .arg("deregister_agent")
@@ -359,20 +385,7 @@ impl TestAgent {
             .arg(&self.agent_id)
             .output();
 
-        self.running.store(false, Ordering::SeqCst);
-
-        // Kill any running CLI subprocess
-        let pid = self.current_pid.load(Ordering::SeqCst);
-        if pid != 0 {
-            // Use shell kill command to send SIGKILL
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
-        }
-
-        self.handle
-            .take()
-            .expect("Agent already stopped")
-            .join()
-            .expect("Agent thread panicked")
+        result
     }
 }
 
