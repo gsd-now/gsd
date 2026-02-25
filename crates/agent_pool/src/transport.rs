@@ -49,10 +49,9 @@ impl Transport {
         }
     }
 
-    /// Write content to this transport atomically.
+    /// Write content to this transport.
     ///
-    /// For directory-based transports, writes to a temp file first, then renames.
-    /// This prevents readers from seeing partial writes.
+    /// For directory-based transports, writes directly to the file.
     /// For socket-based transports, sends over the socket (filename is ignored).
     ///
     /// # Errors
@@ -60,12 +59,7 @@ impl Transport {
     /// Returns an error if the file cannot be written or if socket I/O fails.
     pub fn write(&self, filename: &str, content: &str) -> io::Result<()> {
         match self {
-            Transport::Directory(path) => {
-                let target = path.join(filename);
-                let temp = path.join(format!(".{filename}.tmp"));
-                fs::write(&temp, content)?;
-                fs::rename(&temp, &target)
-            }
+            Transport::Directory(path) => fs::write(path.join(filename), content),
             Transport::Socket(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "socket write not yet implemented",

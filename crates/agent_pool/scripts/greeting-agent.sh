@@ -60,11 +60,10 @@ while true; do
             exit 0
         fi
 
-        # Handle heartbeat immediately (atomic write via temp file + mv)
+        # Handle heartbeat immediately
         if [ "$kind" = "Heartbeat" ]; then
             echo "[$AGENT_ID] Heartbeat" >&2
-            echo "{}" > "$AGENT_DIR/response.json.tmp"
-            mv "$AGENT_DIR/response.json.tmp" "$AGENT_DIR/response.json"
+            echo "{}" > "$AGENT_DIR/response.json"
             sleep 0.05
             continue
         fi
@@ -75,10 +74,8 @@ while true; do
 
         sleep "$SLEEP_TIME"
 
-        # Process and write result (atomic write via temp file + mv)
         result=$(process_task "$task")
-        echo "$result" > "$AGENT_DIR/response.json.tmp"
-        mv "$AGENT_DIR/response.json.tmp" "$AGENT_DIR/response.json"
+        echo "$result" > "$AGENT_DIR/response.json"
         echo "[$AGENT_ID] Done: $result" >&2
     fi
     sleep 0.05
