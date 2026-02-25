@@ -125,54 +125,209 @@ However, there are several areas that need improvement.
 ### Problem
 
 Tests currently use library functions directly:
-- `agent_pool::submit(&root, &payload)`
-- `agent_pool::submit_file(&root, &payload)`
+- `agent_pool::submit(&root, &payload)` - socket-based RPC
+- `agent_pool::submit_file(&root, &payload)` - file-based polling
 
-This bypasses the CLI parsing layer. We should use the `agent_pool submit_task` CLI command instead to test the same code path real users exercise.
+This bypasses the CLI parsing layer. We should use the `agent_pool submit_task` CLI command instead.
 
-### Files to update
+### Understanding the Code
 
-- `greeting.rs` - 2 calls to `agent_pool::submit`
-- `single_basic.rs` - `agent_pool::submit` + `submit_file`
-- `single_agent_queue.rs` - `agent_pool::submit`
-- `many_agents.rs` - `agent_pool::submit`
+**Daemon readiness signal:** The daemon creates `pending/` directory AFTER the watcher is running (see `wiring.rs:183-184`):
+```rust
+// Create pending_dir AFTER watcher is running.
+// Clients use pending_dir existence as the "ready" signal.
+```
+
+**Test harness already uses notify** to wait for this directory (`common/mod.rs:388-425`):
+```rust
+fn wait_for_directory_creation<F, T>(watch_root: &Path, target_dir: &Path, action: F) -> T
+```
+
+**Library submit functions:**
+- `submit()` connects to Unix socket, sends payload, waits for response
+- `submit_file()` polls with `thread::sleep` (violates coding patterns, but we're replacing it anyway)
+
+### Implementation
+
+#### 1.1: Add `submit_via_cli` helper function
+
+**File:** `crates/agent_pool/tests/common/mod.rs`
+
+Add this function that spawns the CLI and returns the parsed response:
+
+```rust
+use agent_pool::Response;
+use std::process::Command;
+
+/// Submit a task via the CLI.
+///
+/// Executes: `agent_pool submit_task --pool <root> --data <payload_json> --notify <method>`
+pub fn submit_via_cli(root: &Path, payload_json: &str, notify: &str) -> io::Result<Response> {
+    let bin = find_agent_pool_binary();
+
+    let output = Command::new(&bin)
+        .arg("submit_task")
+        .arg("--pool")
+        .arg(root)
+        .arg("--data")
+        .arg(payload_json)
+        .arg("--notify")
+        .arg(notify)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("CLI failed: {stderr}"),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+```
+
+#### 1.2: Update `greeting.rs`
+
+**Before:**
+```rust
+use agent_pool::{Payload, Response};
+
+let casual = agent_pool::submit(
+    &root,
+    &Payload::inline(r#"{"kind":"Task","task":{"instructions":"greet","data":"casual"}}"#),
+)
+.expect("Submit failed");
+```
+
+**After:**
+```rust
+use common::submit_via_cli;
+use agent_pool::Response;
+
+let casual = submit_via_cli(
+    &root,
+    r#"{"kind":"Task","task":{"instructions":"greet","data":"casual"}}"#,
+    "socket",
+)
+.expect("Submit failed");
+```
+
+Note: Remove `Payload` import since we pass the JSON string directly.
+
+#### 1.3: Update `single_basic.rs`
+
+**single_agent_single_task - Before:**
+```rust
+let response = agent_pool::submit(
+    &root,
+    &Payload::inline(r#"{"kind":"Task","task":{"instructions":"echo","data":"Hello, World!"}}"#),
+)
+.expect("Submit failed");
+```
+
+**After:**
+```rust
+let response = submit_via_cli(
+    &root,
+    r#"{"kind":"Task","task":{"instructions":"echo","data":"Hello, World!"}}"#,
+    "socket",
+)
+.expect("Submit failed");
+```
+
+**file_based_submit - Before:**
+```rust
+let response = submit_file(
+    &root,
+    &Payload::inline(r#"{"kind":"Task","task":{"instructions":"echo","data":"Hello via file!"}}"#),
+)
+.expect("File submit failed");
+```
+
+**After:**
+```rust
+let response = submit_via_cli(
+    &root,
+    r#"{"kind":"Task","task":{"instructions":"echo","data":"Hello via file!"}}"#,
+    "file",
+)
+.expect("File submit failed");
+```
+
+#### 1.4: Update `single_agent_queue.rs`
+
+**Before:**
+```rust
+let task_json =
+    format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":"{task}"}}}}"#);
+thread::spawn(move || {
+    agent_pool::submit(&root, &Payload::inline(task_json)).expect("Submit failed")
+})
+```
+
+**After:**
+```rust
+let task_json =
+    format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":"{task}"}}}}"#);
+thread::spawn(move || {
+    submit_via_cli(&root, &task_json, "socket").expect("Submit failed")
+})
+```
+
+#### 1.5: Update `many_agents.rs`
+
+**Before:**
+```rust
+let task = format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":"Task-{i}"}}}}"#);
+thread::spawn(move || {
+    agent_pool::submit(&root, &Payload::inline(task)).expect("Submit failed")
+})
+```
+
+**After:**
+```rust
+let task = format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":"Task-{i}"}}}}"#);
+thread::spawn(move || {
+    submit_via_cli(&root, &task, "socket").expect("Submit failed")
+})
+```
+
+#### 1.6: Remove unused imports
+
+After conversion, remove from each file:
+- `use agent_pool::Payload;` (no longer needed)
+- `use agent_pool::submit_file;` (if present)
+
+Add instead:
+- `use common::submit_via_cli;`
 
 ---
 
 ## Task 2: Multi-Mode Test Execution
 
-**Goal:** Run every test in multiple submission modes to ensure all code paths are exercised.
+**Goal:** Run every test in all four submission modes to ensure complete coverage.
 
-### Background
+### The Four Modes
 
-The `submit_task` CLI has multiple options for how task data is provided:
-- `--data <JSON>` - Inline task content
-- `--file <PATH>` - Task content in a file
-
-And multiple notification mechanisms:
-- `--notify socket` (default) - Socket-based RPC (faster)
-- `--notify file` - File-based events (works in sandboxes)
-
-Currently, tests only exercise one combination. We should test all four:
-
-| Mode | Data Source | Notification |
-|------|-------------|--------------|
-| 1    | `--data`    | `socket`     |
-| 2    | `--data`    | `file`       |
-| 3    | `--file`    | `socket`     |
-| 4    | `--file`    | `file`       |
+| Mode | CLI Args | Description |
+|------|----------|-------------|
+| `DataSocket` | `--data <json> --notify socket` | Inline JSON, socket RPC |
+| `DataFile` | `--data <json> --notify file` | Inline JSON, file polling |
+| `FileSocket` | `--file <path> --notify socket` | JSON from file, socket RPC |
+| `FileFile` | `--file <path> --notify file` | JSON from file, file polling |
 
 ### Implementation
-
-Create a test matrix that runs each test case in all four modes.
 
 #### 2.1: Add `SubmitMode` enum
 
 **File:** `crates/agent_pool/tests/common/mod.rs`
 
 ```rust
-/// Different ways to submit tasks for testing.
-#[derive(Debug, Clone, Copy)]
+/// Submission mode for testing different CLI code paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitMode {
     /// --data with --notify socket
     DataSocket,
@@ -195,83 +350,197 @@ impl SubmitMode {
 }
 ```
 
-#### 2.2: Add mode-aware submit function
+#### 2.2: Add `submit_with_mode` function (uses CLI)
+
+**File:** `crates/agent_pool/tests/common/mod.rs`
+
+This replaces the simpler `submit_via_cli` from Task 1, adding support for all 4 modes:
+
+```rust
+use std::io::{self, Write};
+use tempfile::NamedTempFile;
+
+/// Submit a task using the specified mode (all modes use CLI).
+pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io::Result<Response> {
+    let bin = find_agent_pool_binary();
+    let mut cmd = Command::new(&bin);
+
+    cmd.arg("submit_task")
+        .arg("--pool")
+        .arg(root);
+
+    // Configure data source and notification method based on mode
+    match mode {
+        SubmitMode::DataSocket => {
+            cmd.arg("--data").arg(payload_json);
+            cmd.arg("--notify").arg("socket");
+        }
+        SubmitMode::DataFile => {
+            cmd.arg("--data").arg(payload_json);
+            cmd.arg("--notify").arg("file");
+        }
+        SubmitMode::FileSocket => {
+            let mut temp = NamedTempFile::new()?;
+            temp.write_all(payload_json.as_bytes())?;
+            temp.flush()?;
+            cmd.arg("--file").arg(temp.path());
+            cmd.arg("--notify").arg("socket");
+            // Note: temp file is kept alive until command completes
+        }
+        SubmitMode::FileFile => {
+            let mut temp = NamedTempFile::new()?;
+            temp.write_all(payload_json.as_bytes())?;
+            temp.flush()?;
+            cmd.arg("--file").arg(temp.path());
+            cmd.arg("--notify").arg("file");
+        }
+    };
+
+    let output = cmd.output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("CLI failed (mode={mode:?}): {stderr}"),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+```
+
+**Dependencies to add to `Cargo.toml`:**
+```toml
+[dev-dependencies]
+tempfile = "3"
+```
+
+#### 2.3: Add `test_all_modes!` macro
 
 **File:** `crates/agent_pool/tests/common/mod.rs`
 
 ```rust
-/// Submit a task using the specified mode.
-pub fn submit_with_mode(root: &Path, payload: &Payload, mode: SubmitMode) -> Result<Response, Error> {
-    match mode {
-        SubmitMode::DataSocket => agent_pool::submit(root, payload),
-        SubmitMode::DataFile => agent_pool::submit_file(root, payload),
-        SubmitMode::FileSocket => {
-            // Write payload to temp file, submit with --file --notify socket
-            todo!()
-        }
-        SubmitMode::FileFile => {
-            // Write payload to temp file, submit with --file --notify file
-            todo!()
-        }
-    }
-}
-```
-
-#### 2.3: Macro for test matrix
-
-Create a macro that generates test functions for each mode:
-
-```rust
+/// Generate test functions for all 4 submit modes.
+///
+/// Usage:
+/// ```
+/// fn my_test_impl(mode: SubmitMode) { ... }
+/// test_all_modes!(my_test_impl);
+/// // Generates: my_test_impl_data_socket, my_test_impl_data_file, etc.
+/// ```
 #[macro_export]
 macro_rules! test_all_modes {
     ($test_fn:ident) => {
         paste::paste! {
             #[test]
             fn [<$test_fn _data_socket>]() {
-                $test_fn(SubmitMode::DataSocket);
+                $test_fn(common::SubmitMode::DataSocket);
             }
 
             #[test]
             fn [<$test_fn _data_file>]() {
-                $test_fn(SubmitMode::DataFile);
+                $test_fn(common::SubmitMode::DataFile);
             }
 
             #[test]
             fn [<$test_fn _file_socket>]() {
-                $test_fn(SubmitMode::FileSocket);
+                $test_fn(common::SubmitMode::FileSocket);
             }
 
             #[test]
             fn [<$test_fn _file_file>]() {
-                $test_fn(SubmitMode::FileFile);
+                $test_fn(common::SubmitMode::FileFile);
             }
         }
     };
 }
 ```
 
-#### 2.4: Convert existing tests
-
-Convert each test to take a `SubmitMode` parameter and use the macro:
-
-```rust
-// Before
-#[test]
-fn single_agent_single_task() {
-    // ... setup ...
-    let response = agent_pool::submit(&root, &payload);
-    // ... assertions ...
-}
-
-// After
-fn single_agent_single_task_impl(mode: SubmitMode) {
-    // ... setup ...
-    let response = submit_with_mode(&root, &payload, mode);
-    // ... assertions ...
-}
-
-test_all_modes!(single_agent_single_task_impl);
+**Dependencies to add to `Cargo.toml`:**
+```toml
+[dev-dependencies]
+paste = "1"
 ```
+
+#### 2.4: Convert `greeting.rs` to multi-mode
+
+**Before (single test):**
+```rust
+#[test]
+fn greeting_casual_and_formal() {
+    let root = setup_test_dir(TEST_DIR);
+    if !is_ipc_available(&root) { ... }
+
+    let _pool = AgentPoolHandle::start(&root);
+    let mut agent = TestAgent::greeting(&root, "friendly-bot", Duration::from_millis(10));
+    agent.wait_ready();
+
+    let casual = submit_via_cli(&root, r#"{"kind":"Task",...}"#, "socket").expect("Submit failed");
+    // ... assertions ...
+
+    cleanup_test_dir(TEST_DIR);
+}
+```
+
+**After (4 tests via macro):**
+```rust
+fn greeting_casual_and_formal_impl(mode: SubmitMode) {
+    // Use mode in test dir name to avoid conflicts when tests run in parallel
+    let test_dir = format!("{TEST_DIR}_{mode:?}");
+    let root = setup_test_dir(&test_dir);
+
+    if !is_ipc_available(&root) {
+        eprintln!("SKIP: IPC not available");
+        cleanup_test_dir(&test_dir);
+        return;
+    }
+
+    let _pool = AgentPoolHandle::start(&root);
+    let mut agent = TestAgent::greeting(&root, "friendly-bot", Duration::from_millis(10));
+    agent.wait_ready();
+
+    let casual = submit_with_mode(
+        &root,
+        r#"{"kind":"Task","task":{"instructions":"greet","data":"casual"}}"#,
+        mode,
+    )
+    .expect("Submit failed");
+
+    let Response::Processed { stdout, .. } = casual else {
+        panic!("Expected Processed response");
+    };
+    assert_eq!(stdout.trim(), "Hi friendly-bot, how are ya?");
+
+    // ... formal test ...
+
+    let _ = agent.stop();
+    cleanup_test_dir(&test_dir);
+}
+
+test_all_modes!(greeting_casual_and_formal_impl);
+```
+
+This generates 4 test functions:
+- `greeting_casual_and_formal_impl_data_socket`
+- `greeting_casual_and_formal_impl_data_file`
+- `greeting_casual_and_formal_impl_file_socket`
+- `greeting_casual_and_formal_impl_file_file`
+
+#### 2.5: Convert other test files
+
+Apply the same pattern to:
+- `single_basic.rs` - `single_agent_single_task_impl`, `file_based_submit_impl`
+- `single_agent_queue.rs` - `single_agent_queues_multiple_tasks_impl`
+- `many_agents.rs` - `multiple_agents_parallel_tasks_impl`
+
+**Key changes for each:**
+1. Rename test function to `*_impl(mode: SubmitMode)`
+2. Include `mode:?` in test directory name
+3. Replace `submit_via_cli(&root, json, "socket")` with `submit_with_mode(&root, json, mode)`
+4. Add `test_all_modes!(fn_name_impl);` at the end
 
 ---
 
