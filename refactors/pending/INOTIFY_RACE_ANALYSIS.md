@@ -38,30 +38,113 @@ Future work (separate doc): Flatten agents + anonymous worker model. See `ANONYM
 
 **Goal:** Ensure both `pending/` and `agents/` are watched before proceeding. Panic on non-FS events.
 
-### 1.1: Update `sync_with_watcher` to panic on non-FS events
+### 1.1: Replace `sync_with_watcher` to handle both directories
 
-**File:** `crates/agent_pool/src/daemon/wiring.rs` (lines 967-969)
+**File:** `crates/agent_pool/src/daemon/wiring.rs`
 
-**Before:**
+**Before (single directory):**
 ```rust
-Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
-    // Non-FS event or timeout, keep polling
+fn sync_with_watcher(canary_path: &Path, io_rx: &mpsc::Receiver<IoEvent>) -> io::Result<()> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const ROUND_DURATION: Duration = Duration::from_millis(100);
+    const MAX_ATTEMPTS: u32 = 50;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        fs::write(canary_path, format!("sync-{attempt}"))?;
+
+        let round_start = std::time::Instant::now();
+        while round_start.elapsed() < ROUND_DURATION {
+            match io_rx.recv_timeout(POLL_INTERVAL) {
+                Ok(IoEvent::Fs(event)) => {
+                    if event.paths.iter().any(|p| p == canary_path) {
+                        let _ = fs::remove_file(canary_path);
+                        return Ok(());
+                    }
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = fs::remove_file(canary_path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "channel disconnected",
+                    ));
+                }
+            }
+        }
+    }
+
+    let _ = fs::remove_file(canary_path);
+    Err(io::Error::new(io::ErrorKind::TimedOut, "watcher sync timed out"))
 }
 ```
 
-**After:**
+**After (both directories in parallel, panic on non-FS):**
 ```rust
-Ok(IoEvent::Socket(..) | IoEvent::Effect(..) | IoEvent::Shutdown) => {
-    panic!("unexpected non-FS event during startup sync");
-}
-Err(mpsc::RecvTimeoutError::Timeout) => {
-    // Keep polling
+fn sync_with_watcher(
+    pending_dir: &Path,
+    agents_dir: &Path,
+    io_rx: &mpsc::Receiver<IoEvent>,
+) -> io::Result<()> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const ROUND_DURATION: Duration = Duration::from_millis(100);
+    const MAX_ATTEMPTS: u32 = 50;
+
+    let pending_canary = pending_dir.join("canary");
+    let agents_canary = agents_dir.join("canary");
+
+    let mut seen_pending = false;
+    let mut seen_agents = false;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        // Rewrite canaries we haven't seen yet
+        if !seen_pending {
+            fs::write(&pending_canary, format!("sync-{attempt}"))?;
+        }
+        if !seen_agents {
+            fs::write(&agents_canary, format!("sync-{attempt}"))?;
+        }
+
+        let round_start = std::time::Instant::now();
+        while round_start.elapsed() < ROUND_DURATION {
+            match io_rx.recv_timeout(POLL_INTERVAL) {
+                Ok(IoEvent::Fs(event)) => {
+                    for path in &event.paths {
+                        if path == &pending_canary {
+                            seen_pending = true;
+                        }
+                        if path == &agents_canary {
+                            seen_agents = true;
+                        }
+                    }
+                    if seen_pending && seen_agents {
+                        let _ = fs::remove_file(&pending_canary);
+                        let _ = fs::remove_file(&agents_canary);
+                        return Ok(());
+                    }
+                }
+                Ok(_) => panic!("unexpected non-FS event during startup sync"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = fs::remove_file(&pending_canary);
+                    let _ = fs::remove_file(&agents_canary);
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "channel disconnected",
+                    ));
+                }
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&pending_canary);
+    let _ = fs::remove_file(&agents_canary);
+    Err(io::Error::new(io::ErrorKind::TimedOut, "watcher sync timed out"))
 }
 ```
 
-### 1.2: Sync both directories at startup
+### 1.2: Update call sites
 
-**File:** `crates/agent_pool/src/daemon/wiring.rs` (around line 194)
+**File:** `crates/agent_pool/src/daemon/wiring.rs` (around line 194 in `spawn_with_config`)
 
 **Before:**
 ```rust
@@ -74,22 +157,13 @@ if let Err(e) = sync_with_watcher(&canary_path, &io_rx) {
 
 **After:**
 ```rust
-// Sync pending directory
-let pending_canary = pending_dir.join("canary");
-if let Err(e) = sync_with_watcher(&pending_canary, &io_rx) {
+if let Err(e) = sync_with_watcher(&pending_dir, &agents_dir, &io_rx) {
     let _ = ready_tx.send(Err(e));
-    return Err(io::Error::other("pending watcher sync failed"));
-}
-
-// Sync agents directory
-let agents_canary = agents_dir.join("canary");
-if let Err(e) = sync_with_watcher(&agents_canary, &io_rx) {
-    let _ = ready_tx.send(Err(e));
-    return Err(io::Error::other("agents watcher sync failed"));
+    return Err(io::Error::other("watcher sync failed"));
 }
 ```
 
-**Also update:** The `run_with_config` path (around line 279) with the same changes.
+**Also update:** The `run_with_config` path (around line 279) with the same change.
 
 ---
 
