@@ -612,3 +612,66 @@ These could potentially run in parallel, especially when code is already compile
 - If any fails, collect all errors before reporting
 
 This would speed up the commit workflow, especially on incremental changes where compilation is cached.
+
+---
+
+## Agent CLI: Respond-and-Deregister / Abort Support
+
+Add cleaner ways to stop agents that are more explicit about intent:
+
+**`deregister_agent --data <response>`**: Allow deregistering while submitting a final response. Currently agents must call `next_task --data <response>` then `deregister_agent` separately.
+
+```bash
+# Current (two commands):
+agent_pool next_task --pool $POOL --name $NAME --data '{"result": "done"}'
+agent_pool deregister_agent --pool $POOL --name $NAME
+
+# Proposed (one command):
+agent_pool deregister_agent --pool $POOL --name $NAME --data '{"result": "done"}'
+```
+
+**`register --abort` / `next_task --abort`**: Allow agents to abort without providing a response. Useful when the agent can't complete the task and wants to let another agent try.
+
+```bash
+# Current: agent must provide some response
+agent_pool next_task --pool $POOL --name $NAME --data '{"error": "abort"}'
+
+# Proposed: explicit abort
+agent_pool next_task --pool $POOL --name $NAME --abort
+```
+
+This also applies to `register` (abort the first task if the agent realizes it can't handle it).
+
+Implementation notes:
+- `--data` and `--abort` are mutually exclusive
+- `--abort` without `--data` signals the daemon to requeue the task (or mark it failed)
+- Need to decide: does abort requeue for another agent, or fail the task?
+
+---
+
+## Rethink Agent Deregistration
+
+**Status: NEEDS THOUGHT**
+
+The current `deregister_agent` behavior (write Kicked message, wait 50ms, remove directory) is problematic:
+
+1. **Agents might be mid-task**: An agent CLI might be processing a task (not waiting on `next_task`) when we deregister. The Kicked message goes to `task.json`, but the CLI doesn't read `task.json` until it calls `next_task`. The agent completes its work, tries to respond, and finds its directory is gone.
+
+2. **Race conditions in tests**: TestAgent.stop() calls `deregister_agent`, but the agent thread might be processing a task at that moment. The 50ms sleep is a hack that doesn't guarantee the CLI sees the Kicked message.
+
+3. **No synchronization**: There's no way for `deregister_agent` to wait until the agent has actually stopped. It just removes the directory and hopes for the best.
+
+Questions to answer:
+- Should deregistration be synchronous (block until agent confirms it's stopping)?
+- Should agents have a "stopping" state where they finish current task but don't accept new ones?
+- Should there be a graceful vs forceful deregistration distinction?
+- What happens to in-flight tasks when an agent is deregistered mid-task?
+
+Possible approaches:
+1. **Agent-initiated deregistration only**: Agents call `deregister_agent` on themselves when they want to stop. External deregistration is considered forceful/unsafe.
+
+2. **Two-phase deregistration**: First write Kicked, then wait for agent to acknowledge by removing its own directory or writing a "goodbye" file.
+
+3. **Daemon tracks agent state**: Daemon knows if agent is idle vs busy. Deregistration only succeeds on idle agents; busy agents get queued for deregistration after current task.
+
+This needs careful design before implementing.
