@@ -91,11 +91,14 @@ All tests use `#[rstest]` with 4 submission modes.
 ### 4. CLI Rename (DONE)
 `get_task` renamed to `register`.
 
+### 5. Raw File Submission Mode (DONE)
+Added `SubmitMode::RawFile` that writes directly to `pending/<task_id>/task.json` and waits for response using notify.
+
 ---
 
 ## Remaining Tasks
 
-### Task 1: Add Raw File Protocol to Submission Modes
+### Task 1: Add Raw File Protocol to Agent Modes
 
 Add a 5th submission mode that writes directly to the `pending/` directory:
 
