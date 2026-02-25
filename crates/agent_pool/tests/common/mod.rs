@@ -686,6 +686,7 @@ impl AgentPoolHandle {
 
 impl Drop for AgentPoolHandle {
     fn drop(&mut self) {
+        eprintln!("[pool drop] Starting graceful shutdown...");
         // Try graceful shutdown via CLI
         let bin = find_agent_pool_binary();
         let _ = Command::new(&bin)
@@ -694,10 +695,12 @@ impl Drop for AgentPoolHandle {
             .arg(&self.root)
             .output();
 
+        eprintln!("[pool drop] Graceful shutdown complete, killing process if needed...");
         // Kill the process if still running
         if let Some(mut process) = self.process.take() {
             let _ = process.kill();
             let _ = process.wait();
         }
+        eprintln!("[pool drop] Pool drop complete");
     }
 }

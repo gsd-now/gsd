@@ -74,7 +74,10 @@ fn greeting_casual_and_formal(
     );
 
     // Note: processed contains the full task JSON
+    eprintln!("[{test_dir}] TEST: assertions passed, stopping agent...");
     let _ = agent.stop();
+    eprintln!("[{test_dir}] TEST: agent stopped, cleaning up...");
 
     cleanup_test_dir(&test_dir);
+    eprintln!("[{test_dir}] TEST: cleanup complete, dropping pool...");
 }
