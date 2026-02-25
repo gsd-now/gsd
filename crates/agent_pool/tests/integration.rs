@@ -9,8 +9,8 @@ mod common;
 
 use agent_pool::Response;
 use common::{
-    AgentPoolHandle, SubmitMode, TestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir,
-    submit_with_mode,
+    AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_test_dir, is_ipc_available,
+    setup_test_dir, submit_with_mode,
 };
 use rstest::rstest;
 use std::thread;
@@ -27,13 +27,14 @@ const TEST_DIR: &str = "integration";
 
 /// Test basic submission flow.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn basic_submit(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_basic_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn basic_submit(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_basic_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -48,7 +49,8 @@ fn basic_submit(#[case] mode: SubmitMode) {
     let response = submit_with_mode(
         &root,
         r#"{"kind":"Task","task":{"instructions":"echo","data":{"message":"Hello!"}}}"#,
-        mode,
+        data_source,
+        notify_method,
     )
     .expect("Submit failed");
 
@@ -63,13 +65,17 @@ fn basic_submit(#[case] mode: SubmitMode) {
 
 /// Test multiple tasks dispatched to a single agent.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn single_agent_multiple_tasks(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_single_multi_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn single_agent_multiple_tasks(
+    #[case] data_source: DataSource,
+    #[case] notify_method: NotifyMethod,
+) {
+    let test_dir = format!("{TEST_DIR}_single_multi_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -86,7 +92,8 @@ fn single_agent_multiple_tasks(#[case] mode: SubmitMode) {
         let response = submit_with_mode(
             &root,
             &format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":{{"n":{i}}}}}}}"#),
-            mode,
+            data_source,
+            notify_method,
         )
         .expect("Submit failed");
 
@@ -104,13 +111,14 @@ fn single_agent_multiple_tasks(#[case] mode: SubmitMode) {
 
 /// Test multiple agents handling tasks in parallel.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn multiple_agents_parallel(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_multi_parallel_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn multiple_agents_parallel(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_multi_parallel_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -130,7 +138,9 @@ fn multiple_agents_parallel(#[case] mode: SubmitMode) {
             let root = root.clone();
             let task =
                 format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":{{"n":{i}}}}}}}"#);
-            thread::spawn(move || submit_with_mode(&root, &task, mode).expect("Submit failed"))
+            thread::spawn(move || {
+                submit_with_mode(&root, &task, data_source, notify_method).expect("Submit failed")
+            })
         })
         .collect();
 
@@ -153,13 +163,14 @@ fn multiple_agents_parallel(#[case] mode: SubmitMode) {
 
 /// Test agent deregistration.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn agent_deregistration(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_deregister_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn agent_deregistration(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_deregister_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -174,7 +185,8 @@ fn agent_deregistration(#[case] mode: SubmitMode) {
     let response = submit_with_mode(
         &root,
         r#"{"kind":"Task","task":{"instructions":"echo","data":{"test":"before"}}}"#,
-        mode,
+        data_source,
+        notify_method,
     )
     .expect("Submit failed");
     assert!(matches!(response, Response::Processed { .. }));
@@ -193,7 +205,8 @@ fn agent_deregistration(#[case] mode: SubmitMode) {
     let response2 = submit_with_mode(
         &root,
         r#"{"kind":"Task","task":{"instructions":"echo","data":{"test":"after"}}}"#,
-        mode,
+        data_source,
+        notify_method,
     )
     .expect("Submit failed");
     assert!(matches!(response2, Response::Processed { .. }));
@@ -206,13 +219,17 @@ fn agent_deregistration(#[case] mode: SubmitMode) {
 
 /// Test tasks submitted before any agents register (queued).
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn tasks_queued_before_agents(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_queue_before_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn tasks_queued_before_agents(
+    #[case] data_source: DataSource,
+    #[case] notify_method: NotifyMethod,
+) {
+    let test_dir = format!("{TEST_DIR}_queue_before_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -228,7 +245,9 @@ fn tasks_queued_before_agents(#[case] mode: SubmitMode) {
             let root = root.clone();
             let task =
                 format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":{{"n":{i}}}}}}}"#);
-            thread::spawn(move || submit_with_mode(&root, &task, mode).expect("Submit failed"))
+            thread::spawn(move || {
+                submit_with_mode(&root, &task, data_source, notify_method).expect("Submit failed")
+            })
         })
         .collect();
 
@@ -255,13 +274,14 @@ fn tasks_queued_before_agents(#[case] mode: SubmitMode) {
 
 /// Test rapid burst of task submissions.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn rapid_task_burst(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_rapid_burst_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn rapid_task_burst(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_rapid_burst_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -279,7 +299,9 @@ fn rapid_task_burst(#[case] mode: SubmitMode) {
             let root = root.clone();
             let task =
                 format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":{{"n":{i}}}}}}}"#);
-            thread::spawn(move || submit_with_mode(&root, &task, mode).expect("Submit failed"))
+            thread::spawn(move || {
+                submit_with_mode(&root, &task, data_source, notify_method).expect("Submit failed")
+            })
         })
         .collect();
 
@@ -296,13 +318,14 @@ fn rapid_task_burst(#[case] mode: SubmitMode) {
 
 /// Test that tasks with identical content are handled correctly.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn identical_task_content(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_identical_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn identical_task_content(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_identical_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -317,7 +340,8 @@ fn identical_task_content(#[case] mode: SubmitMode) {
     // Submit 5 tasks with IDENTICAL content
     let task = r#"{"kind":"Task","task":{"instructions":"echo","data":{"message":"same"}}}"#;
     for _ in 0..5 {
-        let response = submit_with_mode(&root, task, mode).expect("Submit failed");
+        let response =
+            submit_with_mode(&root, task, data_source, notify_method).expect("Submit failed");
         assert!(matches!(response, Response::Processed { .. }));
     }
 
@@ -333,13 +357,17 @@ fn identical_task_content(#[case] mode: SubmitMode) {
 
 /// Test agent joining while tasks are being processed.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn agent_joins_mid_processing(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_mid_join_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn agent_joins_mid_processing(
+    #[case] data_source: DataSource,
+    #[case] notify_method: NotifyMethod,
+) {
+    let test_dir = format!("{TEST_DIR}_mid_join_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -359,7 +387,9 @@ fn agent_joins_mid_processing(#[case] mode: SubmitMode) {
             let root = root.clone();
             let task =
                 format!(r#"{{"kind":"Task","task":{{"instructions":"echo","data":{{"n":{i}}}}}}}"#);
-            thread::spawn(move || submit_with_mode(&root, &task, mode).expect("Submit failed"))
+            thread::spawn(move || {
+                submit_with_mode(&root, &task, data_source, notify_method).expect("Submit failed")
+            })
         })
         .collect();
 
@@ -386,13 +416,14 @@ fn agent_joins_mid_processing(#[case] mode: SubmitMode) {
 
 /// Test that responses are written to the correct submitters.
 #[rstest]
-#[case(SubmitMode::DataSocket)]
-#[case(SubmitMode::DataFile)]
-#[case(SubmitMode::FileSocket)]
-#[case(SubmitMode::FileFile)]
-#[case(SubmitMode::RawFile)]
-fn response_isolation(#[case] mode: SubmitMode) {
-    let test_dir = format!("{TEST_DIR}_isolation_{mode:?}");
+#[case(DataSource::Inline, NotifyMethod::Socket)]
+#[case(DataSource::Inline, NotifyMethod::File)]
+#[case(DataSource::Inline, NotifyMethod::Raw)]
+#[case(DataSource::FileReference, NotifyMethod::Socket)]
+#[case(DataSource::FileReference, NotifyMethod::File)]
+#[case(DataSource::FileReference, NotifyMethod::Raw)]
+fn response_isolation(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
+    let test_dir = format!("{TEST_DIR}_isolation_{data_source:?}_{notify_method:?}");
     let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
@@ -417,7 +448,8 @@ fn response_isolation(#[case] mode: SubmitMode) {
             );
             let expected_id = id.to_string();
             thread::spawn(move || {
-                let response = submit_with_mode(&root, &task, mode).expect("Submit failed");
+                let response = submit_with_mode(&root, &task, data_source, notify_method)
+                    .expect("Submit failed");
                 (expected_id, response)
             })
         })

@@ -370,26 +370,38 @@ pub fn submit_via_cli(root: &Path, payload_json: &str, notify: &str) -> io::Resu
     serde_json::from_str(&stdout).map_err(io::Error::other)
 }
 
-/// Submission mode for testing different code paths.
+/// How the task content is delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubmitMode {
-    /// `--data` with `--notify socket`
-    DataSocket,
-    /// `--data` with `--notify file`
-    DataFile,
-    /// `--file` with `--notify socket`
-    FileSocket,
-    /// `--file` with `--notify file`
-    FileFile,
-    /// Raw file protocol: write directly to `pending/<task_id>/task.json`
-    RawFile,
+pub enum DataSource {
+    /// Content is inline in the JSON/command (`--data` or `Inline` in task.json)
+    Inline,
+    /// Content is in a separate file (`--file` or `FileReference` in task.json)
+    FileReference,
 }
 
-/// Submit a task using the specified mode.
-pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io::Result<Response> {
-    // RawFile mode bypasses CLI entirely
-    if mode == SubmitMode::RawFile {
-        return submit_raw_file(root, payload_json);
+/// How to submit and wait for response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyMethod {
+    /// CLI with `--notify socket`
+    Socket,
+    /// CLI with `--notify file`
+    File,
+    /// Raw file protocol: direct write to `pending/`, wait with notify
+    Raw,
+}
+
+/// Submit a task using the specified data source and notify method.
+///
+/// This is the cross-product of `DataSource` × `NotifyMethod` = 6 combinations.
+pub fn submit_with_mode(
+    root: &Path,
+    payload_json: &str,
+    data_source: DataSource,
+    notify_method: NotifyMethod,
+) -> io::Result<Response> {
+    // Raw mode bypasses CLI entirely
+    if notify_method == NotifyMethod::Raw {
+        return submit_raw(root, payload_json, data_source);
     }
 
     let bin = find_agent_pool_binary();
@@ -397,40 +409,33 @@ pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io
 
     cmd.arg("submit_task").arg("--pool").arg(root);
 
-    // For file modes, write payload to a temp file
+    // Set up data source
     let _temp_file;
-    match mode {
-        SubmitMode::DataSocket => {
+    match data_source {
+        DataSource::Inline => {
             cmd.arg("--data").arg(payload_json);
-            cmd.arg("--notify").arg("socket");
         }
-        SubmitMode::DataFile => {
-            cmd.arg("--data").arg(payload_json);
-            cmd.arg("--notify").arg("file");
-        }
-        SubmitMode::FileSocket => {
+        DataSource::FileReference => {
             let mut temp = tempfile::NamedTempFile::new()?;
             std::io::Write::write_all(&mut temp, payload_json.as_bytes())?;
             cmd.arg("--file").arg(temp.path());
-            cmd.arg("--notify").arg("socket");
             _temp_file = temp; // Keep alive until command completes
         }
-        SubmitMode::FileFile => {
-            let mut temp = tempfile::NamedTempFile::new()?;
-            std::io::Write::write_all(&mut temp, payload_json.as_bytes())?;
-            cmd.arg("--file").arg(temp.path());
-            cmd.arg("--notify").arg("file");
-            _temp_file = temp; // Keep alive until command completes
-        }
-        SubmitMode::RawFile => unreachable!("handled above"),
     }
+
+    // Set up notify method
+    match notify_method {
+        NotifyMethod::Socket => cmd.arg("--notify").arg("socket"),
+        NotifyMethod::File => cmd.arg("--notify").arg("file"),
+        NotifyMethod::Raw => unreachable!("handled above"),
+    };
 
     let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!(
-            "CLI failed (mode={mode:?}): {stderr}"
+            "CLI failed (data={data_source:?}, notify={notify_method:?}): {stderr}"
         )));
     }
 
@@ -439,17 +444,33 @@ pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io
 }
 
 /// Submit a task using raw file protocol (direct write to pending/).
-fn submit_raw_file(root: &Path, payload_json: &str) -> io::Result<Response> {
+fn submit_raw(root: &Path, payload_json: &str, data_source: DataSource) -> io::Result<Response> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let submission_dir = root.join(PENDING_DIR).join(&task_id);
     fs::create_dir_all(&submission_dir)?;
 
-    // Wrap in Inline payload envelope (daemon expects this format)
-    let payload = serde_json::json!({
-        "kind": "Inline",
-        "content": payload_json
-    });
-    fs::write(submission_dir.join(TASK_FILE), payload.to_string())?;
+    // Build the payload envelope based on data source
+    let payload_str = match data_source {
+        DataSource::Inline => {
+            let payload = serde_json::json!({
+                "kind": "Inline",
+                "content": payload_json
+            });
+            payload.to_string()
+        }
+        DataSource::FileReference => {
+            // Write content to a temp file, use FileReference
+            let content_file = submission_dir.join("content.json");
+            fs::write(&content_file, payload_json)?;
+            let payload = serde_json::json!({
+                "kind": "FileReference",
+                "path": content_file
+            });
+            payload.to_string()
+        }
+    };
+
+    fs::write(submission_dir.join(TASK_FILE), payload_str)?;
 
     // Wait for response using notify (no polling)
     let response_file = submission_dir.join(RESPONSE_FILE);
