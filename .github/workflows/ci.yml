@@ -53,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run tests
-        run: cargo test --workspace -- --nocapture
+        run: cargo test --workspace -- --nocapture --test-threads=1
 
   demos:
     runs-on: ubuntu-latest
