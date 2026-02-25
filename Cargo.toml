@@ -15,6 +15,7 @@ interprocess = "2.2"
 notify = "7.0"
 proc-macro2 = "1.0.92"
 quote = "1.0.38"
+rstest = "0.24"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.108"
 tempfile = "3"

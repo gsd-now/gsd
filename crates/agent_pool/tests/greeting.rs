@@ -9,19 +9,27 @@ mod common;
 
 use agent_pool::Response;
 use common::{
-    AgentPoolHandle, TestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir, submit_via_cli,
+    AgentPoolHandle, SubmitMode, TestAgent, cleanup_test_dir, is_ipc_available, setup_test_dir,
+    submit_with_mode,
 };
+use rstest::rstest;
 use std::time::Duration;
 
 const TEST_DIR: &str = "greeting";
 
-#[test]
-fn greeting_casual_and_formal() {
-    let root = setup_test_dir(TEST_DIR);
+#[rstest]
+#[case(SubmitMode::DataSocket)]
+#[case(SubmitMode::DataFile)]
+#[case(SubmitMode::FileSocket)]
+#[case(SubmitMode::FileFile)]
+fn greeting_casual_and_formal(#[case] mode: SubmitMode) {
+    // Use mode in test dir name to avoid conflicts when tests run in parallel
+    let test_dir = format!("{TEST_DIR}_{mode:?}");
+    let root = setup_test_dir(&test_dir);
 
     if !is_ipc_available(&root) {
         eprintln!("SKIP: IPC not available");
-        cleanup_test_dir(TEST_DIR);
+        cleanup_test_dir(&test_dir);
         return;
     }
 
@@ -31,10 +39,10 @@ fn greeting_casual_and_formal() {
     // Wait for agent to be ready (has processed initial heartbeat)
     agent.wait_ready();
 
-    let casual = submit_via_cli(
+    let casual = submit_with_mode(
         &root,
         r#"{"kind":"Task","task":{"instructions":"greet","data":"casual"}}"#,
-        "socket",
+        mode,
     )
     .expect("Submit failed");
     let Response::Processed { stdout, .. } = casual else {
@@ -42,10 +50,10 @@ fn greeting_casual_and_formal() {
     };
     assert_eq!(stdout.trim(), "Hi friendly-bot, how are ya?");
 
-    let formal = submit_via_cli(
+    let formal = submit_with_mode(
         &root,
         r#"{"kind":"Task","task":{"instructions":"greet","data":"formal"}}"#,
-        "socket",
+        mode,
     )
     .expect("Submit failed");
     let Response::Processed { stdout, .. } = formal else {
@@ -59,5 +67,5 @@ fn greeting_casual_and_formal() {
     // Note: processed contains the full task JSON
     let _ = agent.stop();
 
-    cleanup_test_dir(TEST_DIR);
+    cleanup_test_dir(&test_dir);
 }

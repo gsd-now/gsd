@@ -370,6 +370,66 @@ pub fn submit_via_cli(root: &Path, payload_json: &str, notify: &str) -> io::Resu
     serde_json::from_str(&stdout).map_err(io::Error::other)
 }
 
+/// Submission mode for testing different CLI code paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitMode {
+    /// `--data` with `--notify socket`
+    DataSocket,
+    /// `--data` with `--notify file`
+    DataFile,
+    /// `--file` with `--notify socket`
+    FileSocket,
+    /// `--file` with `--notify file`
+    FileFile,
+}
+
+/// Submit a task using the specified mode (all modes use CLI).
+pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io::Result<Response> {
+    let bin = find_agent_pool_binary();
+    let mut cmd = Command::new(&bin);
+
+    cmd.arg("submit_task").arg("--pool").arg(root);
+
+    // For file modes, write payload to a temp file
+    let _temp_file;
+    match mode {
+        SubmitMode::DataSocket => {
+            cmd.arg("--data").arg(payload_json);
+            cmd.arg("--notify").arg("socket");
+        }
+        SubmitMode::DataFile => {
+            cmd.arg("--data").arg(payload_json);
+            cmd.arg("--notify").arg("file");
+        }
+        SubmitMode::FileSocket => {
+            let mut temp = tempfile::NamedTempFile::new()?;
+            std::io::Write::write_all(&mut temp, payload_json.as_bytes())?;
+            cmd.arg("--file").arg(temp.path());
+            cmd.arg("--notify").arg("socket");
+            _temp_file = temp; // Keep alive until command completes
+        }
+        SubmitMode::FileFile => {
+            let mut temp = tempfile::NamedTempFile::new()?;
+            std::io::Write::write_all(&mut temp, payload_json.as_bytes())?;
+            cmd.arg("--file").arg(temp.path());
+            cmd.arg("--notify").arg("file");
+            _temp_file = temp; // Keep alive until command completes
+        }
+    }
+
+    let output = cmd.output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "CLI failed (mode={mode:?}): {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).map_err(io::Error::other)
+}
+
 /// Configuration for the daemon when starting via CLI.
 #[derive(Debug, Clone, Default)]
 pub struct DaemonConfig {
