@@ -186,13 +186,11 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
             return Err(io::Error::other("failed to create pending dir"));
         }
 
-        // Sync with the FS watcher to ensure it's delivering events.
+        // Sync with the FS watcher to ensure it's delivering events for both directories.
         // On Linux with inotify, there's a race where the watcher may not be fully
-        // ready to catch events in newly-created subdirectories. We write a canary
-        // file inside pending/ and wait until we see the FS event - this proves
-        // that pending/ is being watched (where tasks are submitted).
-        let canary_path = pending_dir.join(".watcher-ready");
-        if let Err(e) = sync_with_watcher(&canary_path, &io_rx) {
+        // ready to catch events in newly-created subdirectories. We write canary
+        // files and wait until we see FS events for both.
+        if let Err(e) = sync_with_watcher(&pending_dir, &agents_dir, &io_rx) {
             let _ = ready_tx.send(Err(e));
             return Err(io::Error::other("watcher sync failed"));
         }
@@ -271,13 +269,11 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     let pending_dir = root.join(PENDING_DIR);
     fs::create_dir_all(&pending_dir)?;
 
-    // Sync with the FS watcher to ensure it's delivering events.
+    // Sync with the FS watcher to ensure it's delivering events for both directories.
     // On Linux with inotify, there's a race where the watcher may not be fully
-    // ready to catch events in newly-created subdirectories. We write a canary
-    // file inside pending/ and wait until we see the FS event - this proves
-    // that pending/ is being watched (where tasks are submitted).
-    let canary_path = pending_dir.join(".watcher-ready");
-    sync_with_watcher(&canary_path, &io_rx)?;
+    // ready to catch events in newly-created subdirectories. We write canary
+    // files and wait until we see FS events for both.
+    sync_with_watcher(&pending_dir, &agents_dir, &io_rx)?;
 
     info!(socket = %socket_path.display(), "daemon listening");
 
@@ -930,59 +926,87 @@ fn create_fs_watcher(root: &Path, io_tx: mpsc::Sender<IoEvent>) -> io::Result<Re
     Ok(watcher)
 }
 
-/// Synchronize with the filesystem watcher by writing a canary file and waiting
-/// for the corresponding event.
+/// Synchronize with the filesystem watcher for both pending and agents directories.
 ///
 /// On Linux with inotify, there's a race where newly-created directories may not
-/// be watched immediately. This function ensures the watcher is "warmed up" by:
-/// 1. Writing a canary file
-/// 2. Polling quickly (10ms) for an FS event
-/// 3. If no event after 100ms, re-write with new content to trigger a new event
-/// 4. Repeat up to `MAX_ATTEMPTS` times
-/// 5. Delete the canary
+/// be watched immediately. This function ensures the watcher is ready by:
+/// 1. Writing a canary file to each directory
+/// 2. Polling for FS events until we see both canaries
+/// 3. On timeout, rewriting canaries we haven't seen to trigger new events
+/// 4. Deleting the canary files when done
+///
+/// Panics if a non-FS event is received (shouldn't happen during startup).
 ///
 /// This must be called from the thread that owns `io_rx`.
-fn sync_with_watcher(canary_path: &Path, io_rx: &mpsc::Receiver<IoEvent>) -> io::Result<()> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(10);
-    const ROUND_DURATION: Duration = Duration::from_millis(100);
-    const MAX_ATTEMPTS: u32 = 50; // 50 * 100ms = 5s total
+#[allow(clippy::panic)] // Intentional: non-FS events during startup indicate a bug
+fn sync_with_watcher(
+    pending_dir: &Path,
+    agents_dir: &Path,
+    io_rx: &mpsc::Receiver<IoEvent>,
+) -> io::Result<()> {
+    const POLL_TIMEOUT: Duration = Duration::from_millis(100);
+    const MAX_DURATION: Duration = Duration::from_secs(5);
 
-    debug!(canary = %canary_path.display(), "waiting for watcher sync");
+    let pending_canary = pending_dir.join("canary");
+    let agents_canary = agents_dir.join("canary");
 
-    for attempt in 0..MAX_ATTEMPTS {
-        // Write canary with unique content to trigger a new FS event each round
-        fs::write(canary_path, format!("sync-{attempt}"))?;
+    let mut seen_pending = false;
+    let mut seen_agents = false;
+    let mut write_count = 0u32;
 
-        let round_start = std::time::Instant::now();
-        while round_start.elapsed() < ROUND_DURATION {
-            match io_rx.recv_timeout(POLL_INTERVAL) {
-                Ok(IoEvent::Fs(event)) => {
-                    if event.paths.iter().any(|p| p == canary_path) {
-                        debug!(attempt, "watcher sync complete");
-                        let _ = fs::remove_file(canary_path);
-                        return Ok(());
+    debug!("waiting for watcher sync on pending and agents directories");
+
+    // Initial write
+    fs::write(&pending_canary, format!("sync-{write_count}"))?;
+    fs::write(&agents_canary, format!("sync-{write_count}"))?;
+    write_count += 1;
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < MAX_DURATION {
+        match io_rx.recv_timeout(POLL_TIMEOUT) {
+            Ok(IoEvent::Fs(event)) => {
+                for path in &event.paths {
+                    if path == &pending_canary {
+                        seen_pending = true;
                     }
-                    // Not our canary, keep polling
+                    if path == &agents_canary {
+                        seen_agents = true;
+                    }
                 }
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Non-FS event or timeout, keep polling
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = fs::remove_file(canary_path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "watcher channel disconnected",
-                    ));
+                if seen_pending && seen_agents {
+                    debug!("watcher sync complete");
+                    let _ = fs::remove_file(&pending_canary);
+                    let _ = fs::remove_file(&agents_canary);
+                    return Ok(());
                 }
             }
+            Ok(_) => panic!("unexpected non-FS event during startup sync"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Rewrite only the canaries we haven't seen
+                if !seen_pending {
+                    fs::write(&pending_canary, format!("sync-{write_count}"))?;
+                }
+                if !seen_agents {
+                    fs::write(&agents_canary, format!("sync-{write_count}"))?;
+                }
+                write_count += 1;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = fs::remove_file(&pending_canary);
+                let _ = fs::remove_file(&agents_canary);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "watcher channel disconnected",
+                ));
+            }
         }
-        // Round finished without seeing canary event, write new content and retry
     }
 
-    let _ = fs::remove_file(canary_path);
+    let _ = fs::remove_file(&pending_canary);
+    let _ = fs::remove_file(&agents_canary);
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("watcher sync timed out after {MAX_ATTEMPTS} attempts"),
+        "watcher sync timed out",
     ))
 }
 
