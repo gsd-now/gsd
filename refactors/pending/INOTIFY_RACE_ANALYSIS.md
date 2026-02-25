@@ -377,16 +377,15 @@ PathCategory::PendingTask { uuid } => {
 **After:**
 ```rust
 PathCategory::SubmissionRequest { id } => {
-    if path.exists() {
-        register_submission(
-            &id,
-            pending_dir,
-            events_tx,
-            external_task_map,
-            task_id_allocator,
-            io_config,
-        );
-    }
+    assert!(path.exists(), "SubmissionRequest event for non-existent path: {path:?}");
+    register_submission(
+        &id,
+        pending_dir,
+        events_tx,
+        external_task_map,
+        task_id_allocator,
+        io_config,
+    );
 }
 PathCategory::SubmissionResponse { id } => {
     // Daemon writes these, ignore our own writes
