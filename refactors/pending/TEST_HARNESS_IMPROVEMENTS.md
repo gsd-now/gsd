@@ -6,105 +6,183 @@ This document describes improvements needed to get the agent_pool tests into a r
 
 ---
 
-## Completed Work
+## Test Inventory
 
-### 1. CLI-Based TestAgent (DONE)
+### Current Tests
 
-The `TestAgent` uses CLI commands (`get_task`, `next_task`) instead of direct file manipulation. Uses `mpsc::sync_channel` for readiness signaling (no polling).
+| File | Test | What It Tests | Submission Mode | Agent Mode |
+|------|------|---------------|-----------------|------------|
+| `greeting.rs` | `greeting_casual_and_formal` | Custom processor (greeting agent with casual/formal) | rstest × 4 | CLI |
+| `single_basic.rs` | `single_agent_single_task` | Basic single agent, single task | rstest × 4 | CLI |
+| `single_agent_queue.rs` | `single_agent_queues_multiple_tasks` | Single agent processes 4 tasks (queuing) | rstest × 4 | CLI |
+| `many_agents.rs` | `multiple_agents_parallel_tasks` | 3 agents process 6 tasks in parallel | rstest × 4 | CLI |
+| `integration.rs` | `basic_submit` | Basic submit/response flow | rstest × 4 | CLI |
+| `integration.rs` | `single_agent_multiple_tasks` | Sequential tasks to single agent | rstest × 4 | CLI |
+| `integration.rs` | `multiple_agents_parallel` | 2 agents process 4 tasks in parallel | rstest × 4 | CLI |
+| `integration.rs` | `agent_deregistration` | Agent stops, new agent picks up work | rstest × 4 | CLI |
+| `integration.rs` | `tasks_queued_before_agents` | Tasks submitted before agent registers | rstest × 4 | CLI |
+| `integration.rs` | `rapid_task_burst` | 10 tasks submitted rapidly | rstest × 4 | CLI |
+| `integration.rs` | `identical_task_content` | 5 tasks with identical content | rstest × 4 | CLI |
+| `integration.rs` | `agent_joins_mid_processing` | Second agent joins while first is processing | rstest × 4 | CLI |
+| `integration.rs` | `response_isolation` | Responses go to correct submitters | rstest × 4 | CLI |
 
-### 2. Proper Task JSON Format (DONE)
+### Submission Modes (rstest × 4)
 
-All tests use the proper JSON envelope: `{"kind":"Task","task":{"instructions":"...","data":...}}`
-
-### 3. Daemon Output Capture (DONE)
-
-`AgentPoolHandle` pipes daemon stdout/stderr through `eprintln!()` for `--nocapture` support.
-
-### 4. CI Timeouts (DONE)
-
-5-minute timeout on all CI jobs. Test job now downloads CLI binary from `build-linux-x64`.
-
-### 5. Clippy/Fmt Fixes (DONE)
-
-All lint issues resolved.
-
-### 6. CLI-Based Task Submission (DONE)
-
-**Files changed:** `common/mod.rs`, `greeting.rs`, `single_basic.rs`, `single_agent_queue.rs`, `many_agents.rs`
-
-Tests now use `submit_via_cli()` and `submit_with_mode()` instead of `agent_pool::submit()` library function. This tests the full CLI stack.
-
-### 7. Multi-Mode Testing with rstest (DONE)
-
-**Files changed:** All test files except `integration.rs`
-
-Tests use `#[rstest]` with `#[case(SubmitMode::*)]` to run all 4 submission modes:
+Currently all tests use rstest with 4 submission modes:
 - `DataSocket` - `--data` with `--notify socket`
 - `DataFile` - `--data` with `--notify file`
 - `FileSocket` - `--file` with `--notify socket`
 - `FileFile` - `--file` with `--notify file`
 
+**Missing:** Raw file protocol (direct writes to `pending/` directory)
+
+### Agent Modes
+
+Currently all agents use the CLI (`register`, `next_task`).
+
+**Missing:** Raw file protocol (direct writes to `agents/` directory)
+
+---
+
+## Mode Matrix
+
+The full matrix should cover:
+
+### Submission Modes (5 total)
+
+| Mode | CLI Flag | Description |
+|------|----------|-------------|
+| `DataSocket` | `--data --notify socket` | Inline JSON, socket notification |
+| `DataFile` | `--data --notify file` | Inline JSON, file notification |
+| `FileSocket` | `--file --notify socket` | JSON from file, socket notification |
+| `FileFile` | `--file --notify file` | JSON from file, file notification |
+| `RawFile` | N/A (direct write) | Write directly to `pending/<task_id>/task.json` |
+
+### Agent Modes (2 total)
+
+| Mode | Description |
+|------|-------------|
+| `CLI` | Use `register`/`next_task` CLI commands |
+| `RawFile` | Write directly to `agents/<name>/response.json` |
+
+### Coverage Goal
+
+Run each test scenario with:
+- 5 submission modes
+- 2 agent modes
+
+= 10 combinations per test
+
+**Note:** Not all combinations make equal sense. For example, `RawFile` submission with socket notification doesn't exist. We should test the realistic combinations.
+
+---
+
+## Completed Work
+
+### 1. CLI-Based TestAgent (DONE)
+TestAgent uses CLI commands (`register`, `next_task`).
+
+### 2. CLI-Based Task Submission (DONE)
+All tests use `submit_with_mode()` instead of library functions.
+
+### 3. Multi-Mode Testing with rstest (DONE)
+All tests use `#[rstest]` with 4 submission modes.
+
+### 4. CLI Rename (DONE)
+`get_task` renamed to `register`.
+
 ---
 
 ## Remaining Tasks
 
-### Task 1: CLI Command Naming
+### Task 1: Add Raw File Protocol to Submission Modes
 
-**Goal:** Clean up confusing CLI command names.
+Add a 5th submission mode that writes directly to the `pending/` directory:
 
-#### 1.1: Rename `get_task` to `register`
+```rust
+pub enum SubmitMode {
+    DataSocket,
+    DataFile,
+    FileSocket,
+    FileFile,
+    RawFile,  // NEW: Direct write to pending/
+}
+```
 
-The `get_task` command actually registers the agent AND waits for the first task. Rename to `register` since that's what it does.
+Implementation for `RawFile`:
+```rust
+SubmitMode::RawFile => {
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let submission_dir = root.join(PENDING_DIR).join(&task_id);
+    fs::create_dir_all(&submission_dir)?;
 
-- Remove `get_task` command entirely
-- Keep `register` as the canonical name
-- Update `TestAgent` to use `register` instead of `get_task`
-- Update docs and examples
+    // Write payload wrapped in Inline envelope
+    let payload = serde_json::json!({
+        "kind": "Inline",
+        "content": payload_json
+    });
+    fs::write(submission_dir.join(TASK_FILE), payload.to_string())?;
 
-#### 1.2: Consider `complete_task` for final response
+    // Poll for response (or use notify)
+    let response_file = submission_dir.join(RESPONSE_FILE);
+    // ... wait for response ...
+}
+```
 
-Currently `deregister` just removes the agent. Consider whether we need a `complete_task` command that:
-- Submits the final task response (`--data`)
-- Deregisters the agent
+### Task 2: Add Raw File Protocol to Agent Modes
 
-This would make the agent lifecycle clearer:
+Add a `RawFileAgent` variant that writes directly to `agents/<name>/response.json`:
+
+```rust
+pub enum AgentMode {
+    CLI,
+    RawFile,
+}
+
+impl TestAgent {
+    pub fn with_mode(mode: AgentMode, ...) -> Self {
+        match mode {
+            AgentMode::CLI => Self::start(...),
+            AgentMode::RawFile => Self::start_raw_file(...),
+        }
+    }
+}
+```
+
+### Task 3: CLI Command Improvements
+
+#### 3.1: Consider `complete_task` for final response
+
+Current lifecycle:
+```
+register -> (next_task --data <response>)* -> deregister
+```
+
+Consider adding `complete_task`:
 ```
 register -> (next_task --data <response>)* -> complete_task --data <final_response>
 ```
 
-**Open question:** Should `deregister` accept `--data` for the final response, or should there be a separate `complete_task` command?
+Or add `--data` flag to `deregister`:
+```
+register -> (next_task --data <response>)* -> deregister --data <final_response>
+```
 
----
+**Open question:** What's the cleanest API?
 
-### Task 2: Test Output Improvements
+### Task 4: Test Output Improvements
 
-**Goal:** Make test output clearer and more useful.
+#### 4.1: Structured logging with tracing
 
-#### 2.1: Structured logging with tracing
-
-Replace ad-hoc `eprintln!("[agent X] message")` with structured tracing:
-
+Replace `eprintln!()` with structured tracing:
 ```rust
 use tracing::{info, debug};
-
 info!(agent = %agent_id, "received task");
-debug!(agent = %agent_id, task = %task_json, "task content");
 ```
 
-#### 2.2: Test timing
+#### 4.2: Tracing subscriber setup
 
-Add timing information:
-
-```rust
-let start = Instant::now();
-// ... test code ...
-info!(elapsed = ?start.elapsed(), "test completed");
-```
-
-#### 2.3: Tracing subscriber setup
-
-Add a test helper that initializes tracing with env filter:
-
+Add test helper:
 ```rust
 pub fn init_test_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -114,131 +192,35 @@ pub fn init_test_tracing() {
 }
 ```
 
----
+### Task 5: Proper Teardown
 
-### Task 3: Proper Teardown
+Ensure tests clean up properly even on panic. Use `scopeguard` or similar.
 
-**Goal:** Ensure all tests clean up properly.
-
-#### 3.1: Stop all agents before cleanup
-
-Ensure tests call `agent.stop()` for all agents before `cleanup_test_dir()`.
-
-#### 3.2: Wait for daemon to process stops
-
-After stopping agents, give daemon time to process the deregistrations before killing it.
-
-#### 3.3: Clean up on panic
-
-Use `Drop` or `scopeguard` to ensure cleanup happens even if test panics.
-
----
-
-### Task 4: Test Coverage Matrix
-
-**Goal:** Ensure all important scenarios are tested.
-
-#### Test Dimensions
-
-```
-                           ┌─────────────────────────────────────────────────────────────┐
-                           │                    SUBMISSION METHOD                         │
-                           ├─────────────┬─────────────┬─────────────┬─────────────────┬──┤
-                           │ DataSocket  │ DataFile    │ FileSocket  │ FileFile        │  │
-┌──────────────────────────┼─────────────┼─────────────┼─────────────┼─────────────────┤  │
-│ AGENTS                   │             │             │             │                 │  │
-├──────────────────────────┼─────────────┼─────────────┼─────────────┼─────────────────┤  │
-│ 1 agent, 1 task          │ ✓ rstest    │ ✓ rstest    │ ✓ rstest    │ ✓ rstest        │  │
-│ 1 agent, N tasks (queue) │ ✓ rstest    │ ✓ rstest    │ ✓ rstest    │ ✓ rstest        │  │
-│ N agents, N tasks        │ ✓ rstest    │ ✓ rstest    │ ✓ rstest    │ ✓ rstest        │  │
-│ Agent joins mid-process  │ ✓ integr    │             │             │                 │  │
-│ Agent deregisters        │ ✓ integr    │             │             │                 │  │
-│ Tasks queued before agent│ ✓ integr    │             │             │                 │  │
-└──────────────────────────┴─────────────┴─────────────┴─────────────┴─────────────────┴──┘
-```
-
-#### Scenario Categories
-
-**A. Happy Path (covered by rstest multi-mode)**
-- Single agent, single task
-- Single agent, multiple tasks (queuing)
-- Multiple agents, parallel tasks
-- Greeting agent (custom processor)
-
-**B. Agent Lifecycle (integration.rs)**
-- Agent registration
-- Agent deregistration
-- Agent joins while tasks processing
-- Tasks queued before any agent registers
-
-**C. Error Recovery (TODO)**
-- Agent timeout (doesn't respond)
-- Agent crash (process dies mid-task)
-- Agent fails to respond to heartbeat
-- Large payload handling
-
-**D. Edge Cases (TODO)**
-- Rapid burst of submissions
-- Identical task content
-- Response isolation (correct response to correct submitter)
-
-#### Missing Tests
+### Task 6: Missing Test Scenarios
 
 | Scenario | Priority | Notes |
 |----------|----------|-------|
-| Agent timeout | High | Agent assigned task but doesn't respond within timeout |
+| Agent timeout | High | Agent assigned task but doesn't respond |
 | Agent crash | High | Agent process dies mid-task |
 | Heartbeat failure | Medium | Agent fails to respond to heartbeat |
 | Task cancellation | Medium | Client withdraws task before completion |
-| Daemon restart | Low | Agent reconnects after daemon restart |
 | Large payloads | Low | Tasks with very large data |
-
-#### Test DAG
-
-```
-                    ┌────────────────────┐
-                    │   Daemon Starts    │
-                    └─────────┬──────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-      ┌───────────┐   ┌───────────┐   ┌───────────────┐
-      │ 0 agents  │   │ 1 agent   │   │ N agents      │
-      │ N tasks   │   │ M tasks   │   │ M tasks       │
-      │ (queued)  │   │           │   │               │
-      └─────┬─────┘   └─────┬─────┘   └───────┬───────┘
-            │               │                 │
-            │               ▼                 ▼
-            │       ┌───────────────┐ ┌───────────────┐
-            │       │ Agent timeout │ │ Agent crash   │
-            │       └───────┬───────┘ └───────┬───────┘
-            │               │                 │
-            │               ▼                 ▼
-            │       ┌───────────────┐ ┌───────────────┐
-            │       │ Task retried  │ │ Task failed   │
-            │       │ or failed     │ │ returned      │
-            │       └───────────────┘ └───────────────┘
-            │
-            ▼
-    ┌───────────────┐
-    │ Agent joins   │
-    │ picks up task │
-    └───────────────┘
-```
 
 ---
 
 ## Implementation Order
 
-1. **Task 3: Proper Teardown** - Ensures reliable test runs
-2. **Task 4: Test Coverage** - Add missing error recovery tests
-3. **Task 2: Test Output** - Better debugging
-4. **Task 1: CLI Naming** - UX improvement (can be done anytime)
+1. **Task 1: Raw File Submission** - Complete the mode matrix
+2. **Task 2: Raw File Agent** - Complete the mode matrix
+3. **Task 5: Proper Teardown** - Reliability
+4. **Task 6: Missing Scenarios** - Coverage
+5. **Task 4: Test Output** - Debugging
+6. **Task 3: CLI Improvements** - UX
 
 ---
 
 ## Notes
 
-- `integration.rs` intentionally tests the raw file protocol (direct writes to `pending/`), not CLI submission. Keep it separate.
-- Tests should pass regardless of which agent is assigned a task - no deterministic agent selection needed.
-- Each test file uses its own subdirectory in `.test-data/` for parallel execution.
+- Each test file uses its own subdirectory in `.test-data/` for parallel execution
+- Tests should pass regardless of which agent is assigned a task
+- `integration.rs` was converted from raw file protocol to CLI - now tests same things as other files
