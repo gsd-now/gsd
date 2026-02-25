@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use crate::client::Payload;
 use crate::constants::{
-    AGENTS_DIR, LOCK_FILE, PENDING_DIR, REQUEST_SUFFIX, RESPONSE_SUFFIX, SOCKET_NAME, TASK_FILE,
+    AGENTS_DIR, LOCK_FILE, PENDING_DIR, REQUEST_SUFFIX, SOCKET_NAME, TASK_FILE,
 };
 use crate::lock::acquire_lock;
 
@@ -553,12 +553,11 @@ fn handle_fs_event(
                 );
             }
             PathCategory::SubmissionRequest { id } => {
-                // Request file must exist (flat structure: no directory creation race)
-                assert!(
-                    path.exists(),
-                    "SubmissionRequest event for non-existent path: {}",
-                    path.display()
-                );
+                // Skip if file doesn't exist (may have been cleaned up already)
+                if !path.exists() {
+                    trace!(id = %id, "SubmissionRequest: file doesn't exist, skipping");
+                    return;
+                }
                 register_submission(
                     &id,
                     pending_dir,
@@ -661,19 +660,13 @@ fn register_submission(
     io_config: &IoConfig,
 ) {
     let request_path = pending_dir.join(format!("{id}{REQUEST_SUFFIX}"));
-    let response_path = pending_dir.join(format!("{id}{RESPONSE_SUFFIX}"));
 
-    // Duplicate FS event - skip silently
+    // Duplicate FS event - skip silently.
+    // path_to_id entries are kept even after task completion to catch late events.
     if external_task_map.get_id_by_path(&request_path).is_some() {
         trace!(id = %id, "SubmissionRequest: duplicate event, skipping");
         return;
     }
-
-    // Already completed? This shouldn't happen
-    assert!(
-        !response_path.exists(),
-        "SubmissionRequest for already-completed submission: {id}"
-    );
 
     // Read and resolve payload
     let raw = match fs::read_to_string(&request_path) {
