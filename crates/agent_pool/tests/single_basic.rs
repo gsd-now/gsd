@@ -22,6 +22,7 @@ const TEST_DIR: &str = "single_basic";
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn single_agent_single_task(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_{mode:?}");
     let root = setup_test_dir(&test_dir);

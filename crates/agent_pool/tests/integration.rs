@@ -31,6 +31,7 @@ const TEST_DIR: &str = "integration";
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn basic_submit(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_basic_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -66,6 +67,7 @@ fn basic_submit(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn single_agent_multiple_tasks(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_single_multi_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -106,6 +108,7 @@ fn single_agent_multiple_tasks(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn multiple_agents_parallel(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_multi_parallel_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -154,6 +157,7 @@ fn multiple_agents_parallel(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn agent_deregistration(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_deregister_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -206,6 +210,7 @@ fn agent_deregistration(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn tasks_queued_before_agents(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_queue_before_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -254,6 +259,7 @@ fn tasks_queued_before_agents(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn rapid_task_burst(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_rapid_burst_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -294,6 +300,7 @@ fn rapid_task_burst(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn identical_task_content(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_identical_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -330,6 +337,7 @@ fn identical_task_content(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn agent_joins_mid_processing(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_mid_join_{mode:?}");
     let root = setup_test_dir(&test_dir);
@@ -382,6 +390,7 @@ fn agent_joins_mid_processing(#[case] mode: SubmitMode) {
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn response_isolation(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_isolation_{mode:?}");
     let root = setup_test_dir(&test_dir);

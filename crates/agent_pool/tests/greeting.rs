@@ -22,6 +22,7 @@ const TEST_DIR: &str = "greeting";
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn greeting_casual_and_formal(#[case] mode: SubmitMode) {
     // Use mode in test dir name to avoid conflicts when tests run in parallel
     let test_dir = format!("{TEST_DIR}_{mode:?}");

@@ -31,6 +31,7 @@ const TEST_DIR: &str = "many_agents";
 #[case(SubmitMode::DataFile)]
 #[case(SubmitMode::FileSocket)]
 #[case(SubmitMode::FileFile)]
+#[case(SubmitMode::RawFile)]
 fn multiple_agents_parallel_tasks(#[case] mode: SubmitMode) {
     let test_dir = format!("{TEST_DIR}_{mode:?}");
     let root = setup_test_dir(&test_dir);
