@@ -340,6 +340,16 @@ fn run_daemon(
         io_config,
     )?;
 
+    // Scan for pending submissions that may have arrived during startup
+    scan_pending(
+        pending_dir,
+        &events_tx,
+        &mut external_task_map,
+        &mut task_id_allocator,
+        &mut seen_submissions,
+        io_config,
+    )?;
+
     // Run the I/O loop - receives from unified channel
     let result = io_loop(
         io_rx,
@@ -763,6 +773,51 @@ fn scan_agents(
     Ok(())
 }
 
+/// Scan the pending directory and register any existing submissions.
+///
+/// This handles submissions that arrived during daemon startup (between directory
+/// creation and `io_loop` start). Without this, such submissions would be lost.
+fn scan_pending(
+    pending_dir: &Path,
+    events_tx: &mpsc::Sender<Event>,
+    external_task_map: &mut ExternalTaskMap,
+    task_id_allocator: &mut TaskIdAllocator,
+    seen_submissions: &mut HashSet<String>,
+    io_config: &IoConfig,
+) -> io::Result<()> {
+    if !pending_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(pending_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        let filename = match entry.file_name().to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
+        // Only process request files
+        if let Some(id) = filename.strip_suffix(REQUEST_SUFFIX) {
+            debug!(id = %id, "found existing submission during startup scan");
+            register_submission(
+                id,
+                pending_dir,
+                events_tx,
+                external_task_map,
+                task_id_allocator,
+                seen_submissions,
+                io_config,
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Check if an agent directory contains a Kicked task.json.
 ///
 /// This handles the case where the daemon restarts and finds old kicked
@@ -1083,6 +1138,81 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn scan_pending_registers_existing_submissions() {
+        let tmp = TempDir::new().unwrap();
+        let pending_dir = tmp.path().join("pending");
+        fs::create_dir_all(&pending_dir).unwrap();
+
+        // Create some submission request files with valid Payload format
+        let content = r#"{"kind":"Inline","content":"{\"test\":true}"}"#;
+        fs::write(pending_dir.join("abc123.request.json"), content).unwrap();
+        fs::write(pending_dir.join("def456.request.json"), content).unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let mut seen_submissions = HashSet::new();
+        let io_config = IoConfig::default();
+
+        scan_pending(
+            &pending_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &mut seen_submissions,
+            &io_config,
+        )
+        .unwrap();
+
+        // Should have received two TaskSubmitted events
+        let mut events = vec![];
+        while let Ok(event) = events_rx.try_recv() {
+            events.push(event);
+        }
+
+        assert_eq!(events.len(), 2);
+        for event in events {
+            assert!(matches!(event, Event::TaskSubmitted { .. }));
+        }
+
+        // seen_submissions should have both IDs
+        assert!(seen_submissions.contains("abc123"));
+        assert!(seen_submissions.contains("def456"));
+    }
+
+    #[test]
+    fn scan_pending_ignores_non_request_files() {
+        let tmp = TempDir::new().unwrap();
+        let pending_dir = tmp.path().join("pending");
+        fs::create_dir_all(&pending_dir).unwrap();
+
+        // Create various files that should be ignored
+        fs::write(pending_dir.join("abc123.response.json"), "{}").unwrap();
+        fs::write(pending_dir.join("canary"), "sync").unwrap();
+        fs::write(pending_dir.join("random.txt"), "ignored").unwrap();
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut external_task_map = ExternalTaskMap::new();
+        let mut task_id_allocator = TaskIdAllocator::new();
+        let mut seen_submissions = HashSet::new();
+        let io_config = IoConfig::default();
+
+        scan_pending(
+            &pending_dir,
+            &events_tx,
+            &mut external_task_map,
+            &mut task_id_allocator,
+            &mut seen_submissions,
+            &io_config,
+        )
+        .unwrap();
+
+        // Should have received no events
+        assert!(events_rx.try_recv().is_err());
+        assert!(seen_submissions.is_empty());
     }
 
     // =========================================================================
