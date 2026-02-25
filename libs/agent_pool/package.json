@@ -10,7 +10,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rbalicki2/gsd"
+    "url": "git+https://github.com/rbalicki2/gsd.git"
   },
   "keywords": [
     "agent",
