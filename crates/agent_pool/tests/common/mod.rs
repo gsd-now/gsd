@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
 
-use agent_pool::{AGENTS_DIR, PENDING_DIR, RESPONSE_FILE, TASK_FILE};
+use agent_pool::PENDING_DIR;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 #[cfg(unix)]
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -74,65 +74,28 @@ pub fn is_ipc_available(_test_dir: &Path) -> bool {
 }
 
 // =============================================================================
-// Test Agent
+// Test Agent (CLI-based)
 // =============================================================================
 
-/// Parsed task envelope.
-struct TaskEnvelope {
-    kind: String,
-    content: String,
-}
-
-/// Extract task kind and content from the envelope format.
+/// A test agent that uses the CLI to receive tasks from the daemon.
 ///
-/// The daemon writes `{"kind": "Task", "content": ...}` to task.json.
-/// Returns (kind, content) tuple.
-#[allow(clippy::option_if_let_else)] // if-let-else is clearer here
-fn extract_task_envelope(raw: &str) -> TaskEnvelope {
-    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(raw) {
-        let kind = envelope
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("Task")
-            .to_string();
-
-        let content = if let Some(content) = envelope.get("content") {
-            // If content is a string, return it directly
-            if let Some(s) = content.as_str() {
-                s.to_string()
-            } else {
-                // Otherwise return the JSON representation
-                content.to_string()
-            }
-        } else {
-            raw.to_string()
-        };
-
-        return TaskEnvelope { kind, content };
-    }
-    // Not an envelope, return as-is
-    TaskEnvelope {
-        kind: "Task".to_string(),
-        content: raw.to_string(),
-    }
-}
-
-/// A test agent that polls for tasks and processes them with a custom function.
-///
-/// The agent runs in a background thread, watching for `*.input` files,
-/// processing them, and writing results to `*.output`.
+/// The agent runs in a background thread, calling `get_task` and `next_task`
+/// CLI commands to interact with the daemon. This ensures tests exercise
+/// the same code paths as real agents.
 pub struct TestAgent {
     running: Arc<AtomicBool>,
+    /// PID of current CLI subprocess (for killing on stop)
+    current_pid: Arc<AtomicU32>,
     handle: Option<thread::JoinHandle<Vec<String>>>,
     /// Receiver that signals when the agent has processed its first message (heartbeat).
-    /// This allows tests to wait for the agent to be fully ready without arbitrary sleeps.
     ready_rx: Option<mpsc::Receiver<()>>,
 }
 
 impl TestAgent {
     /// Start a test agent with a custom processing function.
     ///
-    /// The processor receives the task content and agent ID, returning the response.
+    /// The processor receives the task content (as JSON string) and agent ID,
+    /// returning the response string.
     ///
     /// After starting, call `wait_ready()` to block until the agent has processed
     /// its first message (heartbeat) and is ready to receive real tasks.
@@ -140,73 +103,143 @@ impl TestAgent {
     where
         F: Fn(&str, &str) -> String + Send + 'static,
     {
-        let agent_dir = root.join(AGENTS_DIR).join(agent_id);
-        fs::create_dir_all(&agent_dir).expect("Failed to create agent directory");
-
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
+        let current_pid = Arc::new(AtomicU32::new(0));
+        let current_pid_clone = current_pid.clone();
         let agent_id_owned = agent_id.to_string();
+        let root_owned = root.to_path_buf();
+        let bin = find_agent_pool_binary();
 
         // Channel to signal when the agent has processed its first message (heartbeat)
         let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
 
         let handle = thread::spawn(move || {
             let mut processed_tasks = Vec::new();
-            let task_file = agent_dir.join(TASK_FILE);
-            let response_file = agent_dir.join(RESPONSE_FILE);
             let mut first_message_processed = false;
+            let mut last_response: Option<String> = None;
 
-            while running_clone.load(Ordering::SeqCst) {
-                // Check for task file
-                if task_file.exists() && !response_file.exists() {
-                    let Ok(raw) = fs::read_to_string(&task_file) else {
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
-                    };
-
-                    // Skip empty reads (file might still be written)
-                    if raw.is_empty() {
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-
-                    // Extract kind/content from envelope
-                    let envelope = extract_task_envelope(&raw);
-
-                    // Handle daemon control messages
-                    match envelope.kind.as_str() {
-                        "Heartbeat" => {
-                            let _ = fs::write(&response_file, "{}");
-                            // Signal ready after processing first heartbeat
-                            if !first_message_processed {
-                                first_message_processed = true;
-                                let _ = ready_tx.send(());
-                            }
-                            thread::sleep(Duration::from_millis(10));
-                            continue;
-                        }
-                        "Kicked" => {
-                            break;
-                        }
-                        _ => {}
-                    }
-
-                    thread::sleep(processing_delay);
-
-                    let response = processor(&envelope.content, &agent_id_owned);
-                    processed_tasks.push(envelope.content.trim().to_string());
-
-                    // Write response (daemon handles cleanup of both files)
-                    let _ = fs::write(&response_file, &response);
-
-                    // Signal ready AFTER writing response for non-heartbeat messages
-                    if !first_message_processed {
-                        first_message_processed = true;
-                        let _ = ready_tx.send(());
-                    }
+            loop {
+                if !running_clone.load(Ordering::SeqCst) {
+                    break;
                 }
 
-                thread::sleep(Duration::from_millis(10));
+                // Build command: get_task for first call, next_task with response for subsequent
+                let mut cmd = Command::new(&bin);
+                if let Some(response) = last_response.take() {
+                    cmd.arg("next_task")
+                        .arg("--pool")
+                        .arg(&root_owned)
+                        .arg("--name")
+                        .arg(&agent_id_owned)
+                        .arg("--data")
+                        .arg(&response);
+                } else {
+                    cmd.arg("get_task")
+                        .arg("--pool")
+                        .arg(&root_owned)
+                        .arg("--name")
+                        .arg(&agent_id_owned);
+                }
+                cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+                let mut child = match cmd.spawn() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("[agent {agent_id_owned}] Failed to spawn CLI: {e}");
+                        break;
+                    }
+                };
+
+                // Store PID for potential killing by stop()
+                current_pid_clone.store(child.id(), Ordering::SeqCst);
+
+                // Forward stderr in background thread so it shows with --nocapture
+                let stderr_agent_id = agent_id_owned.clone();
+                if let Some(stderr) = child.stderr.take() {
+                    thread::spawn(move || {
+                        let reader = BufReader::new(stderr);
+                        for line in reader.lines().flatten() {
+                            eprintln!("[agent {stderr_agent_id} stderr] {line}");
+                        }
+                    });
+                }
+
+                // Wait for CLI to complete and collect stdout
+                let output = match child.wait_with_output() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("[agent {agent_id_owned}] CLI process error: {e}");
+                        break;
+                    }
+                };
+
+                // Clear PID after process exits
+                current_pid_clone.store(0, Ordering::SeqCst);
+
+                // Check if we were killed (process killed = should exit)
+                if !running_clone.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Check for non-zero exit (killed or error)
+                if !output.status.success() {
+                    eprintln!(
+                        "[agent {agent_id_owned}] CLI exited with status: {}",
+                        output.status
+                    );
+                    break;
+                }
+
+                // Parse task JSON from stdout
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                eprintln!("[agent {agent_id_owned} stdout] {stdout}");
+
+                let task_json: serde_json::Value = match serde_json::from_str(&stdout) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("[agent {agent_id_owned}] Failed to parse task JSON: {e}");
+                        break;
+                    }
+                };
+
+                let kind = task_json
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("Task");
+                let content = task_json
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+
+                // Handle control messages
+                match kind {
+                    "Heartbeat" => {
+                        last_response = Some("{}".to_string());
+                        if !first_message_processed {
+                            first_message_processed = true;
+                            let _ = ready_tx.send(());
+                        }
+                        continue;
+                    }
+                    "Kicked" => {
+                        eprintln!("[agent {agent_id_owned}] Received Kicked, exiting");
+                        break;
+                    }
+                    _ => {}
+                }
+
+                // Process task
+                thread::sleep(processing_delay);
+                let content_str = content.to_string();
+                let response = processor(&content_str, &agent_id_owned);
+                processed_tasks.push(content_str.trim().to_string());
+                last_response = Some(response);
+
+                if !first_message_processed {
+                    first_message_processed = true;
+                    let _ = ready_tx.send(());
+                }
             }
 
             processed_tasks
@@ -214,6 +247,7 @@ impl TestAgent {
 
         Self {
             running,
+            current_pid,
             handle: Some(handle),
             ready_rx: Some(ready_rx),
         }
@@ -228,18 +262,17 @@ impl TestAgent {
 
     /// Start a greeting agent that responds to "casual" and "formal" styles.
     pub fn greeting(root: &Path, agent_id: &str, processing_delay: Duration) -> Self {
-        Self::start(
-            root,
-            agent_id,
-            processing_delay,
-            |task, agent_id| match task.trim() {
+        Self::start(root, agent_id, processing_delay, |task, agent_id| {
+            // Task content is JSON, need to extract the actual value
+            let task_str = task.trim().trim_matches('"');
+            match task_str {
                 "casual" => format!("Hi {agent_id}, how are ya?"),
                 "formal" => format!(
                     "Salutations {agent_id}, how are you doing on this most splendiferous and utterly magnificent day?"
                 ),
                 style => format!("Error: unknown style '{style}' (use 'casual' or 'formal')"),
-            },
-        )
+            }
+        })
     }
 
     /// Wait for the agent to be ready (has processed its first message).
@@ -260,6 +293,17 @@ impl TestAgent {
     /// Stop the agent and return the list of tasks it processed.
     pub fn stop(mut self) -> Vec<String> {
         self.running.store(false, Ordering::SeqCst);
+
+        // Kill any running CLI subprocess
+        let pid = self.current_pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            // Use shell kill command to send SIGKILL
+            let _ = Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .output();
+        }
+
         self.handle
             .take()
             .expect("Agent already stopped")
