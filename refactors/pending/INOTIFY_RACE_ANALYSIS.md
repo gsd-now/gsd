@@ -21,7 +21,7 @@ Tests pass on macOS but fail (hang) on Linux. The root cause is a race condition
 
 ## Where The Race Occurs
 
-### 1. Pending Task Submission (`NotifyMethod::Raw`)
+### Pending Task Submission (`NotifyMethod::Raw`)
 
 ```
 1. Submitter creates `pending/<uuid>/`
@@ -31,389 +31,416 @@ Tests pass on macOS but fail (hang) on Linux. The root cause is a race condition
 5. If (4) happens before (3) completes, we miss the PendingTask event
 ```
 
-### 2. Agent Response Detection
+## Why Blocking Sync Doesn't Work
 
-```
-1. Agent creates `agents/<name>/`
-2. inotify receives CREATE event
-3. notify crate tries to add watch for `agents/<name>/`
-4. Daemon writes `task.json` (heartbeat)
-5. Agent reads `task.json`, writes `response.json`
-6. If (5) happens before (3) completes, we miss the AgentResponse event
-```
-
-## Why Simple Fallbacks Don't Work
-
-The initial "fix" was to check if `task.json` exists when we see a `PendingDir` event:
+The initial approach was to sync each new directory with a canary file:
 
 ```rust
-// BROKEN - This doesn't work!
-PathCategory::PendingDir { uuid } => {
-    let task_path = pending_dir.join(&uuid).join(TASK_FILE);
-    if task_path.exists() {
-        register_pending_task(...);
-    }
+fn sync_directory_watcher(dir: &Path, io_rx: &mpsc::Receiver<IoEvent>) -> Vec<IoEvent> {
+    // Write canary, wait for event, buffer other events
+    ...
 }
 ```
 
-**The flaw:** When we receive the `PendingDir` event, the watch might not be set up yet. If `task.json` doesn't exist at that moment, we return and expect to catch it later via `PendingTask`. But if the watch isn't ready, we'll never see `PendingTask` either.
+**The flaw:** During the main loop, we receive `IoEvent::Socket` and `IoEvent::Effect` events. These **cannot** be buffered and replayed later:
+- Socket events have live TCP streams that may timeout
+- Effect events may fire timers or modify state
+- Blocking the loop while syncing would break real-time responsiveness
 
-## The Correct Solution: Canary-Based Synchronization
+## The Solution: Flatten the Directory Structure
 
-We already have this pattern at daemon startup in `sync_with_watcher()`:
+Instead of creating subdirectories that need new watches, use flat files:
 
-```rust
-// From wiring.rs:945-987
-fn sync_with_watcher(canary_path: &Path, io_rx: &mpsc::Receiver<IoEvent>) -> io::Result<()> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(10);
-    const ROUND_DURATION: Duration = Duration::from_millis(100);
-    const MAX_ATTEMPTS: u32 = 50;
-
-    for attempt in 0..MAX_ATTEMPTS {
-        // Write canary with unique content to trigger new FS event each round
-        fs::write(canary_path, format!("sync-{attempt}"))?;
-
-        let round_start = std::time::Instant::now();
-        while round_start.elapsed() < ROUND_DURATION {
-            match io_rx.recv_timeout(POLL_INTERVAL) {
-                Ok(IoEvent::Fs(event)) => {
-                    if event.paths.iter().any(|p| p == canary_path) {
-                        let _ = fs::remove_file(canary_path);
-                        return Ok(());
-                    }
-                    // Not our canary, keep polling
-                }
-                // ... timeout handling
-            }
-        }
-        // Retry with new content
-    }
-    // ... error handling
-}
+**Current structure (creates new directories):**
+```
+pending/
+├── abc123/
+│   ├── task.json
+│   └── response.json
+└── def456/
+    ├── task.json
+    └── response.json
 ```
 
-**The key insight:** By writing a file and waiting for its FS event, we *prove* the watch is active. If we see the canary event, we know any subsequent writes will also be seen.
+**Proposed structure (no new directories):**
+```
+pending/
+├── abc123.task.json
+├── abc123.response.json
+├── def456.task.json
+└── def456.response.json
+```
 
-## Implementation Plan
+### Why This Works
 
-### Goal
+1. The startup sync ensures `pending/` is watched before we accept connections
+2. All task files are written directly into `pending/` (already watched)
+3. No new directories are created → no new watches needed → no race
 
-When we see a `PendingDir` or `AgentDir` event, sync the watcher for that specific subdirectory before checking for `task.json` or `response.json`.
+### Agent Directories Are Different
 
-### Challenge
+Agent directories (`agents/<name>/`) don't have this race because:
+1. The agent creates the directory
+2. The daemon sees `AgentDir` event and **doesn't do anything yet**
+3. The agent writes `response.json` (or reads `task.json`)
+4. By the time we need to detect `response.json`, the watch is active
 
-The existing `sync_with_watcher` consumes events from `io_rx`. During the event loop, this would cause us to drop other events. We need to **buffer** any non-canary events encountered during the sync and re-process them afterward.
-
-### Design
-
-1. **Extract canary sync into a reusable function** that buffers non-canary events
-2. **Integrate into the I/O loop** for `PendingDir` and `AgentDir` events
-3. **Use `.canary` as the filename** (not `.watcher-ready` or `.watcher-sync`)
+The race only matters for **pending** submissions where the submitter creates a directory AND writes a file in quick succession.
 
 ---
 
-## Detailed Implementation
+## Implementation Plan
 
-### Step 1: Create a New Sync Function That Buffers Events
+### Task 1: Add Panic for Non-FS Events During Startup Sync
+
+**Goal:** Ensure startup sync only sees FS events (Socket/Effect events at startup indicate a bug).
 
 **File:** `crates/agent_pool/src/daemon/wiring.rs`
 
-**New function:**
-
+**Current code (lines 967-969):**
 ```rust
-/// Synchronize with the filesystem watcher for a specific directory.
-///
-/// Writes a canary file and waits for the corresponding FS event, proving
-/// the watch is active. Any non-canary events received during the sync
-/// are buffered and returned so they can be re-processed.
-///
-/// Returns `Ok(buffered_events)` on success, `Err` on timeout or channel close.
-fn sync_directory_watcher(
-    dir: &Path,
-    io_rx: &mpsc::Receiver<IoEvent>,
-) -> io::Result<Vec<IoEvent>> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(10);
-    const ROUND_DURATION: Duration = Duration::from_millis(100);
-    const MAX_ATTEMPTS: u32 = 50; // 5s total
-
-    let canary_path = dir.join(".canary");
-    let mut buffered_events = Vec::new();
-
-    debug!(dir = %dir.display(), "syncing directory watcher");
-
-    for attempt in 0..MAX_ATTEMPTS {
-        // Write canary with unique content to trigger new FS event each round
-        fs::write(&canary_path, format!("sync-{attempt}"))?;
-
-        let round_start = std::time::Instant::now();
-        while round_start.elapsed() < ROUND_DURATION {
-            match io_rx.recv_timeout(POLL_INTERVAL) {
-                Ok(IoEvent::Fs(event)) => {
-                    if event.paths.iter().any(|p| p == &canary_path) {
-                        debug!(attempt, dir = %dir.display(), "directory watcher sync complete");
-                        let _ = fs::remove_file(&canary_path);
-                        return Ok(buffered_events);
-                    }
-                    // Not our canary - buffer it for later processing
-                    buffered_events.push(IoEvent::Fs(event));
-                }
-                Ok(other) => {
-                    // Non-FS event (Effect, Socket, etc.) - buffer it
-                    buffered_events.push(other);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Keep polling
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = fs::remove_file(&canary_path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "watcher channel disconnected during directory sync",
-                    ));
-                }
-            }
-        }
-        // Round finished without seeing canary, retry with new content
-    }
-
-    let _ = fs::remove_file(&canary_path);
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!("directory watcher sync timed out for {}", dir.display()),
-    ))
-}
-```
-
-### Step 2: Refactor Startup Sync to Use the New Function
-
-**Before (current code at lines 194-198):**
-
-```rust
-let canary_path = pending_dir.join(".watcher-ready");
-if let Err(e) = sync_with_watcher(&canary_path, &io_rx) {
-    let _ = ready_tx.send(Err(e));
-    return Err(io::Error::other("watcher sync failed"));
+Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
+    // Non-FS event or timeout, keep polling
 }
 ```
 
 **After:**
-
 ```rust
-// Sync the pending directory watcher (canary events at startup are discarded)
-if let Err(e) = sync_directory_watcher(pending_dir, &io_rx) {
-    let _ = ready_tx.send(Err(e));
-    return Err(io::Error::other("watcher sync failed"));
+Ok(IoEvent::Socket(..)) | Ok(IoEvent::Effect(..)) | Ok(IoEvent::Shutdown) => {
+    panic!("unexpected non-FS event during startup sync");
 }
-// Note: buffered events discarded at startup - nothing important yet
+Err(mpsc::RecvTimeoutError::Timeout) => {
+    // Keep polling
+}
 ```
 
-Also update line 279-280 similarly.
+**Rationale:** At startup, no socket listener is accepting yet and no event loop is running, so we should never see Socket or Effect events. If we do, something is wrong.
 
-### Step 3: Delete the Old `sync_with_watcher` Function
+---
 
-Remove lines 933-987 (the old function). The new `sync_directory_watcher` replaces it.
+### Task 2: Add PathCategory Variants for Ignored Files
 
-### Step 4: Update PathCategory to Ignore Canary Files
+**Goal:** Make path categorization explicit about which files are expected but ignored.
 
 **File:** `crates/agent_pool/src/daemon/path_category.rs`
 
-We need to ensure `.canary` files don't match any category (they should be ignored).
-
-**Find the categorization logic and add:**
-
+**Current variants:**
 ```rust
-// Early return for canary files - they're internal sync mechanism
-if path.file_name() == Some(std::ffi::OsStr::new(".canary")) {
-    return None;
+pub(super) enum PathCategory {
+    AgentDir { name: String },
+    AgentResponse { name: String },
+    PendingDir { uuid: String },
+    PendingTask { uuid: String },
 }
 ```
 
-### Step 5: Modify I/O Loop to Sync on PendingDir Events
+**After:**
+```rust
+pub(super) enum PathCategory {
+    /// Agent directory: `agents/<name>/`
+    AgentDir { name: String },
+    /// Agent task file: `agents/<name>/task.json` (daemon writes, agent reads)
+    AgentTask { name: String },
+    /// Agent response file: `agents/<name>/response.json`
+    AgentResponse { name: String },
+    /// Pending submission directory: `pending/<uuid>/`
+    PendingDir { uuid: String },
+    /// Pending task file: `pending/<uuid>/task.json`
+    PendingTask { uuid: String },
+    /// Pending response file: `pending/<uuid>/response.json` (daemon writes)
+    PendingResponse { uuid: String },
+}
+```
+
+**Update `categorize_under_agents`:**
+```rust
+fn categorize_under_agents(path: &Path, agents_dir: &Path) -> Option<PathCategory> {
+    let relative = path.strip_prefix(agents_dir).ok()?;
+    let components: Vec<_> = relative.components().collect();
+
+    if components.is_empty() {
+        return None;
+    }
+
+    let name = components[0].as_os_str().to_str()?.to_string();
+
+    match components.len() {
+        1 => Some(PathCategory::AgentDir { name }),
+        2 => {
+            let filename = components[1].as_os_str().to_str()?;
+            match filename {
+                RESPONSE_FILE => Some(PathCategory::AgentResponse { name }),
+                TASK_FILE => Some(PathCategory::AgentTask { name }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+```
+
+**Update `categorize_under_pending`:**
+```rust
+fn categorize_under_pending(path: &Path, pending_dir: &Path) -> Option<PathCategory> {
+    let relative = path.strip_prefix(pending_dir).ok()?;
+    let components: Vec<_> = relative.components().collect();
+
+    if components.is_empty() {
+        return None;
+    }
+
+    let uuid = components[0].as_os_str().to_str()?.to_string();
+
+    match components.len() {
+        1 => Some(PathCategory::PendingDir { uuid }),
+        2 => {
+            let filename = components[1].as_os_str().to_str()?;
+            match filename {
+                TASK_FILE => Some(PathCategory::PendingTask { uuid }),
+                RESPONSE_FILE => Some(PathCategory::PendingResponse { uuid }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+```
+
+**Update handler in wiring.rs:**
+```rust
+match category {
+    // ... existing cases ...
+    PathCategory::AgentTask { name } => {
+        // Daemon writes, agent reads - ignore our own writes
+        trace!(name = %name, "AgentTask: ignoring (daemon wrote this)");
+    }
+    PathCategory::PendingResponse { uuid } => {
+        // Daemon writes, submitter reads - ignore our own writes
+        trace!(uuid = %uuid, "PendingResponse: ignoring (daemon wrote this)");
+    }
+}
+```
+
+---
+
+### Task 3: Add Constants for Flat File Naming
+
+**Goal:** Define constants for the flat file naming scheme.
+
+**File:** `crates/agent_pool/src/constants.rs`
+
+**Add:**
+```rust
+/// Suffix for pending task files (flat structure).
+pub const PENDING_TASK_SUFFIX: &str = ".task.json";
+
+/// Suffix for pending response files (flat structure).
+pub const PENDING_RESPONSE_SUFFIX: &str = ".response.json";
+```
+
+---
+
+### Task 4: Update PathCategory for Flat Pending Files
+
+**Goal:** Update path categorization to recognize flat pending files.
+
+**File:** `crates/agent_pool/src/daemon/path_category.rs`
+
+After the flattening, `pending/` will contain:
+- `<uuid>.task.json` - submitted by client
+- `<uuid>.response.json` - written by daemon
+
+**Remove `PendingDir` variant** (no longer used).
+
+**Update `categorize_under_pending`:**
+```rust
+fn categorize_under_pending(path: &Path, pending_dir: &Path) -> Option<PathCategory> {
+    let relative = path.strip_prefix(pending_dir).ok()?;
+    let components: Vec<_> = relative.components().collect();
+
+    // Flat files directly in pending/
+    if components.len() != 1 {
+        return None;
+    }
+
+    let filename = components[0].as_os_str().to_str()?;
+
+    if let Some(uuid) = filename.strip_suffix(PENDING_TASK_SUFFIX) {
+        return Some(PathCategory::PendingTask { uuid: uuid.to_string() });
+    }
+
+    if let Some(uuid) = filename.strip_suffix(PENDING_RESPONSE_SUFFIX) {
+        return Some(PathCategory::PendingResponse { uuid: uuid.to_string() });
+    }
+
+    None
+}
+```
+
+---
+
+### Task 5: Update submit_file.rs for Flat Structure
+
+**Goal:** Change client submission to use flat files.
+
+**File:** `crates/agent_pool/src/client/submit_file.rs`
+
+**Current flow:**
+1. Create `pending/<uuid>/`
+2. Write `pending/<uuid>/task.json`
+3. Poll for `pending/<uuid>/response.json`
+4. Delete `pending/<uuid>/` directory
+
+**New flow:**
+1. Write `pending/<uuid>.task.json`
+2. Poll for `pending/<uuid>.response.json`
+3. Delete both files
+
+**Changes:**
+
+```rust
+// Before
+let submission_dir = pending_dir.join(&submission_id);
+fs::create_dir(&submission_dir)?;
+let task_path = submission_dir.join(PENDING_TASK_FILE);
+let response_path = submission_dir.join(PENDING_RESPONSE_FILE);
+// ... cleanup ...
+let _ = fs::remove_dir_all(&submission_dir);
+
+// After
+let task_path = pending_dir.join(format!("{submission_id}{PENDING_TASK_SUFFIX}"));
+let response_path = pending_dir.join(format!("{submission_id}{PENDING_RESPONSE_SUFFIX}"));
+// ... cleanup ...
+let _ = fs::remove_file(&task_path);
+let _ = fs::remove_file(&response_path);
+```
+
+**Update `cleanup_submission`:**
+```rust
+pub fn cleanup_submission(root: impl AsRef<Path>, submission_id: &str) -> io::Result<()> {
+    let pending_dir = root.as_ref().join(PENDING_DIR);
+    let task_path = pending_dir.join(format!("{submission_id}{PENDING_TASK_SUFFIX}"));
+    let response_path = pending_dir.join(format!("{submission_id}{PENDING_RESPONSE_SUFFIX}"));
+    let _ = fs::remove_file(&task_path);
+    let _ = fs::remove_file(&response_path);
+    Ok(())
+}
+```
+
+---
+
+### Task 6: Update Daemon to Handle Flat Pending Files
+
+**Goal:** Update daemon's pending task handling for flat files.
 
 **File:** `crates/agent_pool/src/daemon/wiring.rs`
 
-The I/O loop needs access to `io_rx` to call the sync function. Currently `handle_fs_event` doesn't have access to it.
+**Key changes:**
 
-**Current signature (line 511):**
+1. **Remove `PendingDir` handling** (no longer exists)
 
+2. **Update `register_pending_task` signature:**
+
+The function currently takes `submission_dir: &Path`. With flat files, we need to derive paths differently.
+
+**Option A:** Pass task path directly and derive response path:
 ```rust
-fn handle_fs_event(
-    event: &notify::Event,
+fn register_pending_task(
+    task_path: &Path,
+    pending_dir: &Path,  // To derive response path
     events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
-    external_task_map: &mut ExternalTaskMap,
-    task_id_allocator: &mut TaskIdAllocator,
-    pending_responses: &mut HashSet<AgentId>,
-    kicked_paths: &mut HashSet<PathBuf>,
-    agents_dir: &Path,
-    pending_dir: &Path,
-    io_config: &IoConfig,
+    ...
 )
 ```
 
-**Option A: Move sync logic into io_loop**
-
-Instead of passing `io_rx` through many functions, handle the sync in `io_loop` before calling `handle_fs_event`:
-
-**Current io_loop (simplified):**
-
+**Option B:** Pass uuid and pending_dir:
 ```rust
-while let Ok(io_event) = io_rx.recv() {
-    match io_event {
-        IoEvent::Fs(event) => {
-            handle_fs_event(&event, ...);
-        }
-        // ...
-    }
-}
-```
-
-**After:**
-
-```rust
-while let Ok(io_event) = io_rx.recv() {
-    match io_event {
-        IoEvent::Fs(event) => {
-            // Check if this is a new directory that needs sync
-            let buffered = sync_new_directories_if_needed(
-                &event,
-                agents_dir,
-                pending_dir,
-                &io_rx,
-            );
-
-            // Process any buffered events first
-            for buffered_event in buffered {
-                process_io_event(buffered_event, ...);
-            }
-
-            // Now process the original event
-            handle_fs_event(&event, ...);
-        }
-        // ...
-    }
-}
-```
-
-**New helper function:**
-
-```rust
-/// If the event contains new PendingDir or AgentDir paths, sync them.
-/// Returns any events buffered during the sync.
-fn sync_new_directories_if_needed(
-    event: &notify::Event,
-    agents_dir: &Path,
+fn register_pending_task(
+    uuid: &str,
     pending_dir: &Path,
-    io_rx: &mpsc::Receiver<IoEvent>,
-) -> Vec<IoEvent> {
-    let mut all_buffered = Vec::new();
-
-    for path in &event.paths {
-        let Some(category) = path_category::categorize(path, agents_dir, pending_dir) else {
-            continue;
-        };
-
-        match category {
-            PathCategory::PendingDir { ref uuid } => {
-                let submission_dir = pending_dir.join(uuid);
-                if submission_dir.is_dir() {
-                    match sync_directory_watcher(&submission_dir, io_rx) {
-                        Ok(buffered) => all_buffered.extend(buffered),
-                        Err(e) => warn!(error = %e, uuid = %uuid, "failed to sync pending dir"),
-                    }
-                }
-            }
-            PathCategory::AgentDir { ref name } => {
-                let agent_path = agents_dir.join(name);
-                if agent_path.is_dir() {
-                    match sync_directory_watcher(&agent_path, io_rx) {
-                        Ok(buffered) => all_buffered.extend(buffered),
-                        Err(e) => warn!(error = %e, name = %name, "failed to sync agent dir"),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    all_buffered
-}
+    events_tx: &mpsc::Sender<Event>,
+    ...
+)
 ```
 
-### Step 6: Update PendingDir Handler to Check for task.json
+Option B is cleaner since `PathCategory::PendingTask` gives us the uuid.
 
-**Current (line 557-561):**
-
+**Handler update:**
 ```rust
-PathCategory::PendingDir { uuid } => {
-    // Directory creation events are ignored - we wait for task.json.
-    // The watcher sync at startup ensures inotify is ready.
-    debug!(uuid = %uuid, "PendingDir: ignoring directory event");
-}
-```
-
-**After:**
-
-```rust
-PathCategory::PendingDir { uuid } => {
-    // After sync_new_directories_if_needed runs, the watch is active.
-    // Check if task.json already exists (written during sync window).
-    let submission_dir = pending_dir.join(&uuid);
-    let task_path = submission_dir.join(TASK_FILE);
-    if task_path.exists() {
-        debug!(uuid = %uuid, "PendingDir: task.json exists after sync, registering");
+PathCategory::PendingTask { uuid } => {
+    if pending_dir.join(format!("{uuid}{PENDING_TASK_SUFFIX}")).exists() {
         register_pending_task(
-            &submission_dir,
+            &uuid,
+            pending_dir,
             events_tx,
             external_task_map,
             task_id_allocator,
             io_config,
         );
-    } else {
-        debug!(uuid = %uuid, "PendingDir: waiting for PendingTask event");
     }
 }
 ```
 
-### Step 7: Update AgentDir Handler Similarly
+---
 
-**Current (simplified):**
+### Task 7: Update ExternalTaskMap Storage Strategy
+
+**Goal:** Decide what path to store for flat file submissions.
+
+**File:** `crates/agent_pool/src/daemon/io.rs`
+
+**Current:** `ExternalTaskMap` stores `submission_dir` path (e.g., `pending/<uuid>/`)
+
+**Options:**
+
+1. **Store task file path** (`pending/<uuid>.task.json`)
+   - Pro: Direct lookup
+   - Con: Need to derive response path
+
+2. **Store uuid only** and derive paths when needed
+   - Pro: Clean
+   - Con: Need pending_dir reference everywhere
+
+3. **Store response file path** (`pending/<uuid>.response.json`)
+   - Pro: `finish()` writes to this path
+   - Con: Need to derive task path for reading
+
+**Recommendation:** Option 1 - store task file path. The `finish()` method can derive response path:
 
 ```rust
-PathCategory::AgentDir { name } => {
-    let agent_path = agents_dir.join(&name);
-    handle_agent_dir(&agent_path, ...);
+// In ExternalTaskMap::finish
+Transport::Directory(path) => {
+    // path is task file path, derive response path
+    let response_path = path.with_extension("").with_extension("response.json");
+    // Or: derive from filename
+    let filename = path.file_name().unwrap().to_str().unwrap();
+    let uuid = filename.strip_suffix(PENDING_TASK_SUFFIX).unwrap();
+    let response_path = path.parent().unwrap().join(format!("{uuid}{PENDING_RESPONSE_SUFFIX}"));
+    fs::write(response_path, response)?;
 }
 ```
 
-**After:** `handle_agent_dir` should check for `response.json` after the sync:
-
+**Alternative:** Change `Transport::Directory` to `Transport::File` for flat files:
 ```rust
-fn handle_agent_dir(
-    agent_path: &Path,
-    events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
-    pending_responses: &mut HashSet<AgentId>,
-    kicked_paths: &mut HashSet<PathBuf>,
-    task_id_allocator: &mut TaskIdAllocator,
-    io_config: &IoConfig,
-) {
-    // ... existing registration logic ...
-
-    if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
-        // ... send AgentRegistered event ...
-
-        // After sync, check if response.json already exists
-        let response_path = agent_path.join(crate::constants::RESPONSE_FILE);
-        if response_path.exists() {
-            debug!(agent_id = agent_id.0, "AgentDir: response.json exists after sync");
-            if pending_responses.insert(agent_id) {
-                let _ = events_tx.send(Event::AgentResponded { agent_id });
-            }
-        }
-    }
+pub enum Transport {
+    Directory(PathBuf),  // For agents (which still use directories)
+    File(PathBuf),       // For flat pending files (stores response path)
+    Socket(Stream),
 }
 ```
+
+This is cleaner and makes the distinction explicit.
+
+---
+
+### Task 8: Update Tests
+
+**Goal:** Update all tests that reference pending directory structure.
+
+**Files:**
+- `crates/agent_pool/src/daemon/path_category.rs` - category tests
+- `crates/agent_pool/src/daemon/wiring.rs` - pending task tests
+- `crates/agent_pool/src/client/submit_file.rs` - submission tests
 
 ---
 
@@ -421,21 +448,24 @@ fn handle_agent_dir(
 
 | File | Change |
 |------|--------|
-| `wiring.rs` | Add `sync_directory_watcher()` function |
-| `wiring.rs` | Delete old `sync_with_watcher()` function |
-| `wiring.rs` | Update startup sync to use new function |
-| `wiring.rs` | Add `sync_new_directories_if_needed()` helper |
-| `wiring.rs` | Modify `io_loop` to call sync helper |
-| `wiring.rs` | Update `PendingDir` handler to check task.json after sync |
-| `wiring.rs` | Update `handle_agent_dir` to check response.json after sync |
-| `path_category.rs` | Ignore `.canary` files in categorization |
+| `wiring.rs` | Panic on non-FS events during startup sync |
+| `path_category.rs` | Add `AgentTask`, `PendingResponse` variants |
+| `wiring.rs` | Handle new `AgentTask`, `PendingResponse` (ignored) |
+| `constants.rs` | Add `PENDING_TASK_SUFFIX`, `PENDING_RESPONSE_SUFFIX` |
+| `path_category.rs` | Update `categorize_under_pending` for flat files |
+| `path_category.rs` | Remove `PendingDir` variant |
+| `submit_file.rs` | Use flat file structure |
+| `wiring.rs` | Remove `PendingDir` handling |
+| `wiring.rs` | Update `register_pending_task` for flat files |
+| `io.rs` | Consider `Transport::File` variant for flat pending |
+| Various | Update tests |
 
-## Why This Works
+## Task Order
 
-1. When we receive a `PendingDir` event, we **immediately sync** that specific directory
-2. The sync **blocks** until we see the canary event (proving watch is active)
-3. Any events that arrive during sync are **buffered** and processed afterward
-4. After sync completes, we check if `task.json` exists (it might have been written during the race window)
-5. If `task.json` doesn't exist, we'll catch it via `PendingTask` (watch is now guaranteed active)
+1. **Task 1**: Panic on non-FS events (small, independent)
+2. **Task 2**: Add `AgentTask`, `PendingResponse` variants (small, independent)
+3. **Task 3**: Add flat file constants (small, independent)
+4. **Tasks 4-7**: Core flattening refactor (must be done together)
+5. **Task 8**: Update tests
 
-The blocking/spinning is **encapsulated** in `sync_directory_watcher()` and doesn't leak into the rest of the codebase.
+Tasks 1-3 can be done independently and merged before the main refactor. This reduces the scope of the "big bang" change in tasks 4-7.
