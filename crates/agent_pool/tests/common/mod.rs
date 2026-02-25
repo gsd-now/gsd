@@ -327,6 +327,49 @@ impl From<agent_pool::DaemonConfig> for DaemonConfig {
     }
 }
 
+/// Wait for a directory to be created using notify (no polling).
+///
+/// Sets up a watcher, runs the provided action, then blocks until the
+/// target directory exists. Uses a channel for synchronization.
+fn wait_for_directory_creation<F, T>(watch_root: &Path, target_dir: &Path, action: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
+    let watch_target = target_dir.to_path_buf();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                for path in &event.paths {
+                    if path == &watch_target || path.starts_with(&watch_target) {
+                        let _ = ready_tx.send(());
+                        return;
+                    }
+                }
+            }
+        },
+        notify::Config::default(),
+    )
+    .expect("Failed to create watcher");
+
+    watcher
+        .watch(watch_root, RecursiveMode::Recursive)
+        .expect("Failed to watch directory");
+
+    // Run the action (e.g., spawn the daemon)
+    let result = action();
+
+    // Block until watcher signals target was created
+    let timeout = Duration::from_secs(5);
+    ready_rx
+        .recv_timeout(timeout)
+        .expect("Directory was not created in time");
+
+    drop(watcher);
+    result
+}
+
 /// Wrapper that starts the daemon via CLI subprocess.
 ///
 /// Automatically shuts down the daemon when dropped.
@@ -355,31 +398,7 @@ impl AgentPoolHandle {
 
         let pending_dir = root.join(PENDING_DIR);
 
-        // Set up notify watcher BEFORE spawning daemon, so we don't miss the event.
-        // Uses a channel to signal when pending/ is created - no polling.
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
-        let watch_pending = pending_dir.clone();
-
-        let mut watcher = RecommendedWatcher::new(
-            move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    for path in &event.paths {
-                        if path == &watch_pending || path.starts_with(&watch_pending) {
-                            let _ = ready_tx.send(());
-                            return;
-                        }
-                    }
-                }
-            },
-            notify::Config::default(),
-        )
-        .expect("Failed to create watcher");
-
-        watcher
-            .watch(root, RecursiveMode::Recursive)
-            .expect("Failed to watch pool directory");
-
-        // Build and spawn daemon process
+        // Build command
         let mut cmd = Command::new(&bin);
         cmd.arg("start")
             .arg("--pool")
@@ -397,16 +416,10 @@ impl AgentPoolHandle {
             cmd.arg("--no-periodic-heartbeat");
         }
 
-        let process = cmd.spawn().expect("Failed to spawn agent_pool process");
-
-        // Block on channel until watcher signals pending/ was created
-        let timeout = Duration::from_secs(5);
-        ready_rx
-            .recv_timeout(timeout)
-            .expect("Daemon did not create pending directory in time");
-
-        // Watcher dropped here - no longer needed
-        drop(watcher);
+        // Spawn daemon and wait for pending/ directory to be created
+        let process = wait_for_directory_creation(root, &pending_dir, || {
+            cmd.spawn().expect("Failed to spawn agent_pool process")
+        });
 
         Self {
             root: root.to_path_buf(),
