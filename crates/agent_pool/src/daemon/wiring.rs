@@ -180,7 +180,17 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
         let _cleanup = SocketCleanup(socket_path.clone());
         let _watcher = fs_watcher;
 
-        // Create pending_dir AFTER watcher is running.
+        // Sync with the FS watcher to ensure it's delivering events.
+        // On Linux with inotify, there's a race where the watcher may not be fully
+        // ready to catch events in newly-created subdirectories. We write a canary
+        // file and wait until we see the FS event for it before proceeding.
+        let canary_path = agents_dir.join(".watcher-ready");
+        if let Err(e) = sync_with_watcher(&canary_path, &io_rx) {
+            let _ = ready_tx.send(Err(e));
+            return Err(io::Error::other("watcher sync failed"));
+        }
+
+        // Create pending_dir AFTER watcher sync completes.
         // Clients use pending_dir existence as the "ready" signal.
         if let Err(e) = fs::create_dir_all(&pending_dir) {
             let _ = ready_tx.send(Err(e));
@@ -257,7 +267,13 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     let listener = create_socket_listener(&socket_path)?;
     let _fs_watcher = create_fs_watcher(&root, io_tx.clone())?;
 
-    // Create pending_dir AFTER watcher is running.
+    // Sync with the FS watcher to ensure it's delivering events.
+    // On Linux with inotify, there's a race where the watcher may not be fully
+    // ready to catch events in newly-created subdirectories.
+    let canary_path = agents_dir.join(".watcher-ready");
+    sync_with_watcher(&canary_path, &io_rx)?;
+
+    // Create pending_dir AFTER watcher sync completes.
     // Clients use pending_dir existence as the "ready" signal.
     let pending_dir = root.join(PENDING_DIR);
     fs::create_dir_all(&pending_dir)?;
@@ -926,6 +942,61 @@ fn create_fs_watcher(root: &Path, io_tx: mpsc::Sender<IoEvent>) -> io::Result<Re
         .map_err(io::Error::other)?;
 
     Ok(watcher)
+}
+
+/// Synchronize with the filesystem watcher by writing a canary file and waiting
+/// for the corresponding event.
+///
+/// On Linux with inotify, there's a race where newly-created directories may not
+/// be watched immediately. This function ensures the watcher is "warmed up" by:
+/// 1. Writing a canary file
+/// 2. Waiting until we receive an FS event for it
+/// 3. Deleting the canary
+///
+/// This must be called from the thread that owns `io_rx`.
+fn sync_with_watcher(canary_path: &Path, io_rx: &mpsc::Receiver<IoEvent>) -> io::Result<()> {
+    // Write the canary file
+    fs::write(canary_path, "sync")?;
+    debug!(canary = %canary_path.display(), "waiting for watcher sync");
+
+    // Wait for an FS event that mentions the canary path
+    let timeout = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+
+    loop {
+        match io_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(IoEvent::Fs(event)) => {
+                if event.paths.iter().any(|p| p == canary_path) {
+                    debug!("watcher sync complete");
+                    // Clean up canary
+                    let _ = fs::remove_file(canary_path);
+                    return Ok(());
+                }
+                // Not our canary, keep waiting
+            }
+            Ok(_) => {
+                // Non-FS event (socket, effect, shutdown) - shouldn't happen at startup
+                // but ignore and keep waiting
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() > timeout {
+                    let _ = fs::remove_file(canary_path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "watcher sync timed out - no FS event received",
+                    ));
+                }
+                // Keep waiting
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = fs::remove_file(canary_path);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "watcher channel disconnected",
+                ));
+            }
+        }
+    }
 }
 
 struct SocketCleanup(PathBuf);
