@@ -53,8 +53,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run tests
-        # Use single thread to help debug timing issues
-        run: cargo test --workspace -- --test-threads=1
+        run: cargo test --workspace -- --nocapture
 
   demos:
     runs-on: ubuntu-latest
