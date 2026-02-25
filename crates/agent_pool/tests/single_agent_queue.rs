@@ -20,6 +20,7 @@ use std::time::Duration;
 const TEST_DIR: &str = "single_agent_queue";
 
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]

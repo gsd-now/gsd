@@ -27,6 +27,7 @@ fn wait_all_ready(agents: &mut [&mut TestAgent]) {
 const TEST_DIR: &str = "many_agents";
 
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]

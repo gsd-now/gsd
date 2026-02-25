@@ -27,6 +27,7 @@ const TEST_DIR: &str = "integration";
 
 /// Test basic submission flow.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -65,6 +66,7 @@ fn basic_submit(#[case] data_source: DataSource, #[case] notify_method: NotifyMe
 
 /// Test multiple tasks dispatched to a single agent.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -111,6 +113,7 @@ fn single_agent_multiple_tasks(
 
 /// Test multiple agents handling tasks in parallel.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -163,6 +166,7 @@ fn multiple_agents_parallel(#[case] data_source: DataSource, #[case] notify_meth
 
 /// Test agent deregistration.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -219,6 +223,7 @@ fn agent_deregistration(#[case] data_source: DataSource, #[case] notify_method: 
 
 /// Test tasks submitted before any agents register (queued).
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -274,6 +279,7 @@ fn tasks_queued_before_agents(
 
 /// Test rapid burst of task submissions.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -318,6 +324,7 @@ fn rapid_task_burst(#[case] data_source: DataSource, #[case] notify_method: Noti
 
 /// Test that tasks with identical content are handled correctly.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -357,6 +364,7 @@ fn identical_task_content(#[case] data_source: DataSource, #[case] notify_method
 
 /// Test agent joining while tasks are being processed.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
@@ -416,6 +424,7 @@ fn agent_joins_mid_processing(
 
 /// Test that responses are written to the correct submitters.
 #[rstest]
+#[timeout(std::time::Duration::from_secs(20))]
 #[case(DataSource::Inline, NotifyMethod::Socket)]
 #[case(DataSource::Inline, NotifyMethod::File)]
 #[case(DataSource::Inline, NotifyMethod::Raw)]
