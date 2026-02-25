@@ -593,6 +593,9 @@ fn handle_agent_dir(
         // Directory deleted - clean up tracking
         kicked_paths.remove(agent_path);
         if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
+            // Remove from agent_map immediately to prevent races where core
+            // assigns a task to an agent whose directory is already gone.
+            agent_map.remove(agent_id);
             let _ = events_tx.send(Event::AgentDeregistered { agent_id });
         }
     } else if agent_path.is_dir()
@@ -1211,6 +1214,8 @@ mod tests {
 
         let event = events_rx.try_recv().unwrap();
         assert!(matches!(event, Event::AgentDeregistered { agent_id } if agent_id == AgentId(0)));
+        // Agent should be removed from agent_map immediately to prevent race conditions
+        assert!(agent_map.get_id_by_path(&agent_path).is_none());
     }
 
     #[test]
