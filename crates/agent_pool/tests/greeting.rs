@@ -80,4 +80,6 @@ fn greeting_casual_and_formal(
 
     cleanup_test_dir(&test_dir);
     eprintln!("[{test_dir}] TEST: cleanup complete, dropping pool...");
+
+    // _pool drops here - calls stop on the daemon
 }

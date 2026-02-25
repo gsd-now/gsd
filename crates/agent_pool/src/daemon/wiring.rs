@@ -324,6 +324,9 @@ fn run_daemon(
     // Track kicked agent paths to reject re-registration attempts
     let mut kicked_paths: HashSet<PathBuf> = HashSet::new();
 
+    // Track submission UUIDs we've already seen to deduplicate FS events
+    let mut seen_submissions: HashSet<String> = HashSet::new();
+
     // Spawn event loop in a separate thread - sends IoEvent::Effect to unified channel
     let event_loop_handle = thread::spawn(move || run_event_loop(events_rx, io_tx));
 
@@ -346,6 +349,7 @@ fn run_daemon(
         &mut task_id_allocator,
         &mut pending_responses,
         &mut kicked_paths,
+        &mut seen_submissions,
         agents_dir,
         pending_dir,
         io_config,
@@ -422,6 +426,7 @@ fn io_loop(
     task_id_allocator: &mut TaskIdAllocator,
     pending_responses: &mut HashSet<AgentId>,
     kicked_paths: &mut HashSet<PathBuf>,
+    seen_submissions: &mut HashSet<String>,
     agents_dir: &Path,
     pending_dir: &Path,
     io_config: &IoConfig,
@@ -444,6 +449,7 @@ fn io_loop(
                     task_id_allocator,
                     pending_responses,
                     kicked_paths,
+                    seen_submissions,
                     agents_dir,
                     pending_dir,
                     io_config,
@@ -514,6 +520,7 @@ fn handle_fs_event(
     task_id_allocator: &mut TaskIdAllocator,
     pending_responses: &mut HashSet<AgentId>,
     kicked_paths: &mut HashSet<PathBuf>,
+    seen_submissions: &mut HashSet<String>,
     agents_dir: &Path,
     pending_dir: &Path,
     io_config: &IoConfig,
@@ -564,6 +571,7 @@ fn handle_fs_event(
                     events_tx,
                     external_task_map,
                     task_id_allocator,
+                    seen_submissions,
                     io_config,
                 );
             }
@@ -657,16 +665,16 @@ fn register_submission(
     events_tx: &mpsc::Sender<Event>,
     external_task_map: &mut ExternalTaskMap,
     task_id_allocator: &mut TaskIdAllocator,
+    seen_submissions: &mut HashSet<String>,
     io_config: &IoConfig,
 ) {
-    let request_path = pending_dir.join(format!("{id}{REQUEST_SUFFIX}"));
-
-    // Duplicate FS event - skip silently.
-    // path_to_id entries are kept even after task completion to catch late events.
-    if external_task_map.get_id_by_path(&request_path).is_some() {
-        trace!(id = %id, "SubmissionRequest: duplicate event, skipping");
+    // Deduplicate by UUID - once we've seen a submission ID, ignore later events
+    if !seen_submissions.insert(id.to_string()) {
+        trace!(id = %id, "SubmissionRequest: already seen, skipping");
         return;
     }
+
+    let request_path = pending_dir.join(format!("{id}{REQUEST_SUFFIX}"));
 
     // Read and resolve payload
     let raw = match fs::read_to_string(&request_path) {
@@ -1450,6 +1458,7 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel();
         let mut external_task_map = ExternalTaskMap::new();
         let mut task_id_allocator = TaskIdAllocator::new();
+        let mut seen_submissions = HashSet::new();
         let io_config = IoConfig::default();
 
         register_submission(
@@ -1458,6 +1467,7 @@ mod tests {
             &events_tx,
             &mut external_task_map,
             &mut task_id_allocator,
+            &mut seen_submissions,
             &io_config,
         );
 
@@ -1468,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn register_submission_ignores_already_registered() {
+    fn register_submission_ignores_already_seen() {
         let tmp = TempDir::new().unwrap();
         let pending_dir = tmp.path();
         let id = "task-1";
@@ -1481,6 +1491,7 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel();
         let mut external_task_map = ExternalTaskMap::new();
         let mut task_id_allocator = TaskIdAllocator::new();
+        let mut seen_submissions = HashSet::new();
         let io_config = IoConfig::default();
 
         // Register once
@@ -1490,17 +1501,19 @@ mod tests {
             &events_tx,
             &mut external_task_map,
             &mut task_id_allocator,
+            &mut seen_submissions,
             &io_config,
         );
         let _ = events_rx.try_recv().unwrap();
 
-        // Second call should not emit event
+        // Second call should not emit event (already in seen_submissions)
         register_submission(
             id,
             pending_dir,
             &events_tx,
             &mut external_task_map,
             &mut task_id_allocator,
+            &mut seen_submissions,
             &io_config,
         );
         assert!(events_rx.try_recv().is_err());

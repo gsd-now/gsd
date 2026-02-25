@@ -223,14 +223,6 @@ impl<Id: TransportId> TransportMap<Id> {
         Some(entry)
     }
 
-    /// Remove an entry but keep the `path_to_id` mapping.
-    ///
-    /// Used for submissions where we want to prevent duplicate processing
-    /// of the same UUID even after the task completes.
-    pub fn remove_keep_path(&mut self, id: Id) -> Option<(Transport, Id::Data)> {
-        self.entries.remove(&id)
-    }
-
     /// Write content to a file in the transport for the given ID.
     pub fn write_to(&self, id: Id, filename: &str, content: &str) -> io::Result<()> {
         let transport = self
@@ -273,13 +265,10 @@ impl ExternalTaskMap {
     /// Used for both success and failure - the response content determines the outcome.
     /// For directory transports, writes to response.json.
     /// For socket transports, sends length-prefixed response over the socket.
-    ///
-    /// Note: For directory transports, the `path_to_id` mapping is kept to prevent
-    /// duplicate processing if late filesystem events arrive for the same UUID.
     pub fn finish(&mut self, id: ExternalTaskId, response: &str) -> io::Result<ExternalTaskData> {
         debug!(external_task_id = id.0, "finish: completing task");
         let (mut transport, data) = self
-            .remove_keep_path(id)
+            .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "task not found"))?;
 
         match &mut transport {
