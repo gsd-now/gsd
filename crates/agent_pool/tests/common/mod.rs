@@ -8,7 +8,7 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{PENDING_DIR, Response};
+use agent_pool::{PENDING_DIR, RESPONSE_FILE, Response, TASK_FILE};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -370,7 +370,7 @@ pub fn submit_via_cli(root: &Path, payload_json: &str, notify: &str) -> io::Resu
     serde_json::from_str(&stdout).map_err(io::Error::other)
 }
 
-/// Submission mode for testing different CLI code paths.
+/// Submission mode for testing different code paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitMode {
     /// `--data` with `--notify socket`
@@ -381,10 +381,17 @@ pub enum SubmitMode {
     FileSocket,
     /// `--file` with `--notify file`
     FileFile,
+    /// Raw file protocol: write directly to `pending/<task_id>/task.json`
+    RawFile,
 }
 
-/// Submit a task using the specified mode (all modes use CLI).
+/// Submit a task using the specified mode.
 pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io::Result<Response> {
+    // RawFile mode bypasses CLI entirely
+    if mode == SubmitMode::RawFile {
+        return submit_raw_file(root, payload_json);
+    }
+
     let bin = find_agent_pool_binary();
     let mut cmd = Command::new(&bin);
 
@@ -415,6 +422,7 @@ pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io
             cmd.arg("--notify").arg("file");
             _temp_file = temp; // Keep alive until command completes
         }
+        SubmitMode::RawFile => unreachable!("handled above"),
     }
 
     let output = cmd.output()?;
@@ -428,6 +436,57 @@ pub fn submit_with_mode(root: &Path, payload_json: &str, mode: SubmitMode) -> io
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).map_err(io::Error::other)
+}
+
+/// Submit a task using raw file protocol (direct write to pending/).
+fn submit_raw_file(root: &Path, payload_json: &str) -> io::Result<Response> {
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let submission_dir = root.join(PENDING_DIR).join(&task_id);
+    fs::create_dir_all(&submission_dir)?;
+
+    // Wrap in Inline payload envelope (daemon expects this format)
+    let payload = serde_json::json!({
+        "kind": "Inline",
+        "content": payload_json
+    });
+    fs::write(submission_dir.join(TASK_FILE), payload.to_string())?;
+
+    // Wait for response using notify (no polling)
+    let response_file = submission_dir.join(RESPONSE_FILE);
+    let (tx, rx) = mpsc::sync_channel::<()>(0);
+    let watch_target = response_file.clone();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                for path in &event.paths {
+                    if path == &watch_target {
+                        let _ = tx.send(());
+                        return;
+                    }
+                }
+            }
+        },
+        notify::Config::default(),
+    )
+    .map_err(|e| io::Error::other(format!("Failed to create watcher: {e}")))?;
+
+    watcher
+        .watch(&submission_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| io::Error::other(format!("Failed to watch: {e}")))?;
+
+    // Check if response already exists (race condition)
+    if response_file.exists() {
+        let content = fs::read_to_string(&response_file)?;
+        return serde_json::from_str(&content).map_err(io::Error::other);
+    }
+
+    // Wait for response with timeout
+    rx.recv_timeout(Duration::from_secs(30))
+        .map_err(|_| io::Error::other("Timeout waiting for response"))?;
+
+    let content = fs::read_to_string(&response_file)?;
+    serde_json::from_str(&content).map_err(io::Error::other)
 }
 
 /// Configuration for the daemon when starting via CLI.
