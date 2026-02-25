@@ -207,6 +207,13 @@ Ensure tests clean up properly even on panic. Use `scopeguard` or similar.
 | Task cancellation | Medium | Client withdraws task before completion |
 | Large payloads | Low | Tasks with very large data |
 
+### Task 7: Move Tests to Separate Crate
+
+Move integration tests into their own crate (e.g., `agent_pool_tests`) so they can only use the public API. This ensures:
+- Tests exercise the same interface that external users would use
+- No accidental coupling to internal implementation details
+- Clear separation between unit tests (in `agent_pool`) and integration tests
+
 ---
 
 ## Implementation Order
@@ -217,6 +224,7 @@ Ensure tests clean up properly even on panic. Use `scopeguard` or similar.
 4. **Task 6: Missing Scenarios** - Coverage
 5. **Task 3: Test Output** - Debugging
 6. **Task 2: CLI Improvements** - UX
+7. **Task 7: Separate Test Crate** - API hygiene
 
 ---
 
