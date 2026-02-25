@@ -8,7 +8,7 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{PENDING_DIR, RESPONSE_FILE, Response, TASK_FILE};
+use agent_pool::{PENDING_DIR, Response};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -496,57 +496,24 @@ pub fn submit_with_mode(
     serde_json::from_str(&stdout).map_err(io::Error::other)
 }
 
-/// Submit a task using raw file protocol (direct write to pending/).
+/// Submit a task using raw file protocol (direct call to `submit_file` library function).
 ///
-/// Uses same polling approach as `submit_file.rs` - the production file transport.
+/// This bypasses the CLI and calls the production `submit_file` function directly.
 fn submit_raw(root: &Path, payload_json: &str, data_source: DataSource) -> io::Result<Response> {
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let submission_dir = root.join(PENDING_DIR).join(&task_id);
-    fs::create_dir_all(&submission_dir)?;
-
-    // Build and write the payload
-    // NOTE: For FileReference, write content.json OUTSIDE the submission dir to avoid
-    // triggering extra FS events that could cause re-registration issues.
-    let _temp_file; // Keep temp file alive until function returns
-    let payload_str = match data_source {
-        DataSource::Inline => serde_json::json!({
-            "kind": "Inline",
-            "content": payload_json
-        })
-        .to_string(),
+    // Build the payload, keeping any temp file alive until submit completes
+    let _temp_file;
+    let payload = match data_source {
+        DataSource::Inline => agent_pool::Payload::inline(payload_json),
         DataSource::FileReference => {
             let temp = tempfile::NamedTempFile::new()?;
             fs::write(temp.path(), payload_json)?;
-            let json = serde_json::json!({
-                "kind": "FileReference",
-                "path": temp.path()
-            })
-            .to_string();
+            let payload = agent_pool::Payload::file_ref(temp.path());
             _temp_file = temp; // Keep alive
-            json
+            payload
         }
     };
 
-    fs::write(submission_dir.join(TASK_FILE), payload_str)?;
-
-    // Poll for response (same as submit_file.rs)
-    let response_file = submission_dir.join(RESPONSE_FILE);
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(30);
-    let poll_interval = Duration::from_millis(100);
-
-    loop {
-        if response_file.exists() {
-            let content = fs::read_to_string(&response_file)?;
-            return serde_json::from_str(&content).map_err(io::Error::other);
-        }
-
-        if start.elapsed() > timeout {
-            return Err(io::Error::other("Timeout waiting for response"));
-        }
-
-        thread::sleep(poll_interval);
-    }
+    agent_pool::submit_file(root, &payload)
 }
 
 /// Configuration for the daemon when starting via CLI.
