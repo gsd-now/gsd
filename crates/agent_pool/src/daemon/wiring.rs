@@ -420,7 +420,7 @@ fn io_loop(
     while let Ok(io_event) = io_rx.recv() {
         match io_event {
             IoEvent::Fs(event) => {
-                trace!(kind = ?event.kind, "fs event");
+                debug!(kind = ?event.kind, paths = ?event.paths, "io_loop: fs event");
                 handle_fs_event(
                     &event,
                     events_tx,
@@ -653,19 +653,34 @@ fn register_pending_task(
     let response_path = submission_dir.join(crate::constants::RESPONSE_FILE);
 
     // Already registered?
-    if external_task_map.get_id_by_path(submission_dir).is_some() {
+    if let Some(existing_id) = external_task_map.get_id_by_path(submission_dir) {
+        debug!(
+            path = %submission_dir.display(),
+            existing_id = existing_id.0,
+            "skipping: already registered"
+        );
         return;
     }
 
     // Already completed? (response.json exists)
     if response_path.exists() {
+        debug!(
+            path = %submission_dir.display(),
+            "skipping: response.json exists (already completed)"
+        );
         return;
     }
 
     // Read and resolve payload
     let raw = match fs::read_to_string(&task_path) {
         Ok(c) => c,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            debug!(
+                path = %task_path.display(),
+                "skipping: task.json not found"
+            );
+            return;
+        }
         Err(e) => {
             warn!(path = %task_path.display(), error = %e, "failed to read pending task");
             return;

@@ -266,15 +266,22 @@ impl ExternalTaskMap {
     /// For directory transports, writes to response.json.
     /// For socket transports, sends length-prefixed response over the socket.
     pub fn finish(&mut self, id: ExternalTaskId, response: &str) -> io::Result<ExternalTaskData> {
+        debug!(external_task_id = id.0, "finish: removing from path_to_id");
         let (mut transport, data) = self
             .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "task not found"))?;
 
         match &mut transport {
             Transport::Directory(path) => {
+                debug!(
+                    external_task_id = id.0,
+                    path = %path.display(),
+                    "finish: writing response.json"
+                );
                 fs::write(path.join(RESPONSE_FILE), response)?;
             }
             Transport::Socket(stream) => {
+                debug!(external_task_id = id.0, "finish: sending socket response");
                 writeln!(stream, "{}", response.len())?;
                 stream.write_all(response.as_bytes())?;
                 stream.flush()?;
