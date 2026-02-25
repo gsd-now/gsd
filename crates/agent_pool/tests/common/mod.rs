@@ -505,6 +505,9 @@ fn submit_raw(root: &Path, payload_json: &str, data_source: DataSource) -> io::R
     fs::create_dir_all(&submission_dir)?;
 
     // Build and write the payload
+    // NOTE: For FileReference, write content.json OUTSIDE the submission dir to avoid
+    // triggering extra FS events that could cause re-registration issues.
+    let _temp_file; // Keep temp file alive until function returns
     let payload_str = match data_source {
         DataSource::Inline => serde_json::json!({
             "kind": "Inline",
@@ -512,13 +515,15 @@ fn submit_raw(root: &Path, payload_json: &str, data_source: DataSource) -> io::R
         })
         .to_string(),
         DataSource::FileReference => {
-            let content_file = submission_dir.join("content.json");
-            fs::write(&content_file, payload_json)?;
-            serde_json::json!({
+            let temp = tempfile::NamedTempFile::new()?;
+            fs::write(temp.path(), payload_json)?;
+            let json = serde_json::json!({
                 "kind": "FileReference",
-                "path": content_file
+                "path": temp.path()
             })
-            .to_string()
+            .to_string();
+            _temp_file = temp; // Keep alive
+            json
         }
     };
 
