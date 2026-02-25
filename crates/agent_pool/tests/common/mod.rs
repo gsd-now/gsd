@@ -452,17 +452,13 @@ fn submit_raw(root: &Path, payload_json: &str, data_source: DataSource) -> io::R
     // Set up watcher BEFORE writing task.json to avoid race condition
     let response_file = submission_dir.join(RESPONSE_FILE);
     let (tx, rx) = mpsc::sync_channel::<()>(1); // buffered to avoid blocking sender
-    let watch_target = response_file.clone();
 
+    // Check for response file on ANY event in the directory (more robust than path matching)
+    let response_file_check = response_file.clone();
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                for path in &event.paths {
-                    if path == &watch_target {
-                        let _ = tx.send(());
-                        return;
-                    }
-                }
+            if res.is_ok() && response_file_check.exists() {
+                let _ = tx.send(());
             }
         },
         notify::Config::default(),
