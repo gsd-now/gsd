@@ -288,7 +288,11 @@ impl ExternalTaskMap {
                     path = %response_path.display(),
                     "finish: writing response"
                 );
-                fs::write(response_path, response)?;
+                // Write atomically: write to temp file, then rename.
+                // This prevents readers from seeing partial writes.
+                let temp_path = response_path.with_extension("json.tmp");
+                fs::write(&temp_path, response)?;
+                fs::rename(&temp_path, &response_path)?;
             }
             Transport::Socket(stream) => {
                 debug!(external_task_id = id.0, "finish: sending socket response");
