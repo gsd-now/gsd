@@ -702,13 +702,13 @@ fn register_submission(
 /// agent directories from a previous run.
 fn is_kicked_agent(agent_path: &Path) -> bool {
     let task_path = agent_path.join(TASK_FILE);
-    if let Ok(content) = fs::read_to_string(&task_path) {
-        // Quick check for "Kicked" in the JSON
-        if content.contains("\"kind\":\"Kicked\"") || content.contains("\"kind\": \"Kicked\"") {
-            return true;
-        }
-    }
-    false
+    let Ok(content) = fs::read_to_string(&task_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    json.get("kind").is_some_and(|k| k == "Kicked")
 }
 
 // =============================================================================
