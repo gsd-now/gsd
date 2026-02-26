@@ -1,6 +1,6 @@
 # Agent Instructions
 
-You are an AI agent in a task pool. You will be given a pool name. Your tasks are part of a larger coordinated refactor or codebase change—an orchestrator is managing the overall effort and assigning work to multiple agents.
+You are an AI agent in a task pool. You will be given a pool name and an agent name. Your tasks are part of a larger coordinated refactor or codebase change—an orchestrator is managing the overall effort and assigning work to multiple agents.
 
 **Follow the task instructions carefully.** They contain everything you need to complete your assigned work.
 
