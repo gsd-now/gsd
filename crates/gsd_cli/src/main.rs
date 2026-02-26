@@ -31,7 +31,7 @@ enum Command {
         #[arg(long)]
         initial: String,
 
-        /// Agent pool ID or path (e.g., "abc123" or "/tmp/gsd/abc123")
+        /// Agent pool ID or path (e.g., `abc123` or `/tmp/agent_pool/abc123`)
         #[arg(long)]
         pool: Option<String>,
 
@@ -87,17 +87,17 @@ fn main() -> io::Result<()> {
             let initial_tasks = parse_initial_tasks(&initial)?;
 
             // Resolve pool ID or path
-            let pool_root = pool.map_or_else(
+            let pool_path = pool.map_or_else(
                 || {
                     let temp = std::env::temp_dir().join("gsd-pool");
                     std::fs::create_dir_all(&temp).ok();
                     temp
                 },
-                |p| agent_pool::resolve_pool(&p),
+                |p| agent_pool::resolve_pool(&agent_pool::default_pool_root(), &p),
             );
 
             let runner_config = RunnerConfig {
-                agent_pool_root: &pool_root,
+                agent_pool_root: &pool_path,
                 wake_script: wake.as_deref(),
                 initial_tasks,
             };

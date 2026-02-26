@@ -60,7 +60,9 @@ pub use constants::{
 };
 pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_with_config};
 pub use lock::is_daemon_running;
-pub use pool::{PoolInfo, cleanup_stopped, generate_id, id_to_path, list_pools, resolve_pool};
+pub use pool::{
+    PoolInfo, cleanup_stopped, default_pool_root, generate_id, id_to_path, list_pools, resolve_pool,
+};
 pub use response::{NotProcessedReason, Response, ResponseKind};
 pub use transport::Transport;
 pub use types::{AgentName, PoolId};

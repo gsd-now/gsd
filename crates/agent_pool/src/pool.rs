@@ -1,25 +1,26 @@
 //! Pool ID management.
 //!
-//! Pools live in `<temp>/gsd/<id>/` with short, memorable IDs.
-//! On Unix: `/tmp/gsd/<id>/`
-//! On Windows: `%TEMP%\gsd\<id>\`
+//! Pools live in `<pool_root>/<id>/` with short, memorable IDs.
+//! Default pool root on Unix: `/tmp/agent_pool/`
+//! Default pool root on Windows: `%TEMP%\agent_pool\`
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Get the base directory for all pools.
+/// Get the default base directory for all pools.
 ///
 /// Uses /tmp explicitly on Unix to ensure atomic writes (which also use /tmp)
 /// are on the same filesystem.
-fn pools_base() -> PathBuf {
+#[must_use]
+pub fn default_pool_root() -> PathBuf {
     #[cfg(unix)]
     {
-        PathBuf::from("/tmp/gsd")
+        PathBuf::from("/tmp/agent_pool")
     }
     #[cfg(not(unix))]
     {
-        std::env::temp_dir().join("gsd")
+        std::env::temp_dir().join("agent_pool")
     }
 }
 
@@ -58,10 +59,10 @@ pub fn generate_id() -> String {
     id
 }
 
-/// Get the path for a pool ID.
+/// Get the path for a pool ID within the given pool root.
 #[must_use]
-pub fn id_to_path(id: &str) -> PathBuf {
-    pools_base().join(id)
+pub fn id_to_path(pool_root: &Path, id: &str) -> PathBuf {
+    pool_root.join(id)
 }
 
 /// Information about a pool.
@@ -75,21 +76,19 @@ pub struct PoolInfo {
     pub running: bool,
 }
 
-/// List all pools in the pools directory.
+/// List all pools in the given pool root directory.
 ///
 /// # Errors
 ///
 /// Returns an error if the pools directory cannot be read.
-pub fn list_pools() -> io::Result<Vec<PoolInfo>> {
-    let base = pools_base();
-
-    if !base.exists() {
+pub fn list_pools(pool_root: &Path) -> io::Result<Vec<PoolInfo>> {
+    if !pool_root.exists() {
         return Ok(Vec::new());
     }
 
     let mut pools = Vec::new();
 
-    for entry in fs::read_dir(&base)? {
+    for entry in fs::read_dir(pool_root)? {
         let entry = entry?;
         let path = entry.path();
 
@@ -148,13 +147,13 @@ fn is_pool_running(_pool_path: &std::path::Path) -> bool {
 /// Resolve a pool reference (ID or path) to a full path.
 ///
 /// If the input looks like a path (contains `/`), returns it as-is.
-/// Otherwise, treats it as an ID and converts to `/tmp/gsd/<id>`.
+/// Otherwise, treats it as an ID and converts to `<pool_root>/<id>`.
 #[must_use]
-pub fn resolve_pool(reference: &str) -> PathBuf {
+pub fn resolve_pool(pool_root: &Path, reference: &str) -> PathBuf {
     if reference.contains('/') {
         PathBuf::from(reference)
     } else {
-        id_to_path(reference)
+        id_to_path(pool_root, reference)
     }
 }
 
@@ -163,8 +162,8 @@ pub fn resolve_pool(reference: &str) -> PathBuf {
 /// # Errors
 ///
 /// Returns an error if cleanup fails.
-pub fn cleanup_stopped() -> io::Result<usize> {
-    let pools = list_pools()?;
+pub fn cleanup_stopped(pool_root: &Path) -> io::Result<usize> {
+    let pools = list_pools(pool_root)?;
     let mut cleaned = 0;
 
     for pool in pools {

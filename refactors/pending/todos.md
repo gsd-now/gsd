@@ -785,13 +785,12 @@ Should use a watcher on the parent directory (`/tmp/gsd/`) instead of spinning. 
 
 ## Rename Pool Directory from gsd to agent_pool
 
-**Status: TODO**
+**Status: COMPLETE**
 
-The default pool directory is `/tmp/gsd/<pool_id>/`. This should be `/tmp/agent_pool/<pool_id>/` to match the crate name.
+The default pool directory is now `/tmp/agent_pool/<pool_id>/`. The `--pool-root` CLI flag allows overriding this.
 
-Files to update:
-- `crates/agent_pool/src/pool.rs` - `pool_root()` function
-- `crates/agent_pool/src/transport.rs` - comment references
-- `crates/agent_pool/LOW_LEVEL_PROTOCOL.md` - documentation
-- `crates/agent_pool/tests/common/mod.rs` - comment
-- Any scripts that reference `/tmp/gsd/`
+Changes made:
+- Added `default_pool_root()` function in `pool.rs`
+- Added `--pool-root` global CLI option
+- Updated all functions to accept pool root as parameter
+- Updated all doc references from `/tmp/gsd/` to `/tmp/agent_pool/`

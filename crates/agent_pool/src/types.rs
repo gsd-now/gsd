@@ -98,7 +98,7 @@ define_string_id! {
     /// A pool identifier.
     ///
     /// Pool IDs are short, memorable strings (e.g., "abc12345") that resolve
-    /// to filesystem paths like `/tmp/gsd/<id>/`.
+    /// to filesystem paths like `/tmp/agent_pool/<id>/`.
     ///
     /// This newtype distinguishes pool IDs from agent IDs and other strings.
     pub struct PoolId;

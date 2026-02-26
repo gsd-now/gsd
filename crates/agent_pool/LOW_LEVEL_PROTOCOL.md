@@ -4,10 +4,10 @@
 
 ## Directory Structure
 
-A pool at `/tmp/gsd/<POOL_ID>/` has:
+A pool at `/tmp/agent_pool/<POOL_ID>/` has:
 
 ```
-/tmp/gsd/<POOL_ID>/
+/tmp/agent_pool/<POOL_ID>/
 ├── daemon.lock          # PID file (daemon running indicator)
 ├── daemon.sock          # Unix socket for IPC (socket protocol)
 ├── status               # Empty file, signals daemon is ready
@@ -140,7 +140,7 @@ Agent removes its directory, or daemon writes `Kicked` message and removes direc
 
 ### Atomic Writes
 
-All file writes should be atomic (write to temp file, then rename) to prevent partial reads. The daemon uses `/tmp/gsd-*.tmp` for atomic writes.
+All file writes should be atomic (write to temp file, then rename) to prevent partial reads. The daemon uses `/tmp/agent_pool-*.tmp` for atomic writes.
 
 ### Filesystem Watching
 

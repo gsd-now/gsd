@@ -6,9 +6,9 @@
 
 use agent_pool::{
     AGENTS_DIR, AgentEvent, DaemonConfig, Payload, RESPONSE_FILE, STATUS_FILE, TASK_FILE,
-    Transport, cleanup_stopped, create_watcher, generate_id, id_to_path, is_daemon_running,
-    list_pools, resolve_pool, run_with_config, stop, submit, submit_file, submit_file_with_timeout,
-    verify_watcher_sync, wait_for_task,
+    Transport, cleanup_stopped, create_watcher, default_pool_root, generate_id, id_to_path,
+    is_daemon_running, list_pools, resolve_pool, run_with_config, stop, submit, submit_file,
+    submit_file_with_timeout, verify_watcher_sync, wait_for_task,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -53,6 +53,11 @@ enum NotifyMethod {
 #[command(name = "agent_pool")]
 #[command(about = "Agent pool for managing workers with file-based task dispatch")]
 struct Cli {
+    /// Base directory for pools. Pool IDs resolve to `<pool-root>/<id>/`.
+    /// Defaults to `/tmp/agent_pool` on Unix.
+    #[arg(long, global = true)]
+    pool_root: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -62,7 +67,7 @@ enum Command {
     /// Start the agent pool server
     Start {
         /// Pool ID or path. If omitted, generates a new ID.
-        /// IDs resolve to /tmp/gsd/<id>/
+        /// IDs resolve to `<pool-root>/<id>/` (default: `/tmp/agent_pool/<id>/`)
         #[arg(long)]
         pool: Option<String>,
         /// Log level
@@ -239,6 +244,7 @@ fn wait_and_read_task(
 #[allow(clippy::too_many_lines)]
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let pool_root = cli.pool_root.unwrap_or_else(default_pool_root);
 
     match cli.command {
         Command::Start {
@@ -262,12 +268,12 @@ fn main() -> ExitCode {
                 }
                 Some(id) => {
                     // It's an ID
-                    (Some(id.clone()), id_to_path(&id))
+                    (Some(id.clone()), id_to_path(&pool_root, &id))
                 }
                 None => {
                     // Generate new ID
                     let id = generate_id();
-                    (Some(id.clone()), id_to_path(&id))
+                    (Some(id.clone()), id_to_path(&pool_root, &id))
                 }
             };
 
@@ -336,7 +342,7 @@ fn main() -> ExitCode {
             }
         }
         Command::Stop { pool } => {
-            let root = resolve_pool(&pool);
+            let root = resolve_pool(&pool_root, &pool);
             if let Err(e) = stop(&root) {
                 eprintln!("Failed to stop: {e}");
                 return ExitCode::FAILURE;
@@ -350,7 +356,7 @@ fn main() -> ExitCode {
             notify,
             timeout_secs,
         } => {
-            let root = resolve_pool(&pool);
+            let root = resolve_pool(&pool_root, &pool);
 
             // Build payload from --data (inline) or --file (file reference)
             let payload = match (data, file) {
@@ -388,7 +394,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::List => match list_pools() {
+        Command::List => match list_pools(&pool_root) {
             Ok(pools) => {
                 if pools.is_empty() {
                     eprintln!("No pools found");
@@ -405,7 +411,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::Cleanup => match cleanup_stopped() {
+        Command::Cleanup => match cleanup_stopped(&pool_root) {
             Ok(count) => {
                 eprintln!("Cleaned up {count} stopped pool(s)");
             }
@@ -422,17 +428,17 @@ fn main() -> ExitCode {
             };
 
             if let Some(id) = &pool {
-                let path = id_to_path(id);
+                let path = id_to_path(&pool_root, id);
                 output = output
                     .replace("<POOL_ID>", id)
                     .replace("abc12345", id)
-                    .replace("/tmp/gsd/<POOL_ID>", &path.display().to_string());
+                    .replace("/tmp/agent_pool/<POOL_ID>", &path.display().to_string());
             }
 
             print!("{output}");
         }
         Command::DeregisterAgent { pool, name } => {
-            let root = resolve_pool(&pool);
+            let root = resolve_pool(&pool_root, &pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
             if !agent_dir.exists() {
@@ -467,7 +473,7 @@ fn main() -> ExitCode {
         } => {
             init_tracing(log_level);
 
-            let root = resolve_pool(&pool);
+            let root = resolve_pool(&pool_root, &pool);
 
             // Wait for daemon to be ready (status file signals readiness after sync)
             let status_file = root.join(STATUS_FILE);
@@ -517,7 +523,7 @@ fn main() -> ExitCode {
             deregister,
         } => {
             init_tracing(log_level);
-            let root = resolve_pool(&pool);
+            let root = resolve_pool(&pool_root, &pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
             if !agent_dir.exists() {

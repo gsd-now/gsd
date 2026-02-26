@@ -8,7 +8,7 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{Response, id_to_path, wait_for_pool_ready};
+use agent_pool::{Response, default_pool_root, id_to_path, wait_for_pool_ready};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
@@ -39,9 +39,9 @@ pub fn mode_abbrev(data_source: DataSource, notify_method: NotifyMethod) -> &'st
 }
 
 /// Get the path for a pool name.
-/// Pools live in `/tmp/gsd/<pool>/`.
+/// Pools live in `/tmp/agent_pool/<pool>/`.
 pub fn pool_path(pool: &str) -> PathBuf {
-    id_to_path(pool)
+    id_to_path(&default_pool_root(), pool)
 }
 
 /// Clean up a pool by name.
