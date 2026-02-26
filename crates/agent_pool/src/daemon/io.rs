@@ -289,8 +289,8 @@ impl ExternalTaskMap {
                     "finish: writing response"
                 );
                 // Write atomically: write to temp file in /tmp, then rename.
-                // Using /tmp ensures the watcher doesn't see the temp file.
-                let temp_path = std::env::temp_dir().join(format!(
+                // Using /tmp explicitly ensures we're on the same filesystem.
+                let temp_path = PathBuf::from("/tmp").join(format!(
                     "gsd-atomic-{}-{}",
                     std::process::id(),
                     std::time::SystemTime::now()

@@ -62,9 +62,10 @@ impl Transport {
         match self {
             Transport::Directory(path) => {
                 // Write atomically: write to temp file in /tmp, then rename.
-                // Using /tmp ensures the watcher doesn't see the temp file.
+                // Using /tmp explicitly (not temp_dir()) ensures we're on the same
+                // filesystem as /tmp/gsd/... where pools live, enabling atomic renames.
                 let target = path.join(filename);
-                let temp = std::env::temp_dir().join(format!(
+                let temp = PathBuf::from("/tmp").join(format!(
                     "gsd-atomic-{}-{}",
                     std::process::id(),
                     std::time::SystemTime::now()

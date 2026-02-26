@@ -54,41 +54,10 @@ pub fn cleanup_pool(pool: &str) {
 
 /// Check if Unix socket IPC is available.
 ///
-/// The root parameter is ignored - we test in /tmp because pool paths
-/// can exceed macOS's 104-byte Unix socket path limit.
-#[cfg(unix)]
+/// Always returns true. Tests should be run outside the sandbox where IPC works.
+/// If running in a restricted environment, set `SKIP_IPC_TESTS=1`.
 pub fn is_ipc_available(_root: &std::path::Path) -> bool {
-    use std::os::unix::net::{UnixListener, UnixStream};
-
-    if std::env::var("SKIP_IPC_TESTS").is_ok() {
-        return false;
-    }
-
-    // Test in /tmp - pool paths can exceed the 104-byte Unix socket limit
-    let socket_path =
-        std::path::PathBuf::from("/tmp").join(format!("ipc_test_{}.sock", std::process::id()));
-    let _ = fs::remove_file(&socket_path);
-
-    let Ok(listener) = UnixListener::bind(&socket_path) else {
-        return false;
-    };
-
-    listener
-        .set_nonblocking(true)
-        .expect("Failed to set non-blocking");
-
-    let connect_result = UnixStream::connect(&socket_path);
-
-    drop(listener);
-    let _ = fs::remove_file(&socket_path);
-
-    connect_result.is_ok()
-}
-
-/// Check if Unix socket IPC is available (non-Unix stub).
-#[cfg(not(unix))]
-pub fn is_ipc_available(_root: &std::path::Path) -> bool {
-    false
+    std::env::var("SKIP_IPC_TESTS").is_err()
 }
 
 // =============================================================================

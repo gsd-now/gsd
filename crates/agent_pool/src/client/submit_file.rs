@@ -21,7 +21,7 @@ use crate::constants::{PENDING_DIR, REQUEST_SUFFIX, RESPONSE_SUFFIX};
 use crate::response::Response;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -84,7 +84,7 @@ pub fn submit_file_with_timeout(
     // Write request file with serialized payload (atomic: write temp in /tmp, rename)
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let temp_path = std::env::temp_dir().join(format!(
+    let temp_path = PathBuf::from("/tmp").join(format!(
         "gsd-atomic-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

@@ -9,8 +9,18 @@ use std::io;
 use std::path::PathBuf;
 
 /// Get the base directory for all pools.
+///
+/// Uses /tmp explicitly on Unix to ensure atomic writes (which also use /tmp)
+/// are on the same filesystem.
 fn pools_base() -> PathBuf {
-    std::env::temp_dir().join("gsd")
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp/gsd")
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join("gsd")
+    }
 }
 
 /// Length of generated pool IDs.
