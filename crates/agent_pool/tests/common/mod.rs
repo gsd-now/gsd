@@ -43,13 +43,14 @@ pub fn cleanup_pool(pool: &str) {
 #[cfg(unix)]
 pub fn is_ipc_available() -> bool {
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
 
     if std::env::var("SKIP_IPC_TESTS").is_ok() {
         return false;
     }
 
-    // Use /tmp for IPC test - it always exists
-    let socket_path = std::env::temp_dir().join(format!("ipc_test_{}.sock", std::process::id()));
+    // Use /tmp directly (not temp_dir() which may return /var/folders/... on macOS)
+    let socket_path = PathBuf::from("/tmp").join(format!("ipc_test_{}.sock", std::process::id()));
     let _ = fs::remove_file(&socket_path);
 
     let Ok(listener) = UnixListener::bind(&socket_path) else {
