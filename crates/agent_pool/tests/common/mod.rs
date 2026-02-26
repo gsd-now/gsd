@@ -8,12 +8,9 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{Response, STATUS_FILE};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use agent_pool::{Response, wait_for_pool_ready};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -48,6 +45,8 @@ pub fn cleanup_test_dir(test_file: &str) {
 /// Check if Unix socket IPC is available.
 #[cfg(unix)]
 pub fn is_ipc_available(test_dir: &Path) -> bool {
+    use std::os::unix::net::{UnixListener, UnixStream};
+
     if std::env::var("SKIP_IPC_TESTS").is_ok() {
         return false;
     }
@@ -552,88 +551,6 @@ impl From<agent_pool::DaemonConfig> for DaemonConfig {
     }
 }
 
-/// Wait for a file to be created using notify.
-///
-/// Sets up a watcher, runs the provided action, then blocks until the
-/// target file is seen via a watcher event. Uses a channel for synchronization.
-///
-/// If the file already exists before the action runs, returns immediately.
-/// If we miss the initial creation event, retries by touching a canary file
-/// in the same directory to verify the watcher is working.
-fn wait_for_file_creation<F, T>(watch_root: &Path, target_file: &Path, action: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(1);
-    let watch_target = target_file.to_path_buf();
-    let canary_path = target_file.with_extension("canary");
-
-    let canary_for_watcher = canary_path.clone();
-    let mut watcher = RecommendedWatcher::new(
-        move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                for path in &event.paths {
-                    // Accept either the target file or the canary
-                    if path == &watch_target || path == &canary_for_watcher {
-                        let _ = ready_tx.send(());
-                        return;
-                    }
-                }
-            }
-        },
-        notify::Config::default(),
-    )
-    .expect("Failed to create watcher");
-
-    watcher
-        .watch(watch_root, RecursiveMode::Recursive)
-        .expect("Failed to watch directory");
-
-    // Run the action (e.g., spawn the daemon)
-    let result = action();
-
-    // Check if file already exists (might have been created before watcher was ready)
-    if target_file.exists() {
-        let _ = fs::remove_file(&canary_path);
-        drop(watcher);
-        return result;
-    }
-
-    // Wait for watcher event with canary retry on timeout
-    let timeout = Duration::from_secs(5);
-    let retry_interval = Duration::from_millis(100);
-    let start = std::time::Instant::now();
-    let mut retry_count = 0;
-
-    loop {
-        match ready_rx.recv_timeout(retry_interval) {
-            Ok(()) => {
-                // Got an event - check if it's the target file
-                if target_file.exists() {
-                    break;
-                }
-                // It was a canary event but target still doesn't exist - keep waiting
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Timeout - write canary to verify watcher is working
-                retry_count += 1;
-                let _ = fs::write(&canary_path, format!("retry-{retry_count}"));
-                assert!(
-                    start.elapsed() <= timeout,
-                    "Status file was not created in time (watcher appears to be working via canary)"
-                );
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("Watcher channel disconnected");
-            }
-        }
-    }
-
-    let _ = fs::remove_file(&canary_path);
-    drop(watcher);
-    result
-}
-
 /// Wrapper that starts the daemon via CLI subprocess.
 ///
 /// Automatically shuts down the daemon when dropped.
@@ -659,11 +576,6 @@ impl AgentPoolHandle {
             bin.display()
         );
 
-        // Create the root directory if it doesn't exist (watcher needs it)
-        fs::create_dir_all(root).expect("Failed to create pool directory");
-
-        let status_file = root.join(STATUS_FILE);
-
         // Build command
         let mut cmd = Command::new(&bin);
         cmd.arg("start")
@@ -684,15 +596,11 @@ impl AgentPoolHandle {
             cmd.arg("--no-periodic-heartbeat");
         }
 
-        // Pipe stdout/stderr so we can forward them via eprintln!() (which IS captured by tests)
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        // Spawn daemon and wait for status file to be written (signals daemon is ready)
-        let mut process = wait_for_file_creation(root, &status_file, || {
-            cmd.spawn().expect("Failed to spawn agent_pool process")
-        });
+        let mut process = cmd.spawn().expect("Failed to spawn agent_pool process");
 
-        // Spawn threads to forward daemon output via eprintln!() so it respects --nocapture
+        // Set up output capture before waiting so we capture logs even if startup fails
         let mut output_threads = Vec::new();
         let test_name_stdout = test_name.to_string();
         let test_name_stderr = test_name.to_string();
@@ -714,6 +622,9 @@ impl AgentPoolHandle {
                 }
             }));
         }
+
+        wait_for_pool_ready(root, Duration::from_secs(10))
+            .expect("Agent pool did not become ready in time");
 
         Self {
             root: root.to_path_buf(),

@@ -1,19 +1,12 @@
 //! Task submission to the agent pool daemon.
 
 use super::payload::Payload;
-use crate::constants::{SOCKET_NAME, STATUS_FILE};
+use super::{DEFAULT_POOL_READY_TIMEOUT, wait_for_pool_ready};
+use crate::constants::SOCKET_NAME;
 use crate::response::Response;
 use interprocess::local_socket::{GenericFilePath, Stream, prelude::*};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
-
-/// Timeout for waiting for daemon to be ready.
-const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Poll interval when waiting for daemon readiness.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Submit a task to the agent pool and wait for the result.
 ///
@@ -29,10 +22,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// - The response contains invalid JSON
 pub fn submit(root: impl AsRef<Path>, payload: &Payload) -> io::Result<Response> {
     let root = root.as_ref();
-    let status_file = root.join(STATUS_FILE);
 
-    // Wait for daemon to be ready (status file exists)
-    wait_for_daemon_ready(&status_file, DAEMON_READY_TIMEOUT)?;
+    // Wait for daemon to be ready
+    wait_for_pool_ready(root, DEFAULT_POOL_READY_TIMEOUT)?;
 
     let socket_path = root.join(SOCKET_NAME);
 
@@ -65,19 +57,4 @@ pub fn submit(root: impl AsRef<Path>, payload: &Payload) -> io::Result<Response>
         String::from_utf8(output).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     serde_json::from_str(&json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-/// Wait for the daemon to be ready by polling for the status file.
-fn wait_for_daemon_ready(status_file: &Path, timeout: Duration) -> io::Result<()> {
-    let start = Instant::now();
-    while !status_file.exists() {
-        if start.elapsed() > timeout {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "daemon not ready (status file not found within timeout)",
-            ));
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    Ok(())
 }

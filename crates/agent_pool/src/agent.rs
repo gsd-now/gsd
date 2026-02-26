@@ -11,6 +11,42 @@ use std::time::Duration;
 
 use crate::{RESPONSE_FILE, TASK_FILE, Transport};
 
+/// Check if an event kind indicates a file write is complete.
+///
+/// Platform-specific:
+/// - Linux inotify: `Close(Write)` guarantees the file handle is closed
+/// - macOS FSEvents: `Create(File)` or `Modify(Data)` - by the time we receive
+///   these, the operation is complete
+#[cfg(target_os = "linux")]
+const fn is_file_write_event(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+    )
+}
+
+#[cfg(target_os = "macos")]
+const fn is_file_write_event(kind: notify::EventKind) -> bool {
+    use notify::event::{CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_))
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const fn is_file_write_event(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_))
+    )
+}
+
 /// Events the agent cares about.
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -20,70 +56,27 @@ pub enum AgentEvent {
     WatchError(notify::Error),
 }
 
-/// Create a watcher for a directory-based transport.
+/// Create a watcher for a directory.
 ///
-/// Watches the PARENT directory with recursive mode so that the agent directory
-/// doesn't need to exist yet. This allows setting up the watcher before creating
-/// the agent directory, avoiding race conditions where we miss events.
+/// Watches the given directory with recursive mode. The caller should pass
+/// the parent of the agent directory so the watcher can be set up before
+/// the agent directory exists.
 ///
 /// Returns the watcher (keep alive) and a receiver for events.
-/// For socket-based transports, returns `None` (sockets are already event-driven).
 ///
 /// # Errors
 ///
-/// Returns an error if the filesystem watcher cannot be created or the parent
-/// directory doesn't exist.
+/// Returns an error if the filesystem watcher cannot be created.
 pub fn create_watcher(
-    transport: &Transport,
-) -> io::Result<Option<(RecommendedWatcher, mpsc::Receiver<AgentEvent>)>> {
-    let Some(dir) = transport.path() else {
-        // Socket transport - no filesystem watcher needed
-        return Ok(None);
-    };
-
-    // Watch parent directory so we can set up watcher before agent dir exists
-    let parent = dir.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "agent directory has no parent")
-    })?;
-
+    watch_dir: &std::path::Path,
+) -> io::Result<(RecommendedWatcher, mpsc::Receiver<AgentEvent>)> {
     let (tx, rx) = mpsc::channel();
 
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| match res {
             Ok(event) => {
                 tracing::trace!(?event, "watcher event");
-                // Platform-specific event filtering:
-                // - Linux inotify: Close(Write) guarantees file is fully written
-                // - macOS FSEvents: Create(File)/Modify(Data) - by the time we
-                //   receive these, the operation is complete
-                #[cfg(target_os = "linux")]
-                let dominated_event = {
-                    use notify::event::{AccessKind, AccessMode};
-                    matches!(
-                        event.kind,
-                        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
-                    )
-                };
-                #[cfg(target_os = "macos")]
-                let dominated_event = {
-                    use notify::event::{CreateKind, ModifyKind};
-                    matches!(
-                        event.kind,
-                        notify::EventKind::Create(CreateKind::File)
-                            | notify::EventKind::Modify(ModifyKind::Data(_))
-                    )
-                };
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                let dominated_event = {
-                    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
-                    matches!(
-                        event.kind,
-                        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
-                            | notify::EventKind::Create(CreateKind::File)
-                            | notify::EventKind::Modify(ModifyKind::Data(_))
-                    )
-                };
-                if dominated_event {
+                if is_file_write_event(event.kind) {
                     tracing::debug!(?event.kind, "watcher sending FileChanged");
                     let _ = tx.send(AgentEvent::FileChanged);
                 }
@@ -97,12 +90,11 @@ pub fn create_watcher(
     )
     .map_err(io::Error::other)?;
 
-    // Recursive mode to see events in subdirectories (agent directories)
     watcher
-        .watch(parent, RecursiveMode::Recursive)
+        .watch(watch_dir, RecursiveMode::Recursive)
         .map_err(io::Error::other)?;
 
-    Ok(Some((watcher, rx)))
+    Ok((watcher, rx))
 }
 
 /// Check if a task is ready to be processed (file-based only).
@@ -207,7 +199,7 @@ pub fn wait_for_task_with_timeout(
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, clippy::unwrap_used)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;
@@ -256,11 +248,9 @@ mod tests {
     }
 
     #[test]
-    fn create_watcher_directory_transport() {
+    fn create_watcher_works() {
         let dir = test_dir("watcher");
-        let transport = Transport::Directory(dir);
-        let result = create_watcher(&transport);
+        let result = create_watcher(&dir);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
     }
 }

@@ -50,7 +50,7 @@ mod daemon;
 pub use agent::{
     AgentEvent, create_watcher, is_task_ready, wait_for_task, wait_for_task_with_timeout,
 };
-pub use client::{Payload, cleanup_submission, stop, submit, submit_file};
+pub use client::{Payload, cleanup_submission, stop, submit, submit_file, wait_for_pool_ready};
 pub use constants::{
     AGENTS_DIR, LOCK_FILE, PENDING_DIR, RESPONSE_FILE, SOCKET_NAME, STATUS_FILE, TASK_FILE,
 };

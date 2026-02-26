@@ -489,29 +489,25 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let agent_dir = root.join(AGENTS_DIR).join(&name);
+            let all_agents_dir = root.join(AGENTS_DIR);
+            let this_agent_dir = all_agents_dir.join(&name);
 
-            // Set up watcher FIRST (watches parent dir, so agent dir doesn't need to exist)
-            let transport = Transport::Directory(agent_dir.clone());
-            let (watcher, events_rx) = match create_watcher(&transport) {
-                Ok(Some(w)) => w,
-                Ok(None) => {
-                    eprintln!("Socket transport not yet supported for agents");
-                    return ExitCode::FAILURE;
-                }
+            // Set up watcher FIRST on all_agents_dir so this_agent_dir doesn't need to exist yet
+            let (_watcher, events_rx) = match create_watcher(&all_agents_dir) {
+                Ok(w) => w,
                 Err(e) => {
                     eprintln!("Failed to create watcher: {e}");
                     return ExitCode::FAILURE;
                 }
             };
-            let _watcher = watcher; // Keep watcher alive
 
             // Now create agent directory - daemon will see this and send heartbeat
-            if let Err(e) = fs::create_dir_all(&agent_dir) {
+            if let Err(e) = fs::create_dir_all(&this_agent_dir) {
                 eprintln!("Failed to create agent directory: {e}");
                 return ExitCode::FAILURE;
             }
 
+            let transport = Transport::Directory(this_agent_dir);
             // Watcher is already watching, so we'll see the heartbeat
             match wait_and_read_task(&transport, &events_rx, &name) {
                 Ok(output) => println!("{output}"),
@@ -530,9 +526,10 @@ fn main() -> ExitCode {
         } => {
             init_tracing(log_level);
             let root = resolve_pool(&pool);
-            let agent_dir = root.join(AGENTS_DIR).join(&name);
+            let all_agents_dir = root.join(AGENTS_DIR);
+            let this_agent_dir = all_agents_dir.join(&name);
 
-            if !agent_dir.exists() {
+            if !this_agent_dir.exists() {
                 eprintln!("Agent not registered. Use 'register' first.");
                 return ExitCode::FAILURE;
             }
@@ -553,20 +550,14 @@ fn main() -> ExitCode {
                 }
             };
 
-            // Set up transport and notify watcher
-            let transport = Transport::Directory(agent_dir);
-            let (watcher, events_rx) = match create_watcher(&transport) {
-                Ok(Some(w)) => w,
-                Ok(None) => {
-                    eprintln!("Socket transport not yet supported for agents");
-                    return ExitCode::FAILURE;
-                }
+            let (_watcher, events_rx) = match create_watcher(&all_agents_dir) {
+                Ok(w) => w,
                 Err(e) => {
                     eprintln!("Failed to create watcher: {e}");
                     return ExitCode::FAILURE;
                 }
             };
-            let _watcher = watcher; // Keep watcher alive
+            let transport = Transport::Directory(this_agent_dir);
 
             // Write response using Transport (atomic write)
             if let Err(e) = transport.write(RESPONSE_FILE, &response_content) {

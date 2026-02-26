@@ -938,6 +938,7 @@ fn sync_and_setup(
     fs::write(&agents_canary, "sync")?;
 
     let start = std::time::Instant::now();
+    let mut retry_count = 0u32;
     while start.elapsed() < MAX_DURATION {
         match io_rx.recv_timeout(POLL_TIMEOUT) {
             Ok(IoEvent::Fs(event)) => {
@@ -987,12 +988,13 @@ fn sync_and_setup(
             }
             Ok(_) => panic!("unexpected non-FS event during startup sync"),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // On timeout, rewrite canaries to trigger new events (in case we missed them)
+                // On timeout, rewrite canaries with incrementing value to trigger new events
+                retry_count += 1;
                 if !seen.contains(&pending_canary) {
-                    fs::write(&pending_canary, "sync-retry")?;
+                    fs::write(&pending_canary, retry_count.to_string())?;
                 }
                 if !seen.contains(&agents_canary) {
-                    fs::write(&agents_canary, "sync-retry")?;
+                    fs::write(&agents_canary, retry_count.to_string())?;
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
