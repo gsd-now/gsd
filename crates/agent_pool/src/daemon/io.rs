@@ -21,6 +21,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::Transport;
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_FILE, RESPONSE_SUFFIX, TASK_FILE};
+use crate::response::{NotProcessedReason, Response};
 
 use super::core::{AgentId, Effect, Epoch, Event, ExternalTaskId, HeartbeatId, TaskId};
 
@@ -402,12 +403,11 @@ pub(super) fn execute_effect(
                     let _ = fs::remove_file(agent_path.join(TASK_FILE));
                     let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
 
-                    // Wrap agent output in Response format
-                    let response = serde_json::json!({
-                        "kind": "Processed",
-                        "stdout": agent_output
-                    });
-                    external_task_map.finish(external_id, &response.to_string())?;
+                    // Wrap agent output in typed Response
+                    let response = Response::processed(agent_output);
+                    let response_json = serde_json::to_string(&response)
+                        .expect("Response serialization cannot fail");
+                    external_task_map.finish(external_id, &response_json)?;
 
                     info!(
                         agent_id = agent_id.0,
@@ -422,11 +422,10 @@ pub(super) fn execute_effect(
                 debug!(heartbeat_id = heartbeat_id.0, "heartbeat timed out");
             }
             TaskId::External(external_id) => {
-                let error = serde_json::json!({
-                    "kind": "NotProcessed",
-                    "reason": "timeout"
-                });
-                external_task_map.finish(external_id, &error.to_string())?;
+                let response = Response::not_processed(NotProcessedReason::Timeout);
+                let response_json =
+                    serde_json::to_string(&response).expect("Response serialization cannot fail");
+                external_task_map.finish(external_id, &response_json)?;
 
                 warn!(external_task_id = external_id.0, "task failed (timeout)");
             }
