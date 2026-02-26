@@ -289,10 +289,12 @@ impl ExternalTaskMap {
                     path = %response_path.display(),
                     "finish: writing response"
                 );
-                // Write atomically: write to temp file in /tmp, then rename.
-                // Using /tmp explicitly ensures we're on the same filesystem.
-                let temp_path =
-                    PathBuf::from("/tmp").join(format!("gsd-resp-{}.tmp", uuid::Uuid::new_v4()));
+                // Write atomically: write to temp file in same dir, then rename.
+                // Temp file must be on same filesystem as target for rename to work.
+                let temp_path = response_path
+                    .parent()
+                    .unwrap_or(path)
+                    .join(format!(".response-{}.tmp", uuid::Uuid::new_v4()));
                 fs::write(&temp_path, response)?;
                 fs::rename(&temp_path, &response_path)?;
             }

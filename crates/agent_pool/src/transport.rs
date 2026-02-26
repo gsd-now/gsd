@@ -61,12 +61,10 @@ impl Transport {
     pub fn write(&self, filename: &str, content: &str) -> io::Result<()> {
         match self {
             Transport::Directory(path) => {
-                // Write atomically: write to temp file in /tmp, then rename.
-                // Using /tmp explicitly (not temp_dir()) ensures we're on the same
-                // filesystem as /tmp/agent_pool/... where pools live, enabling atomic renames.
+                // Write atomically: write to temp file in same directory, then rename.
+                // Temp file must be on the same filesystem as target for rename to work.
                 let target = path.join(filename);
-                let temp = PathBuf::from("/tmp")
-                    .join(format!("agent_pool-transport-{}.tmp", uuid::Uuid::new_v4()));
+                let temp = path.join(format!(".{}.{}.tmp", filename, uuid::Uuid::new_v4()));
                 fs::write(&temp, content)?;
                 fs::rename(&temp, &target)
             }

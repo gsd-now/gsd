@@ -140,7 +140,7 @@ Agent removes its directory, or daemon writes `Kicked` message and removes direc
 
 ### Atomic Writes
 
-All file writes should be atomic (write to temp file, then rename) to prevent partial reads. The daemon uses `/tmp/agent_pool-*.tmp` for atomic writes.
+All file writes should be atomic (write to temp file, then rename) to prevent partial reads. Temp files are written to the same directory as the target (with a `.*.tmp` prefix) to ensure they're on the same filesystem.
 
 ### Filesystem Watching
 

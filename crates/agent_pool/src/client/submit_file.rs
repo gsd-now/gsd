@@ -21,7 +21,7 @@ use crate::constants::{PENDING_DIR, REQUEST_SUFFIX, RESPONSE_SUFFIX};
 use crate::response::Response;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -81,11 +81,11 @@ pub fn submit_file_with_timeout(
     let request_path = pending_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
     let response_path = pending_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
 
-    // Write request file with serialized payload (atomic: write temp in /tmp, rename)
+    // Write request file with serialized payload (atomic: write temp in same dir, rename)
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    // Use submission_id for uniqueness (already a UUID)
-    let temp_path = PathBuf::from("/tmp").join(format!("gsd-req-{submission_id}.tmp"));
+    // Temp file in same directory to ensure same filesystem for rename
+    let temp_path = pending_dir.join(format!(".{submission_id}.tmp"));
     fs::write(&temp_path, &content)?;
     fs::rename(&temp_path, &request_path)?;
 
