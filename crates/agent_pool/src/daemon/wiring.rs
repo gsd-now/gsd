@@ -953,8 +953,11 @@ fn sync_and_setup(
 
                 for path in &event.paths {
                     if is_creation_event {
+                        // Allow static paths in allowlist, OR canary files in agent subdirs
+                        let is_agent_canary = path.starts_with(agents_dir)
+                            && path.file_name().is_some_and(|n| n == "canary");
                         assert!(
-                            allowed.contains(path),
+                            allowed.contains(path) || is_agent_canary,
                             "unexpected FS event during startup sync: {:?} for path {}\n\
                              Allowed paths: {:?}",
                             event.kind,

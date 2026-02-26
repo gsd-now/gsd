@@ -97,6 +97,70 @@ pub fn create_watcher(
     Ok((watcher, rx))
 }
 
+/// Canary file used to verify watcher is receiving events.
+const CANARY_FILE: &str = "canary";
+
+/// Verify the watcher is actually receiving events by writing a canary file.
+///
+/// This is critical for avoiding race conditions: `watch()` returns immediately
+/// but `FSEvents` may not be fully set up yet. Writing a canary and waiting for
+/// the event confirms the watcher is live.
+///
+/// # Errors
+///
+/// Returns an error if the canary write fails or if no event is received
+/// within the timeout.
+pub fn verify_watcher_sync(
+    watch_dir: &std::path::Path,
+    events_rx: &mpsc::Receiver<AgentEvent>,
+    timeout: Duration,
+) -> io::Result<()> {
+    use std::fs;
+    use std::time::Instant;
+
+    let canary_path = watch_dir.join(CANARY_FILE);
+    let poll_interval = Duration::from_millis(100);
+    let start = Instant::now();
+    let mut retry_count = 0u32;
+
+    // Write initial canary
+    fs::write(&canary_path, "sync")?;
+
+    loop {
+        match events_rx.recv_timeout(poll_interval) {
+            Ok(AgentEvent::FileChanged) => {
+                // Got an event - watcher is working
+                let _ = fs::remove_file(&canary_path);
+                tracing::debug!("watcher sync verified via canary");
+                return Ok(());
+            }
+            Ok(AgentEvent::WatchError(e)) => {
+                let _ = fs::remove_file(&canary_path);
+                return Err(io::Error::other(format!("watcher error during sync: {e}")));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() > timeout {
+                    let _ = fs::remove_file(&canary_path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "watcher sync timed out - no events received",
+                    ));
+                }
+                // Retry by rewriting canary with new value
+                retry_count += 1;
+                fs::write(&canary_path, retry_count.to_string())?;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = fs::remove_file(&canary_path);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "watcher channel disconnected during sync",
+                ));
+            }
+        }
+    }
+}
+
 /// Check if a task is ready to be processed (file-based only).
 ///
 /// Returns `true` when `task.json` exists and `response.json` does not.

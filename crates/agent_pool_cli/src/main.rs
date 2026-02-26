@@ -8,7 +8,7 @@ use agent_pool::{
     AGENTS_DIR, AgentEvent, DaemonConfig, PENDING_DIR, Payload, RESPONSE_FILE, SOCKET_NAME,
     STATUS_FILE, TASK_FILE, Transport, cleanup_stopped, create_watcher, generate_id, id_to_path,
     is_daemon_running, list_pools, resolve_pool, run_with_config, stop, submit, submit_file,
-    wait_for_task,
+    verify_watcher_sync, wait_for_task,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -489,11 +489,16 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let all_agents_dir = root.join(AGENTS_DIR);
-            let this_agent_dir = all_agents_dir.join(&name);
+            let agent_dir = root.join(AGENTS_DIR).join(&name);
 
-            // Set up watcher FIRST on all_agents_dir so this_agent_dir doesn't need to exist yet
-            let (_watcher, events_rx) = match create_watcher(&all_agents_dir) {
+            // Create agent directory first
+            if let Err(e) = fs::create_dir_all(&agent_dir) {
+                eprintln!("Failed to create agent directory: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            // Set up watcher on agent directory
+            let (_watcher, events_rx) = match create_watcher(&agent_dir) {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("Failed to create watcher: {e}");
@@ -501,14 +506,13 @@ fn main() -> ExitCode {
                 }
             };
 
-            // Now create agent directory - daemon will see this and send heartbeat
-            if let Err(e) = fs::create_dir_all(&this_agent_dir) {
-                eprintln!("Failed to create agent directory: {e}");
+            // Verify watcher is receiving events before proceeding
+            if let Err(e) = verify_watcher_sync(&agent_dir, &events_rx, Duration::from_secs(5)) {
+                eprintln!("Watcher sync failed: {e}");
                 return ExitCode::FAILURE;
             }
 
-            let transport = Transport::Directory(this_agent_dir);
-            // Watcher is already watching, so we'll see the heartbeat
+            let transport = Transport::Directory(agent_dir);
             match wait_and_read_task(&transport, &events_rx, &name) {
                 Ok(output) => println!("{output}"),
                 Err(e) => {
@@ -526,10 +530,9 @@ fn main() -> ExitCode {
         } => {
             init_tracing(log_level);
             let root = resolve_pool(&pool);
-            let all_agents_dir = root.join(AGENTS_DIR);
-            let this_agent_dir = all_agents_dir.join(&name);
+            let agent_dir = root.join(AGENTS_DIR).join(&name);
 
-            if !this_agent_dir.exists() {
+            if !agent_dir.exists() {
                 eprintln!("Agent not registered. Use 'register' first.");
                 return ExitCode::FAILURE;
             }
@@ -550,14 +553,22 @@ fn main() -> ExitCode {
                 }
             };
 
-            let (_watcher, events_rx) = match create_watcher(&all_agents_dir) {
+            // Set up watcher on agent directory
+            let (_watcher, events_rx) = match create_watcher(&agent_dir) {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("Failed to create watcher: {e}");
                     return ExitCode::FAILURE;
                 }
             };
-            let transport = Transport::Directory(this_agent_dir);
+
+            // Verify watcher is receiving events before proceeding
+            if let Err(e) = verify_watcher_sync(&agent_dir, &events_rx, Duration::from_secs(5)) {
+                eprintln!("Watcher sync failed: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            let transport = Transport::Directory(agent_dir);
 
             // Write response using Transport (atomic write)
             if let Err(e) = transport.write(RESPONSE_FILE, &response_content) {
