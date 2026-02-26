@@ -6,13 +6,13 @@ An analysis of the highest-impact improvements, considering effort vs. benefit.
 
 ## Tier 1: High Impact, Low Effort
 
-### 1. Remove Raw Test Mode
+### ~~1. Remove Raw Test Mode~~ ✓ DONE
 
-**Impact:** Reduces test matrix by 33% (6 → 4 modes), faster CI, simpler test code.
-**Effort:** ~30 minutes.
-**Risk:** None - Raw mode has no users outside tests.
+~~**Impact:** Reduces test matrix by 33% (6 → 4 modes), faster CI, simpler test code.~~
+~~**Effort:** ~30 minutes.~~
+~~**Risk:** None - Raw mode has no users outside tests.~~
 
-See `API_SIMPLIFICATION.md` for details.
+Completed: Removed `NotifyMethod::Raw` variant and `submit_raw()` function. Test matrix reduced from 6 to 4 combinations.
 
 ### 2. Replace Polling in submit_file.rs
 
@@ -163,7 +163,7 @@ See `todos.md`. Allows mixing AI agents with command pools in same workflow.
 ## Recommended Order
 
 ### Immediate (This Week)
-1. Remove Raw test mode
+1. ~~Remove Raw test mode~~ ✓ DONE
 2. Replace polling in submit_file.rs
 3. Add --exit to next_task
 

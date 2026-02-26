@@ -158,7 +158,7 @@ From `todos.md`:
 
 ## Implementation Order
 
-1. **Remove Raw mode** - Safe, immediate cleanup
+1. ~~**Remove Raw mode**~~ ✓ DONE - Completed: Removed `NotifyMethod::Raw` and `submit_raw()`
 2. **Add --exit to next_task** - Simplifies agent scripts
 3. **(Optional) Rename File → Poll** - Only if we're doing breaking changes anyway
 
