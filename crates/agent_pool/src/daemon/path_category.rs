@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, ModifyKind, RemoveKind};
+use notify::event::{CreateKind, EventKind, RemoveKind};
 
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_FILE};
 
@@ -35,14 +35,38 @@ pub(super) enum PathCategory {
 
 /// Check if event kind indicates a file write is complete.
 ///
-/// Accepts events from both Linux inotify and macOS `FSEvents`:
-/// - `Close(Write)` - Linux inotify (file handle closed after write)
-/// - `Create(File)` - macOS `FSEvents` (file created)
-/// - `Modify(Data)` - macOS `FSEvents` (file content changed)
+/// Platform-specific behavior:
+/// - **Linux inotify**: Only `Close(Write)` is accepted. This guarantees the file
+///   handle is closed and all data is flushed. `Create(File)` is NOT accepted
+///   because it fires before content is written.
+/// - **macOS `FSEvents`**: `Create(File)` and `Modify(Data)` are accepted. FSEvents
+///   is a higher-level API that batches events, so by the time we receive them,
+///   the file operation is complete.
 ///
 /// Atomic rename patterns are explicitly NOT supported - the protocol requires
 /// direct writes.
+#[cfg(target_os = "linux")]
 const fn is_write_complete(kind: EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    matches!(
+        kind,
+        EventKind::Access(AccessKind::Close(AccessMode::Write))
+    )
+}
+
+#[cfg(target_os = "macos")]
+const fn is_write_complete(kind: EventKind) -> bool {
+    use notify::event::ModifyKind;
+    matches!(
+        kind,
+        EventKind::Create(CreateKind::File) | EventKind::Modify(ModifyKind::Data(_))
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const fn is_write_complete(kind: EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
+    // Fallback: accept all three for other platforms
     matches!(
         kind,
         EventKind::Access(AccessKind::Close(AccessMode::Write))
@@ -145,7 +169,7 @@ fn categorize_under_pending(
 mod tests {
     use std::path::PathBuf;
 
-    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind};
+    use notify::event::{CreateKind, RemoveKind};
 
     use super::*;
 
@@ -161,20 +185,27 @@ mod tests {
         EventKind::Create(CreateKind::Folder)
     }
 
-    fn write_complete() -> EventKind {
+    /// The canonical "file written" event for the current platform.
+    /// On Linux, this is Close(Write). On macOS, this is Create(File).
+    #[cfg(target_os = "linux")]
+    fn file_written() -> EventKind {
+        use notify::event::{AccessKind, AccessMode};
         EventKind::Access(AccessKind::Close(AccessMode::Write))
     }
 
-    fn file_created() -> EventKind {
+    #[cfg(target_os = "macos")]
+    fn file_written() -> EventKind {
         EventKind::Create(CreateKind::File)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn file_written() -> EventKind {
+        use notify::event::{AccessKind, AccessMode};
+        EventKind::Access(AccessKind::Close(AccessMode::Write))
     }
 
     fn folder_removed() -> EventKind {
         EventKind::Remove(RemoveKind::Folder)
-    }
-
-    fn data_modified() -> EventKind {
-        EventKind::Modify(ModifyKind::Data(DataChange::Content))
     }
 
     // =========================================================================
@@ -204,16 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_directory_ignored_on_other_events() {
+    fn agent_directory_ignored_on_file_events() {
         let path = PathBuf::from("/pool/agents/claude-1");
-        // File created event should not trigger AgentDir
+        // File write events should not trigger AgentDir (only folder events)
         assert_eq!(
-            categorize(&path, file_created(), &agents(), &pending()),
-            None
-        );
-        // Write complete event should not trigger AgentDir
-        assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -245,34 +271,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn agent_response_on_write_complete() {
+    fn agent_response_on_file_written() {
         let path = PathBuf::from("/pool/agents/claude-1/response.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
-            Some(PathCategory::AgentResponse {
-                name: "claude-1".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn agent_response_on_file_created() {
-        // macOS FSEvents sends Create(File) instead of Close(Write)
-        let path = PathBuf::from("/pool/agents/claude-1/response.json");
-        assert_eq!(
-            categorize(&path, file_created(), &agents(), &pending()),
-            Some(PathCategory::AgentResponse {
-                name: "claude-1".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn agent_response_on_data_modified() {
-        // macOS FSEvents sends Modify(Data) for content changes
-        let path = PathBuf::from("/pool/agents/claude-1/response.json");
-        assert_eq!(
-            categorize(&path, data_modified(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             Some(PathCategory::AgentResponse {
                 name: "claude-1".to_string()
             })
@@ -293,7 +295,7 @@ mod tests {
     fn agent_task_file_not_categorized() {
         let path = PathBuf::from("/pool/agents/claude-1/task.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -302,7 +304,7 @@ mod tests {
     fn agent_other_file_not_categorized() {
         let path = PathBuf::from("/pool/agents/claude-1/debug.log");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -311,7 +313,7 @@ mod tests {
     fn agent_nested_file_not_categorized() {
         let path = PathBuf::from("/pool/agents/claude-1/subdir/response.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -321,34 +323,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn submission_request_on_write_complete() {
+    fn submission_request_on_file_written() {
         let path = PathBuf::from("/pool/pending/abc123.request.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
-            Some(PathCategory::SubmissionRequest {
-                id: "abc123".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn submission_request_on_file_created() {
-        // macOS FSEvents sends Create(File) instead of Close(Write)
-        let path = PathBuf::from("/pool/pending/abc123.request.json");
-        assert_eq!(
-            categorize(&path, file_created(), &agents(), &pending()),
-            Some(PathCategory::SubmissionRequest {
-                id: "abc123".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn submission_request_on_data_modified() {
-        // macOS FSEvents sends Modify(Data) for content changes
-        let path = PathBuf::from("/pool/pending/abc123.request.json");
-        assert_eq!(
-            categorize(&path, data_modified(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             Some(PathCategory::SubmissionRequest {
                 id: "abc123".to_string()
             })
@@ -369,7 +347,7 @@ mod tests {
     fn submission_request_uuid_format() {
         let path = PathBuf::from("/pool/pending/550e8400-e29b-41d4-a716-446655440000.request.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             Some(PathCategory::SubmissionRequest {
                 id: "550e8400-e29b-41d4-a716-446655440000".to_string()
             })
@@ -385,7 +363,7 @@ mod tests {
         // We don't need to react to our own response files
         let path = PathBuf::from("/pool/pending/abc123.response.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -394,7 +372,7 @@ mod tests {
     fn submission_other_file_not_categorized() {
         let path = PathBuf::from("/pool/pending/abc123.metadata.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -404,7 +382,7 @@ mod tests {
         // Subdirectories under pending are not categorized
         let path = PathBuf::from("/pool/pending/abc123/task.json");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -427,7 +405,7 @@ mod tests {
     fn unrelated_path() {
         let path = PathBuf::from("/other/path");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }
@@ -454,7 +432,7 @@ mod tests {
     fn sibling_of_agents_not_categorized() {
         let path = PathBuf::from("/pool/logs/something");
         assert_eq!(
-            categorize(&path, write_complete(), &agents(), &pending()),
+            categorize(&path, file_written(), &agents(), &pending()),
             None
         );
     }

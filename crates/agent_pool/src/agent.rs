@@ -4,7 +4,6 @@
 //! polling the filesystem with `thread::sleep`, agents use these functions to
 //! block on file events.
 
-use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::io;
 use std::sync::mpsc;
@@ -53,15 +52,37 @@ pub fn create_watcher(
         move |res: Result<notify::Event, notify::Error>| match res {
             Ok(event) => {
                 tracing::trace!(?event, "watcher event");
-                // Signal on events that indicate file content is available:
-                // - Close(Write) on Linux inotify
-                // - Create(File) or Modify(Data) on macOS FSEvents
-                let dominated_event = matches!(
-                    event.kind,
-                    notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
-                        | notify::EventKind::Create(CreateKind::File)
-                        | notify::EventKind::Modify(ModifyKind::Data(_))
-                );
+                // Platform-specific event filtering:
+                // - Linux inotify: Close(Write) guarantees file is fully written
+                // - macOS FSEvents: Create(File)/Modify(Data) - by the time we
+                //   receive these, the operation is complete
+                #[cfg(target_os = "linux")]
+                let dominated_event = {
+                    use notify::event::{AccessKind, AccessMode};
+                    matches!(
+                        event.kind,
+                        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+                    )
+                };
+                #[cfg(target_os = "macos")]
+                let dominated_event = {
+                    use notify::event::{CreateKind, ModifyKind};
+                    matches!(
+                        event.kind,
+                        notify::EventKind::Create(CreateKind::File)
+                            | notify::EventKind::Modify(ModifyKind::Data(_))
+                    )
+                };
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let dominated_event = {
+                    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+                    matches!(
+                        event.kind,
+                        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+                            | notify::EventKind::Create(CreateKind::File)
+                            | notify::EventKind::Modify(ModifyKind::Data(_))
+                    )
+                };
                 if dominated_event {
                     tracing::debug!(?event.kind, "watcher sending FileChanged");
                     let _ = tx.send(AgentEvent::FileChanged);
