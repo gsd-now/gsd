@@ -43,14 +43,16 @@ pub(super) enum PathCategory {
 ///   is a higher-level API that batches events, so by the time we receive them,
 ///   the file operation is complete.
 ///
-/// Atomic rename patterns are explicitly NOT supported - the protocol requires
-/// direct writes.
+/// For atomic writes (write temp file, then rename), we also accept rename events
+/// as "write complete" signals since the rename only happens after the temp file
+/// is fully written.
 #[cfg(target_os = "linux")]
 const fn is_write_complete(kind: EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode};
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
     matches!(
         kind,
         EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | EventKind::Modify(ModifyKind::Name(_))
     )
 }
 
@@ -59,19 +61,21 @@ const fn is_write_complete(kind: EventKind) -> bool {
     use notify::event::ModifyKind;
     matches!(
         kind,
-        EventKind::Create(CreateKind::File) | EventKind::Modify(ModifyKind::Data(_))
+        EventKind::Create(CreateKind::File)
+            | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
     )
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const fn is_write_complete(kind: EventKind) -> bool {
     use notify::event::{AccessKind, AccessMode, ModifyKind};
-    // Fallback: accept all three for other platforms
+    // Fallback: accept multiple event types for other platforms
     matches!(
         kind,
         EventKind::Access(AccessKind::Close(AccessMode::Write))
             | EventKind::Create(CreateKind::File)
             | EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Name(_))
     )
 }
 

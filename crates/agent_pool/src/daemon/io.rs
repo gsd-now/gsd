@@ -288,9 +288,15 @@ impl ExternalTaskMap {
                     path = %response_path.display(),
                     "finish: writing response"
                 );
-                // Write atomically: write to temp file, then rename.
-                // This prevents readers from seeing partial writes.
-                let temp_path = response_path.with_extension("json.tmp");
+                // Write atomically: write to temp file in /tmp, then rename.
+                // Using /tmp ensures the watcher doesn't see the temp file.
+                let temp_path = std::env::temp_dir().join(format!(
+                    "gsd-atomic-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos())
+                ));
                 fs::write(&temp_path, response)?;
                 fs::rename(&temp_path, &response_path)?;
             }

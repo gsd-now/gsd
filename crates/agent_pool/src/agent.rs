@@ -17,12 +17,15 @@ use crate::{RESPONSE_FILE, TASK_FILE, Transport};
 /// - Linux inotify: `Close(Write)` guarantees the file handle is closed
 /// - macOS FSEvents: `Create(File)` or `Modify(Data)` - by the time we receive
 ///   these, the operation is complete
+///
+/// Also handles atomic rename writes (write temp file, then rename).
 #[cfg(target_os = "linux")]
 const fn is_file_write_event(kind: notify::EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode};
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
     matches!(
         kind,
         notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
     )
 }
 
@@ -32,7 +35,7 @@ const fn is_file_write_event(kind: notify::EventKind) -> bool {
     matches!(
         kind,
         notify::EventKind::Create(CreateKind::File)
-            | notify::EventKind::Modify(ModifyKind::Data(_))
+            | notify::EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
     )
 }
 
@@ -44,6 +47,7 @@ const fn is_file_write_event(kind: notify::EventKind) -> bool {
         notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
             | notify::EventKind::Create(CreateKind::File)
             | notify::EventKind::Modify(ModifyKind::Data(_))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
     )
 }
 

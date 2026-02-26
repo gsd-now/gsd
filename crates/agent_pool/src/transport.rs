@@ -51,7 +51,8 @@ impl Transport {
 
     /// Write content to this transport.
     ///
-    /// For directory-based transports, writes atomically (write to temp file, then rename).
+    /// For directory-based transports, writes atomically (write to temp file in /tmp, then rename).
+    /// The temp file is in /tmp so the watcher doesn't see spurious events for it.
     /// For socket-based transports, sends over the socket (filename is ignored).
     ///
     /// # Errors
@@ -60,10 +61,16 @@ impl Transport {
     pub fn write(&self, filename: &str, content: &str) -> io::Result<()> {
         match self {
             Transport::Directory(path) => {
-                // Write atomically: write to temp file, then rename.
-                // This prevents readers from seeing partial writes.
+                // Write atomically: write to temp file in /tmp, then rename.
+                // Using /tmp ensures the watcher doesn't see the temp file.
                 let target = path.join(filename);
-                let temp = path.join(format!("{filename}.tmp"));
+                let temp = std::env::temp_dir().join(format!(
+                    "gsd-atomic-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos())
+                ));
                 fs::write(&temp, content)?;
                 fs::rename(&temp, &target)
             }

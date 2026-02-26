@@ -81,10 +81,18 @@ pub fn submit_file_with_timeout(
     let request_path = pending_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
     let response_path = pending_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
 
-    // Write request file with serialized payload
+    // Write request file with serialized payload (atomic: write temp in /tmp, rename)
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(&request_path, content)?;
+    let temp_path = std::env::temp_dir().join(format!(
+        "gsd-atomic-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    fs::write(&temp_path, &content)?;
+    fs::rename(&temp_path, &request_path)?;
 
     // Poll for response
     let start = Instant::now();
