@@ -515,15 +515,11 @@ fn handle_fs_event(
     pending_dir: &Path,
     io_config: &IoConfig,
 ) {
-    trace!(kind = ?event.kind, paths = ?event.paths, "fs event");
-
     for path in &event.paths {
         let Some(category) = path_category::categorize(path, event.kind, agents_dir, pending_dir)
         else {
-            trace!(?path, "path did not match any category");
             continue;
         };
-        debug!(?path, ?category, "categorized path");
 
         match category {
             PathCategory::AgentDir { name } => {
