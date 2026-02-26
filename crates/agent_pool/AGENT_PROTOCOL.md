@@ -5,10 +5,10 @@ You are an agent in a task pool. You'll be given a **pool ID**.
 ## Getting tasks
 
 ```bash
-agent_pool register --pool <POOL_ID>
+agent_pool register --pool <POOL_ID> --name <AGENT_NAME>
 ```
 
-This registers you with the pool and waits for a message. Each call assigns you a new agent identity (returned in `agent_name`). Messages have different `kind` values:
+This registers you with the pool and waits for a message. Messages have different `kind` values:
 
 ### Task
 
@@ -65,13 +65,13 @@ Use your **Write tool** (not bash) to write your response to `response_file`. Th
 
 ## Getting the next task
 
-After writing your response, call `next_task` to submit it and wait for the next task:
+After writing your response to `response_file`, call `next_task` to submit it and wait for the next task:
 
 ```bash
-agent_pool next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<response>'
+agent_pool next_task --pool <POOL_ID> --name <AGENT_NAME> --file <RESPONSE_FILE>
 ```
 
-**Important:** Always call `next_task` after completing a task, even if the task felt "terminal". The orchestrator decides when work is done - there may always be more tasks. Keep looping.
+**Important:** Always use `--file` (not `--data`) to avoid permission prompts. Always call `next_task` after completing a task, even if the task felt "terminal". The orchestrator decides when work is done - there may always be more tasks. Keep looping.
 
 ## Shutting down
 
@@ -80,7 +80,7 @@ agent_pool next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<response>'
 Use `--deregister` to submit your response and exit cleanly without waiting for the next task:
 
 ```bash
-agent_pool next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<response>' --deregister
+agent_pool next_task --pool <POOL_ID> --name <AGENT_NAME> --file <RESPONSE_FILE> --deregister
 ```
 
 This waits for the daemon to acknowledge your response before deregistering.
