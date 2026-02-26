@@ -479,14 +479,8 @@ fn main() -> ExitCode {
 
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
-            // Create directory first (watcher needs it to exist)
-            if let Err(e) = fs::create_dir_all(&agent_dir) {
-                eprintln!("Failed to create agent directory: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            // Set up watcher
-            let transport = Transport::Directory(agent_dir);
+            // Set up watcher FIRST (watches parent dir, so agent dir doesn't need to exist)
+            let transport = Transport::Directory(agent_dir.clone());
             let (watcher, events_rx) = match create_watcher(&transport) {
                 Ok(Some(w)) => w,
                 Ok(None) => {
@@ -500,9 +494,13 @@ fn main() -> ExitCode {
             };
             let _watcher = watcher; // Keep watcher alive
 
-            // wait_and_read_task checks is_task_ready first - if daemon already
-            // sent heartbeat (task.json exists), it returns immediately.
-            // Otherwise it waits for events.
+            // Now create agent directory - daemon will see this and send heartbeat
+            if let Err(e) = fs::create_dir_all(&agent_dir) {
+                eprintln!("Failed to create agent directory: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            // Watcher is already watching, so we'll see the heartbeat
             match wait_and_read_task(&transport, &events_rx, &name) {
                 Ok(output) => println!("{output}"),
                 Err(e) => {

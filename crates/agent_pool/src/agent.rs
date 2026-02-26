@@ -22,12 +22,17 @@ pub enum AgentEvent {
 
 /// Create a watcher for a directory-based transport.
 ///
+/// Watches the PARENT directory with recursive mode so that the agent directory
+/// doesn't need to exist yet. This allows setting up the watcher before creating
+/// the agent directory, avoiding race conditions where we miss events.
+///
 /// Returns the watcher (keep alive) and a receiver for events.
 /// For socket-based transports, returns `None` (sockets are already event-driven).
 ///
 /// # Errors
 ///
-/// Returns an error if the filesystem watcher cannot be created.
+/// Returns an error if the filesystem watcher cannot be created or the parent
+/// directory doesn't exist.
 pub fn create_watcher(
     transport: &Transport,
 ) -> io::Result<Option<(RecommendedWatcher, mpsc::Receiver<AgentEvent>)>> {
@@ -35,6 +40,11 @@ pub fn create_watcher(
         // Socket transport - no filesystem watcher needed
         return Ok(None);
     };
+
+    // Watch parent directory so we can set up watcher before agent dir exists
+    let parent = dir.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "agent directory has no parent")
+    })?;
 
     let (tx, rx) = mpsc::channel();
 
@@ -59,8 +69,9 @@ pub fn create_watcher(
     )
     .map_err(io::Error::other)?;
 
+    // Recursive mode to see events in subdirectories (agent directories)
     watcher
-        .watch(dir, RecursiveMode::NonRecursive)
+        .watch(parent, RecursiveMode::Recursive)
         .map_err(io::Error::other)?;
 
     Ok(Some((watcher, rx)))
