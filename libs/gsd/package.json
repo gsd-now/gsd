@@ -12,6 +12,10 @@
     "type": "git",
     "url": "git+https://github.com/rbalicki2/gsd.git"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "keywords": [
     "gsd",
     "ai",
