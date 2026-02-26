@@ -666,7 +666,8 @@ fn register_submission(
     let content = match resolve_payload(&raw) {
         Ok(c) => c,
         Err(e) => {
-            warn!(path = %request_path.display(), error = %e, "failed to resolve payload");
+            let raw_oneline = raw.replace('\n', "\\n").replace('\r', "");
+            warn!(path = %request_path.display(), error = %e, raw = %raw_oneline, "failed to resolve payload");
             return;
         }
     };
