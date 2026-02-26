@@ -780,3 +780,18 @@ This is simpler and more robust than relying on filesystem state. A completed su
 In `crates/agent_pool/src/client/mod.rs`, `wait_for_pool_ready` spins with `thread::sleep(10ms)` waiting for the pool directory to exist. This is because the daemon subprocess needs time to create the directory after being spawned.
 
 Should use a watcher on the parent directory (`/tmp/gsd/`) instead of spinning. Low priority because the spin is short-lived (directory is created quickly) and only happens during pool startup.
+
+---
+
+## Rename Pool Directory from gsd to agent_pool
+
+**Status: TODO**
+
+The default pool directory is `/tmp/gsd/<pool_id>/`. This should be `/tmp/agent_pool/<pool_id>/` to match the crate name.
+
+Files to update:
+- `crates/agent_pool/src/pool.rs` - `pool_root()` function
+- `crates/agent_pool/src/transport.rs` - comment references
+- `crates/agent_pool/LOW_LEVEL_PROTOCOL.md` - documentation
+- `crates/agent_pool/tests/common/mod.rs` - comment
+- Any scripts that reference `/tmp/gsd/`
