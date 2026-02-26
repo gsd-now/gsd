@@ -10,7 +10,7 @@ mod common;
 use agent_pool::Response;
 use common::{
     AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_pool, generate_pool,
-    is_ipc_available, submit_with_mode,
+    is_ipc_available, pool_path, submit_with_mode,
 };
 use rstest::rstest;
 use std::thread;
@@ -35,7 +35,7 @@ fn wait_all_ready(agents: &mut [&mut TestAgent]) {
 fn basic_submit(#[case] data_source: DataSource, #[case] notify_method: NotifyMethod) {
     let pool = generate_pool(&format!("basic_submit_{data_source:?}_{notify_method:?}"));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -78,7 +78,7 @@ fn single_agent_multiple_tasks(
         "single_agent_multiple_tasks_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -123,7 +123,7 @@ fn multiple_agents_parallel(#[case] data_source: DataSource, #[case] notify_meth
         "multiple_agents_parallel_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -177,7 +177,7 @@ fn agent_deregistration(#[case] data_source: DataSource, #[case] notify_method: 
         "agent_deregistration_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -240,7 +240,7 @@ fn tasks_queued_before_agents(
         "tasks_queued_before_agents_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -294,7 +294,7 @@ fn rapid_task_burst(#[case] data_source: DataSource, #[case] notify_method: Noti
         "rapid_task_burst_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -340,7 +340,7 @@ fn identical_task_content(#[case] data_source: DataSource, #[case] notify_method
         "identical_task_content_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -384,7 +384,7 @@ fn agent_joins_mid_processing(
         "agent_joins_mid_processing_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }
@@ -442,7 +442,7 @@ fn response_isolation(#[case] data_source: DataSource, #[case] notify_method: No
         "response_isolation_{data_source:?}_{notify_method:?}"
     ));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         cleanup_pool(&pool);
         return;
     }

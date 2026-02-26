@@ -11,7 +11,7 @@ mod common;
 use agent_pool::Response;
 use common::{
     AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_pool, generate_pool,
-    is_ipc_available, submit_with_mode,
+    is_ipc_available, pool_path, submit_with_mode,
 };
 use rstest::rstest;
 use std::thread;
@@ -33,7 +33,7 @@ fn single_agent_queues_multiple_tasks(
 ) {
     let pool = generate_pool(&format!("{TEST_NAME}_{data_source:?}_{notify_method:?}"));
 
-    if !is_ipc_available() {
+    if !is_ipc_available(&pool_path(&pool)) {
         eprintln!("SKIP: IPC not available");
         cleanup_pool(&pool);
         return;

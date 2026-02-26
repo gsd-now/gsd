@@ -39,18 +39,18 @@ pub fn cleanup_pool(pool: &str) {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Check if Unix socket IPC is available.
+/// Check if Unix socket IPC is available in the given directory.
 #[cfg(unix)]
-pub fn is_ipc_available() -> bool {
+pub fn is_ipc_available(root: &std::path::Path) -> bool {
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::PathBuf;
 
     if std::env::var("SKIP_IPC_TESTS").is_ok() {
         return false;
     }
 
-    // Use /tmp directly (not temp_dir() which may return /var/folders/... on macOS)
-    let socket_path = PathBuf::from("/tmp").join(format!("ipc_test_{}.sock", std::process::id()));
+    // Ensure the test directory exists for socket creation
+    let _ = fs::create_dir_all(root);
+    let socket_path = root.join(format!("ipc_test_{}.sock", std::process::id()));
     let _ = fs::remove_file(&socket_path);
 
     let Ok(listener) = UnixListener::bind(&socket_path) else {
@@ -71,7 +71,7 @@ pub fn is_ipc_available() -> bool {
 
 /// Check if Unix socket IPC is available (non-Unix stub).
 #[cfg(not(unix))]
-pub fn is_ipc_available() -> bool {
+pub fn is_ipc_available(_root: &std::path::Path) -> bool {
     false
 }
 
