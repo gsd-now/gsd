@@ -449,7 +449,7 @@ pub(super) fn execute_effect(
                 kicked_paths.insert(agent_path.to_path_buf());
             }
 
-            debug!(agent_id = agent_id.0, "agent kicked");
+            info!(agent_id = agent_id.0, "agent kicked");
         }
     }
     Ok(())

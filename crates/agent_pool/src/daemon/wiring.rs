@@ -578,6 +578,7 @@ fn handle_agent_dir(
         // Directory deleted - clean up tracking
         kicked_paths.remove(agent_path);
         if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
+            info!(agent_id = agent_id.0, path = %agent_path.display(), "agent deregistered");
             // Remove from agent_map immediately to prevent races where core
             // assigns a task to an agent whose directory is already gone.
             agent_map.remove(agent_id);
@@ -589,6 +590,7 @@ fn handle_agent_dir(
     {
         // Only register if not kicked (in-memory or via task.json)
         if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
+            info!(agent_id = agent_id.0, path = %agent_path.display(), "agent registered");
             let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
                 Some(task_id_allocator.allocate_heartbeat())
             } else {
