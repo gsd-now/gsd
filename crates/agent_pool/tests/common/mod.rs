@@ -39,18 +39,21 @@ pub fn cleanup_pool(pool: &str) {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Check if Unix socket IPC is available in the given directory.
+/// Check if Unix socket IPC is available.
+///
+/// The root parameter is ignored - we test in /tmp because pool paths
+/// can exceed macOS's 104-byte Unix socket path limit.
 #[cfg(unix)]
-pub fn is_ipc_available(root: &std::path::Path) -> bool {
+pub fn is_ipc_available(_root: &std::path::Path) -> bool {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     if std::env::var("SKIP_IPC_TESTS").is_ok() {
         return false;
     }
 
-    // Ensure the test directory exists for socket creation
-    let _ = fs::create_dir_all(root);
-    let socket_path = root.join(format!("ipc_test_{}.sock", std::process::id()));
+    // Test in /tmp - pool paths can exceed the 104-byte Unix socket limit
+    let socket_path =
+        std::path::PathBuf::from("/tmp").join(format!("ipc_test_{}.sock", std::process::id()));
     let _ = fs::remove_file(&socket_path);
 
     let Ok(listener) = UnixListener::bind(&socket_path) else {
