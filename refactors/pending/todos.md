@@ -1,5 +1,45 @@
 # To-Dos and Future Directions
 
+## Re-enable Multi-Threaded Tests
+
+**Status: TODO**
+
+Tests currently run with `--test-threads=1` in CI due to timeout issues when running in parallel. The root cause is CLI spawn overhead compounding with parallel test execution - each test spawns multiple CLI processes (daemon, agents, submitters), and running many tests simultaneously overwhelms the system.
+
+**Investigation needed:**
+- Profile CLI spawn overhead to understand the bottleneck
+- Consider connection pooling or persistent daemon connections
+- Look into test isolation improvements (separate pool per test already done)
+- May need to reduce per-test CLI spawns or batch operations
+
+---
+
+## Investigate KQueue for macOS Performance
+
+**Status: TODO**
+
+The `notify` crate uses FSEvents on macOS by default. KQueue might provide better performance for our use case (watching specific files rather than directory trees).
+
+**Investigation needed:**
+- Benchmark FSEvents vs KQueue for our access patterns
+- Check if `notify` supports KQueue backend selection
+- Evaluate if the complexity is worth potential gains
+
+---
+
+## Remove Remaining Polling
+
+**Status: TODO**
+
+Some places still use polling instead of proper synchronization:
+
+1. **`wait_for_pool_ready`** in `crates/agent_pool/src/client/mod.rs` - spins with `thread::sleep(10ms)` waiting for pool directory to exist
+2. **File-based submission response wait** in `crates/agent_pool/src/client/submit_file.rs` - polls for `response.json` every 100ms
+
+Both should use filesystem watchers instead of polling.
+
+---
+
 ## Agent Cleanup pkill Pattern is Too Broad
 
 **Status: NEEDS FIX**
