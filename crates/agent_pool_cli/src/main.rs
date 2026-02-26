@@ -185,7 +185,7 @@ fn init_tracing(level: LogLevel) {
     };
 
     tracing_subscriber::registry()
-        .with(fmt::layer().with_target(false))
+        .with(fmt::layer().with_writer(std::io::stderr).with_target(false))
         .with(filter)
         .init();
 }
