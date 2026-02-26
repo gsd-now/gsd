@@ -927,15 +927,26 @@ fn sync_and_setup(
     while start.elapsed() < MAX_DURATION {
         match io_rx.recv_timeout(POLL_TIMEOUT) {
             Ok(IoEvent::Fs(event)) => {
+                // Only check allowlist for Create/Modify/Access events.
+                // Remove events are fine - they're cleanup from previous runs.
+                let is_creation_event = matches!(
+                    event.kind,
+                    notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Access(_)
+                );
+
                 for path in &event.paths {
-                    assert!(
-                        allowed.contains(path),
-                        "unexpected FS event during startup sync: {:?} for path {}\n\
-                         Allowed paths: {:?}",
-                        event.kind,
-                        path.display(),
-                        allowed
-                    );
+                    if is_creation_event {
+                        assert!(
+                            allowed.contains(path),
+                            "unexpected FS event during startup sync: {:?} for path {}\n\
+                             Allowed paths: {:?}",
+                            event.kind,
+                            path.display(),
+                            allowed
+                        );
+                    }
 
                     if required.contains(path) {
                         seen.insert(path.clone());
