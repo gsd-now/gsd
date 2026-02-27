@@ -1,3 +1,5 @@
+// Example invocation:
+// pnpm gsd run --pool <POOL> --initial '[{"kind": "Analyze", "value": {}}]' refactor-workflow.jsonc
 {
   "options": {
     "max_retries": 2

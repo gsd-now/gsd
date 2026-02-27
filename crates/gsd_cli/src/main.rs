@@ -148,27 +148,22 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-/// Parse config from either inline JSON or a file path.
+/// Parse config from either inline JSON/JSONC or a file path.
 /// Returns the config and the directory for resolving relative schema paths.
+/// Supports JSONC (JSON with comments) in both cases.
 fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
     let path = PathBuf::from(input);
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;
-        let cfg: Config = serde_json::from_str(&content).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid config JSON: {e}"),
-            )
+        let cfg: Config = json5::from_str(&content).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {e}"))
         })?;
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         Ok((cfg, dir.to_path_buf()))
     } else {
-        // Assume inline JSON
-        let cfg: Config = serde_json::from_str(input).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid config JSON: {e}"),
-            )
+        // Assume inline JSON/JSONC
+        let cfg: Config = json5::from_str(input).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {e}"))
         })?;
         Ok((cfg, PathBuf::from(".")))
     }
@@ -176,20 +171,20 @@ fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
 
 fn parse_initial_tasks(initial: &str) -> io::Result<Vec<Task>> {
     // Check if it's a file path
-    let json_str = {
+    let content = {
         let path = PathBuf::from(initial);
         if path.exists() {
             std::fs::read_to_string(path)?
         } else {
-            // Assume it's inline JSON
+            // Assume it's inline JSON/JSONC
             initial.to_string()
         }
     };
 
-    serde_json::from_str(&json_str).map_err(|e| {
+    json5::from_str(&content).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid initial tasks JSON: {e}"),
+            format!("invalid initial tasks: {e}"),
         )
     })
 }
