@@ -52,7 +52,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            idle_agent_timeout: Duration::from_secs(60),
+            idle_agent_timeout: Duration::from_secs(180),
             default_task_timeout: Duration::from_secs(300),
             immediate_heartbeat_enabled: true,
             periodic_heartbeat_enabled: true,
