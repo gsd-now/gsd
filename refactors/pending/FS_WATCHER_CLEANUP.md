@@ -116,22 +116,51 @@ loop {
 
 **Pattern:** Follow `wait_for_pool_ready` in `client/mod.rs` which already uses notify correctly.
 
-**Step 1: Add imports to submit_file.rs**
+**Step 1: Add CANARY_SUFFIX to constants.rs**
+
+**File:** `crates/agent_pool/src/constants.rs`
+
+```rust
+/// Suffix for submission canary files (watcher verification).
+pub const CANARY_SUFFIX: &str = ".canary.json";
+```
+
+**Step 2: Add explicit ignore in path_category.rs**
+
+**File:** `crates/agent_pool/src/daemon/path_category.rs`
+
+The daemon already ignores canary files (only `.request.json` is categorized), but add a comment for clarity:
+
+```rust
+fn categorize_under_submissions(
+    path: &Path,
+    event_kind: EventKind,
+    submissions_dir: &Path,
+) -> Option<PathCategory> {
+    // ... existing code ...
+
+    if let Some(id) = filename.strip_suffix(REQUEST_SUFFIX) {
+        return Some(PathCategory::SubmissionRequest { id: id.to_string() });
+    }
+
+    // Other files (.response.json, .canary.json, .tmp) are ignored:
+    // - Response files are written by daemon, no need to react
+    // - Canary files are for client watcher verification
+    // - Temp files are intermediate atomic write artifacts
+    None
+}
+```
+
+**Step 3: Add imports to submit_file.rs**
 
 ```rust
 // Add to existing imports
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc;
+use crate::constants::CANARY_SUFFIX;  // Add this
 ```
 
-**Step 2: Add canary verification constant**
-
-```rust
-/// Canary file prefix for verifying watcher is working.
-const CANARY_PREFIX: &str = ".canary-";
-```
-
-**Step 3: Replace polling loop with watcher-based wait**
+**Step 4: Replace polling loop with watcher-based wait**
 
 The new `submit_file_with_timeout` function:
 
@@ -150,20 +179,18 @@ pub fn submit_file_with_timeout(
     // Generate unique submission ID
     let submission_id = Uuid::new_v4().to_string();
 
-    // Flat files directly in submissions directory
+    // Canonicalize submissions_dir to match FSEvents paths (e.g., /var -> /private/var)
+    let submissions_dir = fs::canonicalize(&submissions_dir)?;
+
+    // All files use the same ID with different suffixes
     let request_path = submissions_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
     let response_path = submissions_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
-    let canary_path = submissions_dir.join(format!("{CANARY_PREFIX}{submission_id}"));
+    let canary_path = submissions_dir.join(format!("{submission_id}{CANARY_SUFFIX}"));
 
-    // Canonicalize submissions_dir to match FSEvents paths
-    let submissions_dir = fs::canonicalize(&submissions_dir)?;
-    let response_path_canonical = submissions_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
-    let canary_path_canonical = submissions_dir.join(format!("{CANARY_PREFIX}{submission_id}"));
-
-    // Set up watcher BEFORE writing request (to not miss the response)
+    // Set up watcher BEFORE writing any files
     let (tx, rx) = mpsc::channel();
-    let response_check = response_path_canonical.clone();
-    let canary_check = canary_path_canonical.clone();
+    let response_check = response_path.clone();
+    let canary_check = canary_path.clone();
 
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
@@ -185,78 +212,69 @@ pub fn submit_file_with_timeout(
         .watch(&submissions_dir, RecursiveMode::NonRecursive)
         .map_err(io::Error::other)?;
 
-    // Verify watcher is live via canary file
-    let start = Instant::now();
-    fs::write(&canary_path, "sync")?;
-
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(WaitEvent::Canary) => {
-                let _ = fs::remove_file(&canary_path);
-                break;
-            }
-            Ok(WaitEvent::Response) => {
-                // Response arrived before canary (race but valid)
-                let _ = fs::remove_file(&canary_path);
-                return read_and_cleanup_response(&request_path, &response_path);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if start.elapsed() > timeout {
-                    let _ = fs::remove_file(&canary_path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "watcher sync timed out",
-                    ));
-                }
-                // Rewrite canary to trigger another event
-                fs::write(&canary_path, start.elapsed().as_millis().to_string())?;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = fs::remove_file(&canary_path);
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher disconnected",
-                ));
-            }
-        }
-    }
-
-    // NOW write request file (atomic: write temp, rename)
+    // Write BOTH request and canary files
+    // - Request triggers daemon to start processing
+    // - Canary verifies our watcher is working
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let temp_path = submissions_dir.join(format!(".{submission_id}.tmp"));
     fs::write(&temp_path, &content)?;
     fs::rename(&temp_path, &request_path)?;
+    fs::write(&canary_path, "sync")?;
 
-    // Check if response already exists (daemon was very fast)
-    if response_path.exists() {
-        return read_and_cleanup_response(&request_path, &response_path);
-    }
+    let start = Instant::now();
+    let mut watcher_verified = false;
 
-    // Wait for response via watcher
+    // Wait for events
     loop {
         let remaining = timeout.saturating_sub(start.elapsed());
-        match rx.recv_timeout(remaining) {
-            Ok(WaitEvent::Response) => {
+        if remaining.is_zero() {
+            // Timeout - but check if response exists first
+            if response_path.exists() {
+                let _ = fs::remove_file(&canary_path);
                 return read_and_cleanup_response(&request_path, &response_path);
             }
-            Ok(WaitEvent::Canary) => {
-                // Ignore stray canary events
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Final check in case we missed an event
-                if response_path.exists() {
-                    return read_and_cleanup_response(&request_path, &response_path);
-                }
-                // Clean up on timeout
-                let _ = fs::remove_file(&request_path);
+            // Clean up and error
+            let _ = fs::remove_file(&request_path);
+            let _ = fs::remove_file(&canary_path);
+            if watcher_verified {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("file-based submit timed out after {timeout:?}"),
                 ));
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "watcher verification timed out",
+                ));
+            }
+        }
+
+        match rx.recv_timeout(Duration::from_millis(100).min(remaining)) {
+            Ok(WaitEvent::Response) => {
+                // Response arrived - we're done!
+                let _ = fs::remove_file(&canary_path);
+                return read_and_cleanup_response(&request_path, &response_path);
+            }
+            Ok(WaitEvent::Canary) => {
+                // Watcher is working - clean up canary and keep waiting
+                watcher_verified = true;
+                let _ = fs::remove_file(&canary_path);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // No event yet - rewrite canary if not verified
+                if !watcher_verified {
+                    fs::write(&canary_path, start.elapsed().as_millis().to_string())?;
+                }
+                // Check if response exists (in case we missed the event)
+                if response_path.exists() {
+                    let _ = fs::remove_file(&canary_path);
+                    return read_and_cleanup_response(&request_path, &response_path);
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = fs::remove_file(&request_path);
+                let _ = fs::remove_file(&canary_path);
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "watcher disconnected",
@@ -294,18 +312,32 @@ fn read_and_cleanup_response(request_path: &Path, response_path: &Path) -> io::R
 | CPU usage | Continuous polling | Blocks on channel |
 | Watcher setup | None | Before writing request |
 | Canary verification | None | Yes, ensures watcher works |
-| Race handling | N/A (polling catches everything) | Check `exists()` after watcher setup |
+| Race handling | N/A (polling catches everything) | Check `exists()` as fallback |
 
 #### Order of Operations (Critical)
 
 1. **Set up watcher** on `submissions/` directory
-2. **Verify watcher** via canary file (ensures we won't miss events)
-3. **Write request file** (triggers daemon)
-4. **Check if response exists** (daemon might be very fast)
-5. **Wait for response event** via channel
-6. **Read and cleanup** response
+2. **Write request AND canary files** (request triggers daemon, canary verifies watcher)
+3. **Wait for events** in unified loop:
+   - Response arrives → done, return it
+   - Canary arrives → watcher verified, keep waiting
+   - Timeout without canary → watcher broken, error
+   - Timeout after canary → task timed out, error
+4. **Read and cleanup** response
 
-The key insight: watcher must be set up BEFORE writing the request, otherwise we might miss the response event if the daemon is very fast.
+The key insight: watcher must be set up BEFORE writing files. Request and canary are written together so daemon can start processing immediately while we verify the watcher in parallel.
+
+#### File Naming Convention
+
+All files for a submission use the same UUID with different suffixes:
+```
+submissions/
+├── <uuid>.request.json   # submitter writes (triggers daemon)
+├── <uuid>.response.json  # daemon writes (result)
+└── <uuid>.canary.json    # submitter writes (watcher verification)
+```
+
+The daemon only reacts to `.request.json` files - canary and response files are ignored by `categorize_under_submissions()`.
 
 #### Error Handling
 
