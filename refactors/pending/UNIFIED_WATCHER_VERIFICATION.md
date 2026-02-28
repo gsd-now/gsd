@@ -42,63 +42,82 @@ Each function creates and discards its own watcher. No way to reuse a verified w
 
 ## Design
 
+### Key Insight
+
+A canary is just another file we're waiting for. The only difference is:
+- **Canary**: We write it, retry if not seen, clean up after
+- **Target**: Something else writes it, we just wait
+
+So the API should accept a **set of items to wait for**, where each item is either a canary or a target.
+
 ### Core Abstraction
 
 ```rust
-/// A file watcher that verifies itself via canary file.
-///
-/// The watcher can optionally short-circuit verification if a target file
-/// is seen before the canary - seeing any event proves the watcher works.
+/// What to wait for.
+pub enum WaitItem {
+    /// A canary file - watcher creates it, retries writes, cleans up when seen.
+    Canary(PathBuf),
+    /// A target file - just wait for an event on it.
+    Target(PathBuf),
+}
+
+/// A file watcher verified via canary files.
 pub struct VerifiedWatcher {
     rx: mpsc::Receiver<PathBuf>,
     _watcher: RecommendedWatcher,
 }
 
 impl VerifiedWatcher {
-    /// Create a verified watcher on a directory.
+    /// Create a watcher and wait for ALL items.
     ///
-    /// Writes a canary file and waits for either:
-    /// - The canary event (watcher verified)
-    /// - An event for `short_circuit_on` file (implicitly verifies watcher)
+    /// For canaries: writes the file, retries periodically, cleans up when seen.
+    /// For targets: just waits for the event.
     ///
-    /// # Arguments
+    /// Returns when ALL items have been observed.
     ///
-    /// * `watch_dir` - Directory to watch (must exist)
-    /// * `canary_path` - Path for canary file (will be created and deleted)
-    /// * `short_circuit_on` - Optional file that implicitly verifies watcher if seen
-    /// * `verify_timeout` - How long to wait for verification (None = wait forever)
-    ///
-    /// # Returns
-    ///
-    /// Returns `(watcher, short_circuited)` where `short_circuited` is true if
-    /// the target file was seen during verification.
-    pub fn new(
+    /// Use this for daemon startup (verify both directories) or when you need
+    /// to ensure multiple files exist before proceeding.
+    pub fn wait_all(
         watch_dir: &Path,
-        canary_path: &Path,
-        short_circuit_on: Option<&Path>,
-        verify_timeout: Option<Duration>,
-    ) -> io::Result<(Self, bool)>;
+        items: Vec<WaitItem>,
+        timeout: Option<Duration>,
+    ) -> io::Result<Self>;
 
-    /// Wait for a specific file to appear.
+    /// Create a watcher and wait for ANY item.
     ///
-    /// # Arguments
+    /// Returns `(watcher, observed_path)` - which path was seen first.
     ///
-    /// * `target` - File to wait for
-    /// * `timeout` - How long to wait (`None` = wait forever, used by GSD for indefinite waits)
+    /// Use this for short-circuiting: "canary OR status file, whichever first".
+    /// If the target wins, you're done. If the canary wins, use `wait_for()`
+    /// to continue waiting for the target.
+    pub fn wait_any(
+        watch_dir: &Path,
+        items: Vec<WaitItem>,
+        timeout: Option<Duration>,
+    ) -> io::Result<(Self, PathBuf)>;
+
+    /// Wait for a specific file on an existing watcher.
+    ///
+    /// Use this after `wait_any()` when the canary was seen first and you
+    /// still need to wait for the target.
     pub fn wait_for(&self, target: &Path, timeout: Option<Duration>) -> io::Result<()>;
 
-    /// Get the raw event receiver for custom event processing.
+    /// Consume the watcher and return the raw event receiver.
+    ///
+    /// Use this when you need custom event processing (e.g., daemon main loop).
     pub fn into_receiver(self) -> mpsc::Receiver<PathBuf>;
 }
 ```
 
-### Key Insight: Short-Circuit Verification
+### Canary Retry Logic
 
-If we're waiting for file X and doing canary verification:
-- See canary event → watcher verified, continue waiting for X
-- See X event → watcher implicitly verified (we saw an event!), return immediately
+When waiting for a canary:
+1. Write file with content `"sync"`
+2. If not seen within 100ms, rewrite with timestamp (triggers new event)
+3. Repeat until seen or timeout
+4. Delete file when seen
 
-This eliminates the `recv_timeout` loop once we've seen ANY event.
+This handles the race where the watcher isn't fully set up when we first write.
 
 ---
 
@@ -149,16 +168,18 @@ pub fn submit_file_with_timeout(
     let canary_path = submissions_dir.join(format!("{submission_id}.canary"));
     let status_path = root.join(STATUS_FILE);
 
-    // Single watcher on submissions/, short-circuit on status file
-    let (watcher, status_seen) = VerifiedWatcher::new(
+    // Wait for canary OR status file (whichever first)
+    let (watcher, seen) = VerifiedWatcher::wait_any(
         &submissions_dir,
-        &canary_path,
-        Some(&status_path),  // Short-circuit if we see status file
-        Some(Duration::from_secs(5)),  // Verification timeout
+        vec![
+            WaitItem::Canary(canary_path),
+            WaitItem::Target(status_path.clone()),
+        ],
+        Some(Duration::from_secs(5)),
     )?;
 
-    // If status file wasn't seen during verification, wait for it
-    if !status_seen {
+    // If canary was seen first, still need to wait for status
+    if seen != status_path {
         watcher.wait_for(&status_path, Some(Duration::from_secs(10)))?;
     }
 
@@ -167,7 +188,7 @@ pub fn submit_file_with_timeout(
     atomic_write_str(&root, &request_path, &serde_json::to_string(payload)?)?;
 
     // Wait for response (None = wait forever, like GSD does)
-    watcher.wait_for(&response_path, timeout)?;  // timeout is Option<Duration>
+    watcher.wait_for(&response_path, timeout)?;
 
     // Read and cleanup
     read_and_cleanup_response(&request_path, &response_path)
@@ -176,7 +197,7 @@ pub fn submit_file_with_timeout(
 
 **Key points:**
 - One watcher created, used for both status file and response file
-- If status file event seen during canary verification, skip waiting for it
+- `wait_any` with canary + status file: if status wins, we're ready immediately
 - Watcher is already verified when we write the request
 
 ### 2. Wait for Pool Ready (`wait_for_pool_ready`)
@@ -195,30 +216,32 @@ pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Res
 pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Option<Duration>) -> io::Result<()> {
     let root = fs::canonicalize(root.as_ref())?;
     let status_path = root.join(STATUS_FILE);
-    let canary_path = root.join("client_canary");
+    let canary_path = root.join("client.canary");
 
-    // Short-circuit on status file - if we see it, watcher is implicitly verified
-    let (watcher, status_seen) = VerifiedWatcher::new(
+    // Wait for canary OR status file
+    let (watcher, seen) = VerifiedWatcher::wait_any(
         &root,
-        &canary_path,
-        Some(&status_path),
-        timeout,  // None = wait forever
+        vec![
+            WaitItem::Canary(canary_path),
+            WaitItem::Target(status_path.clone()),
+        ],
+        timeout,
     )?;
 
-    if status_seen {
-        // Status file seen during verification - pool is ready
+    if seen == status_path {
+        // Status file seen first - pool is ready
         return Ok(());
     }
 
-    // Watcher verified, now wait for status file
+    // Canary seen first - watcher verified, now wait for status
     watcher.wait_for(&status_path, timeout)
 }
 ```
 
 **Key points:**
-- Much simpler: ~10 lines instead of ~120
-- If status file already exists and we see the event, return immediately
-- Otherwise wait for it with verified watcher
+- Much simpler: ~15 lines instead of ~120
+- If status file already exists and we see its event, return immediately
+- Otherwise canary verifies watcher, then wait for status
 
 ### 3. Daemon Startup (`daemon/wiring.rs`)
 
@@ -244,75 +267,29 @@ fn verify_daemon_watchers(
     root: &Path,
     agents_dir: &Path,
     submissions_dir: &Path,
-    io_rx: &mpsc::Receiver<IoEvent>,
-) -> io::Result<()> {
+) -> io::Result<VerifiedWatcher> {
     // Create both directories first
     fs::create_dir_all(agents_dir)?;
     fs::create_dir_all(submissions_dir)?;
 
-    // Canary in each directory
-    let agents_canary = agents_dir.join("daemon.canary");
-    let submissions_canary = submissions_dir.join("daemon.canary");
+    // Wait for BOTH canaries (verifies both directories are watched)
+    let watcher = VerifiedWatcher::wait_all(
+        root,
+        vec![
+            WaitItem::Canary(agents_dir.join("daemon.canary")),
+            WaitItem::Canary(submissions_dir.join("daemon.canary")),
+        ],
+        Some(Duration::from_secs(30)),
+    )?;
 
-    // Write both canaries
-    fs::write(&agents_canary, "sync")?;
-    fs::write(&submissions_canary, "sync")?;
-
-    // Wait for both canary events (already have watcher from earlier setup)
-    let mut seen_agents = false;
-    let mut seen_submissions = false;
-    let start = Instant::now();
-    let timeout = Duration::from_secs(5);
-
-    while !seen_agents || !seen_submissions {
-        if start.elapsed() > timeout {
-            // Retry canaries
-            if !seen_agents {
-                fs::write(&agents_canary, start.elapsed().as_millis().to_string())?;
-            }
-            if !seen_submissions {
-                fs::write(&submissions_canary, start.elapsed().as_millis().to_string())?;
-            }
-        }
-
-        match io_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(IoEvent::Fs(event)) => {
-                for path in &event.paths {
-                    if path == &agents_canary {
-                        seen_agents = true;
-                        let _ = fs::remove_file(&agents_canary);
-                    } else if path == &submissions_canary {
-                        seen_submissions = true;
-                        let _ = fs::remove_file(&submissions_canary);
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if start.elapsed() > Duration::from_secs(30) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "daemon watcher verification timed out",
-                    ));
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher channel disconnected",
-                ));
-            }
-        }
-    }
-
-    Ok(())
+    Ok(watcher)
 }
 ```
 
 **Key points:**
-- Two canary files, one per watched directory
-- Watcher already created earlier in daemon startup
-- Verifies both directories before entering main loop
+- `wait_all` with two canaries verifies both directories work
+- Canary lifecycle (write, retry, cleanup) handled by `VerifiedWatcher`
+- Returns watcher for use in main daemon loop
 
 ### 4. Agent Waiting for Task (`agent.rs`)
 
@@ -331,20 +308,22 @@ pub fn wait_for_task(agent_dir: &Path, timeout: Option<Duration>) -> io::Result<
     let task_path = agent_dir.join(TASK_FILE);
     let canary_path = agent_dir.join("agent.canary");
 
-    // Short-circuit on task file - if we see it, read it immediately
-    let (watcher, task_seen) = VerifiedWatcher::new(
+    // Wait for canary OR task file
+    let (watcher, seen) = VerifiedWatcher::wait_any(
         agent_dir,
-        &canary_path,
-        Some(&task_path),
+        vec![
+            WaitItem::Canary(canary_path),
+            WaitItem::Target(task_path.clone()),
+        ],
         Some(Duration::from_secs(5)),  // Verification timeout
     )?;
 
-    if task_seen {
-        // Task file event seen during verification
+    if seen == task_path {
+        // Task arrived during verification
         return fs::read_to_string(&task_path);
     }
 
-    // Watcher verified, wait for task (None = wait forever for long-running agents)
+    // Canary seen first - wait for task (None = wait forever for long-running agents)
     watcher.wait_for(&task_path, timeout)?;
     fs::read_to_string(&task_path)
 }
@@ -352,7 +331,7 @@ pub fn wait_for_task(agent_dir: &Path, timeout: Option<Duration>) -> io::Result<
 
 **Key points:**
 - If task.json arrives during canary verification, return immediately
-- Single watcher, single verification
+- Same `wait_any` pattern as other use cases
 
 ---
 
@@ -364,36 +343,111 @@ Add to existing `fs_util.rs`:
 
 ```rust
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// A file watcher verified via canary file.
+/// What to wait for when creating a VerifiedWatcher.
+pub enum WaitItem {
+    /// A canary file - watcher writes it, retries periodically, cleans up when seen.
+    Canary(PathBuf),
+    /// A target file - just wait for an event on it.
+    Target(PathBuf),
+}
+
+impl WaitItem {
+    fn path(&self) -> &Path {
+        match self {
+            WaitItem::Canary(p) | WaitItem::Target(p) => p,
+        }
+    }
+
+    fn is_canary(&self) -> bool {
+        matches!(self, WaitItem::Canary(_))
+    }
+}
+
+/// A file watcher verified via canary files.
 pub struct VerifiedWatcher {
     rx: mpsc::Receiver<PathBuf>,
     _watcher: RecommendedWatcher,
 }
 
 impl VerifiedWatcher {
-    /// Create a new verified watcher.
+    /// Create a watcher and wait for ALL items.
     ///
-    /// # Arguments
+    /// For canaries: writes the file, retries periodically, cleans up when seen.
+    /// For targets: just waits for the event.
     ///
-    /// * `watch_dir` - Directory to watch
-    /// * `canary_path` - Path for canary file (created and deleted during verification)
-    /// * `short_circuit_on` - If this file is seen, return early (implicitly verifies watcher)
-    /// * `verify_timeout` - Timeout for canary verification (None = wait forever)
-    ///
-    /// # Returns
-    ///
-    /// `(watcher, short_circuited)` - watcher and whether short-circuit file was seen
-    pub fn new(
+    /// Returns when ALL items have been observed.
+    pub fn wait_all(
         watch_dir: &Path,
-        canary_path: &Path,
-        short_circuit_on: Option<&Path>,
-        verify_timeout: Option<Duration>,
-    ) -> io::Result<(Self, bool)> {
+        items: Vec<WaitItem>,
+        timeout: Option<Duration>,
+    ) -> io::Result<Self> {
+        let (watcher, rx) = Self::create_watcher(watch_dir)?;
+        let paths: HashSet<PathBuf> = items.iter().map(|i| i.path().to_path_buf()).collect();
+
+        Self::wait_for_items(&rx, &items, paths, WaitMode::All, timeout)?;
+
+        Ok(Self { rx, _watcher: watcher })
+    }
+
+    /// Create a watcher and wait for ANY item.
+    ///
+    /// Returns `(watcher, observed_path)` - which path was seen first.
+    pub fn wait_any(
+        watch_dir: &Path,
+        items: Vec<WaitItem>,
+        timeout: Option<Duration>,
+    ) -> io::Result<(Self, PathBuf)> {
+        let (watcher, rx) = Self::create_watcher(watch_dir)?;
+        let paths: HashSet<PathBuf> = items.iter().map(|i| i.path().to_path_buf()).collect();
+
+        let seen = Self::wait_for_items(&rx, &items, paths, WaitMode::Any, timeout)?;
+
+        Ok((Self { rx, _watcher: watcher }, seen.into_iter().next().unwrap()))
+    }
+
+    /// Wait for a specific file on an existing watcher.
+    pub fn wait_for(&self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
+        if target.exists() {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+        loop {
+            if let Some(t) = timeout {
+                if start.elapsed() > t {
+                    if target.exists() { return Ok(()); }
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out waiting for {}", target.display()),
+                    ));
+                }
+            }
+
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(path) if path == target => return Ok(()),
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if target.exists() { return Ok(()); }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "watcher disconnected"));
+                }
+            }
+        }
+    }
+
+    /// Consume the watcher and return the raw event receiver.
+    pub fn into_receiver(self) -> mpsc::Receiver<PathBuf> {
+        self.rx
+    }
+
+    // --- Private helpers ---
+
+    fn create_watcher(watch_dir: &Path) -> io::Result<(RecommendedWatcher, mpsc::Receiver<PathBuf>)> {
         let (tx, rx) = mpsc::channel();
-        let watch_dir_for_closure = watch_dir.to_path_buf();
 
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| {
@@ -407,114 +461,96 @@ impl VerifiedWatcher {
         )
         .map_err(io::Error::other)?;
 
-        watcher
-            .watch(watch_dir, RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
+        watcher.watch(watch_dir, RecursiveMode::NonRecursive).map_err(io::Error::other)?;
 
-        // Write canary
-        fs::write(canary_path, "sync")?;
+        Ok((watcher, rx))
+    }
 
+    fn wait_for_items(
+        rx: &mpsc::Receiver<PathBuf>,
+        items: &[WaitItem],
+        mut remaining: HashSet<PathBuf>,
+        mode: WaitMode,
+        timeout: Option<Duration>,
+    ) -> io::Result<HashSet<PathBuf>> {
         let start = Instant::now();
-        let mut short_circuited = false;
+        let mut seen = HashSet::new();
 
-        // Wait for canary or short-circuit target
+        // Write all canaries initially
+        for item in items {
+            if let WaitItem::Canary(path) = item {
+                fs::write(path, "sync")?;
+            }
+        }
+
         loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(path) => {
-                    if path == canary_path {
-                        // Canary seen - watcher verified
-                        let _ = fs::remove_file(canary_path);
-                        break;
-                    } else if short_circuit_on.is_some_and(|target| path == target) {
-                        // Target file seen - implicitly verified
-                        let _ = fs::remove_file(canary_path);
-                        short_circuited = true;
-                        break;
+                    if remaining.remove(&path) {
+                        seen.insert(path.clone());
+
+                        // Clean up if it was a canary
+                        if items.iter().any(|i| i.is_canary() && i.path() == path) {
+                            let _ = fs::remove_file(&path);
+                        }
+
+                        // Check completion
+                        match mode {
+                            WaitMode::Any => {
+                                // Clean up remaining canaries
+                                Self::cleanup_canaries(items, &remaining);
+                                return Ok(seen);
+                            }
+                            WaitMode::All if remaining.is_empty() => {
+                                return Ok(seen);
+                            }
+                            WaitMode::All => {}
+                        }
                     }
-                    // Other event - continue waiting
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(timeout) = verify_timeout {
-                        if start.elapsed() > timeout {
-                            let _ = fs::remove_file(canary_path);
+                    // Check timeout
+                    if let Some(t) = timeout {
+                        if start.elapsed() > t {
+                            Self::cleanup_canaries(items, &remaining);
                             return Err(io::Error::new(
                                 io::ErrorKind::TimedOut,
                                 "watcher verification timed out",
                             ));
                         }
                     }
-                    // Rewrite canary to trigger event
-                    fs::write(canary_path, start.elapsed().as_millis().to_string())?;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = fs::remove_file(canary_path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "watcher disconnected",
-                    ));
-                }
-            }
-        }
 
-        Ok((Self { rx, _watcher: watcher }, short_circuited))
-    }
-
-    /// Wait for a specific file to appear.
-    ///
-    /// Pass `None` for timeout to wait forever (used by GSD for indefinite waits).
-    pub fn wait_for(&self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
-        // Check if already exists
-        if target.exists() {
-            return Ok(());
-        }
-
-        let start = Instant::now();
-
-        loop {
-            // Check timeout if specified
-            if let Some(t) = timeout {
-                let remaining = t.saturating_sub(start.elapsed());
-                if remaining.is_zero() {
-                    // Final check
-                    if target.exists() {
-                        return Ok(());
-                    }
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("timed out waiting for {}", target.display()),
-                    ));
-                }
-            }
-
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(path) if path == target => return Ok(()),
-                Ok(_) => {
-                    // Different file - check target anyway
-                    if target.exists() {
-                        return Ok(());
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if target.exists() {
-                        return Ok(());
+                    // Retry canaries that haven't been seen
+                    for item in items {
+                        if let WaitItem::Canary(path) = item {
+                            if remaining.contains(path) {
+                                fs::write(path, start.elapsed().as_millis().to_string())?;
+                            }
+                        }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "watcher disconnected",
-                    ));
+                    Self::cleanup_canaries(items, &remaining);
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "watcher disconnected"));
                 }
             }
         }
     }
 
-    /// Consume the watcher and return the raw event receiver.
-    ///
-    /// Use this when you need custom event processing (e.g., daemon main loop).
-    pub fn into_receiver(self) -> mpsc::Receiver<PathBuf> {
-        self.rx
+    fn cleanup_canaries(items: &[WaitItem], remaining: &HashSet<PathBuf>) {
+        for item in items {
+            if let WaitItem::Canary(path) = item {
+                if remaining.contains(path) {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
     }
+}
+
+enum WaitMode {
+    All,
+    Any,
 }
 ```
 
