@@ -185,6 +185,26 @@ impl<'a> TaskRunner<'a> {
             call_wake_script(script)?;
         }
 
+        // Check if the pool exists and is running (only if config uses Pool actions and has tasks)
+        let pool_path = runner_config.agent_pool_root;
+        if config.has_pool_actions() && !runner_config.initial_tasks.is_empty() {
+            if !pool_path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Pool not found: {}", pool_path.display()),
+                ));
+            }
+            if !agent_pool::is_daemon_running(pool_path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    format!(
+                        "Pool daemon not running at: {} (directory exists but no daemon)",
+                        pool_path.display()
+                    ),
+                ));
+            }
+        }
+
         let max_concurrency = config.options.max_concurrency.unwrap_or(usize::MAX);
 
         info!(

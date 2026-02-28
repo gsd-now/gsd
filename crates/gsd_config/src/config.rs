@@ -274,6 +274,14 @@ impl Config {
         self.steps.iter().map(|s| (s.name.as_str(), s)).collect()
     }
 
+    /// Check if any step uses the Pool action.
+    #[must_use]
+    pub fn has_pool_actions(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s.action, Action::Pool { .. }))
+    }
+
     /// Validate the config for internal consistency.
     ///
     /// Checks:
