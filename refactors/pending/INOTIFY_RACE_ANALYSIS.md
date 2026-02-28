@@ -1,12 +1,12 @@
 # Inotify Race Condition Analysis
 
-## Status: MOSTLY COMPLETE
+## Status: COMPLETE
 
 **Phase 1 (Canary sync):** DONE - Watcher sync at startup exists.
 **Phase 2 (Flatten submissions):** DONE - Uses `<id>.request.json` / `<id>.response.json` flat files.
 **Phase 3 (Rename pending → submissions):** DONE - Renamed to SUBMISSIONS_DIR.
 **Phase 4 (Status file):** DONE - Daemon writes "ready" to status file; client uses `wait_for_pool_ready`.
-**Phase 5 (Clean shutdown):** NOT DONE - See `todos.md`.
+**Phase 5 (Clean shutdown):** DONE - Cleans up on startup and shutdown via guard.
 
 ---
 

@@ -33,6 +33,65 @@ use super::io::{
 use super::path_category::{self, PathCategory};
 
 // =============================================================================
+// Pool State Cleanup
+// =============================================================================
+
+/// Clean up pool state files.
+///
+/// Removes:
+/// - All files in submissions/ directory
+/// - All directories in agents/ directory
+/// - The status file
+/// - Any canary files
+///
+/// This is called on startup (to clean up stale state from crashed daemons)
+/// and on graceful shutdown.
+fn cleanup_pool_state(root: &Path) {
+    let status_file = root.join(STATUS_FILE);
+    let submissions_dir = root.join(SUBMISSIONS_DIR);
+    let agents_dir = root.join(AGENTS_DIR);
+
+    // Remove status file
+    if status_file.exists() {
+        let _ = fs::remove_file(&status_file);
+    }
+
+    // Clean submissions directory (flat files)
+    if submissions_dir.exists()
+        && let Ok(entries) = fs::read_dir(&submissions_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
+    // Clean agents directory (subdirectories)
+    if agents_dir.exists()
+        && let Ok(entries) = fs::read_dir(&agents_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+
+    // Clean up any canary files in the root
+    for filename in ["canary", "client_canary"] {
+        let canary_path = root.join(filename);
+        if canary_path.exists() {
+            let _ = fs::remove_file(&canary_path);
+        }
+    }
+
+    debug!("cleaned up pool state");
+}
+
+// =============================================================================
 // Configuration
 // =============================================================================
 
@@ -149,8 +208,8 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
     // so FSEvent paths match our stored paths.
     let root = fs::canonicalize(root.as_ref())?;
 
-    // TODO: Add clean option to clear stale agent/pending directories on restart.
-    // See run_with_config for details.
+    // Clean up stale state from previous runs (crashed daemon, etc.)
+    cleanup_pool_state(&root);
 
     let lock_path = root.join(LOCK_FILE);
     let socket_path = root.join(SOCKET_NAME);
@@ -176,6 +235,8 @@ pub fn spawn_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Re
 
     let thread = thread::spawn(move || {
         let _watcher = fs_watcher;
+        // Clean up pool state on thread exit (graceful shutdown or panic)
+        let _pool_cleanup = PoolStateCleanup(root.clone());
 
         // Create everything and verify all FS events are seen
         let (lock, listener) = match sync_and_setup(
@@ -249,9 +310,8 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     // so FSEvent paths match our stored paths.
     let root = fs::canonicalize(root.as_ref())?;
 
-    // TODO: Add --clean flag to clear stale agent/pending directories on restart.
-    // Currently, leftover directories from previous runs are picked up by the scan
-    // and treated as live agents, which causes tasks to be assigned to non-existent agents.
+    // Clean up stale state from previous runs (crashed daemon, etc.)
+    cleanup_pool_state(&root);
 
     let lock_path = root.join(LOCK_FILE);
     let socket_path = root.join(SOCKET_NAME);
@@ -268,6 +328,8 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     // Start watcher FIRST - before creating anything - so we can verify all FS events
     let _fs_watcher = create_fs_watcher(&root, io_tx.clone())?;
+    // Clean up pool state on exit (SIGTERM or panic)
+    let _pool_cleanup = PoolStateCleanup(root.clone());
 
     // Now create everything and verify we see all the events
     let (_lock, listener) = sync_and_setup(
@@ -1053,6 +1115,15 @@ struct SocketCleanup(PathBuf);
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Guard that cleans up pool state when dropped.
+struct PoolStateCleanup(PathBuf);
+
+impl Drop for PoolStateCleanup {
+    fn drop(&mut self) {
+        cleanup_pool_state(&self.0);
     }
 }
 
