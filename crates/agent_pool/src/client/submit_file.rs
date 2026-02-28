@@ -18,6 +18,7 @@
 use super::payload::Payload;
 use super::{DEFAULT_POOL_READY_TIMEOUT, wait_for_pool_ready};
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_SUFFIX, SUBMISSIONS_DIR};
+use crate::fs_util::atomic_write_str;
 use crate::response::Response;
 use std::fs;
 use std::io;
@@ -81,13 +82,10 @@ pub fn submit_file_with_timeout(
     let request_path = submissions_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
     let response_path = submissions_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
 
-    // Write request file with serialized payload (atomic: write temp in same dir, rename)
+    // Write request file with serialized payload (atomic via scratch/)
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    // Temp file in same directory to ensure same filesystem for rename
-    let temp_path = submissions_dir.join(format!(".{submission_id}.tmp"));
-    fs::write(&temp_path, &content)?;
-    fs::rename(&temp_path, &request_path)?;
+    atomic_write_str(root, &request_path, &content)?;
 
     // Poll for response
     let start = Instant::now();
