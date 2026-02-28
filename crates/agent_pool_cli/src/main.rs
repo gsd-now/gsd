@@ -78,7 +78,7 @@ enum Command {
         json: bool,
         /// How long an idle agent can wait before being deregistered (in seconds).
         /// Agents that are still alive will re-register by calling `get_task` again.
-        #[arg(long, default_value = "60")]
+        #[arg(long, default_value = "180")]
         idle_agent_timeout_secs: u64,
         /// Default timeout for tasks in seconds.
         #[arg(long, default_value = "300")]
