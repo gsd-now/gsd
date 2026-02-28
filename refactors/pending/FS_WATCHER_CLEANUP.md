@@ -59,7 +59,7 @@ submissions/<uuid>.response.json
 
 ### Task 2: Audit all temp file usage - **DONE**
 
-Atomic writes use temp files in the same directory, then rename. This is intentional - the rename generates events that watchers handle.
+Atomic writes use temp files in `scratch/` directory, then rename to final location. The `scratch/` directory is not watched, so temp file writes don't generate spurious events. The rename into `submissions/` generates the event that watchers handle.
 
 ### Task 3: SubmissionsDir fallback - **OBSOLETE**
 
@@ -157,7 +157,7 @@ fn categorize_under_submissions(
 // Add to existing imports
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc;
-use crate::constants::CANARY_SUFFIX;  // Add this
+use crate::constants::{CANARY_SUFFIX, SCRATCH_DIR};  // Add these
 ```
 
 **Step 4: Replace polling loop with watcher-based wait**
@@ -171,16 +171,17 @@ pub fn submit_file_with_timeout(
     timeout: Duration,
 ) -> io::Result<Response> {
     let root = root.as_ref();
-    let submissions_dir = root.join(SUBMISSIONS_DIR);
 
     // Wait for daemon to be ready
     wait_for_pool_ready(root, DEFAULT_POOL_READY_TIMEOUT)?;
 
+    // Canonicalize to match FSEvents paths (e.g., /var -> /private/var on macOS)
+    let root = fs::canonicalize(root)?;
+    let submissions_dir = root.join(SUBMISSIONS_DIR);
+    let scratch_dir = root.join(SCRATCH_DIR);
+
     // Generate unique submission ID
     let submission_id = Uuid::new_v4().to_string();
-
-    // Canonicalize submissions_dir to match FSEvents paths (e.g., /var -> /private/var)
-    let submissions_dir = fs::canonicalize(&submissions_dir)?;
 
     // All files use the same ID with different suffixes
     let request_path = submissions_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
@@ -217,9 +218,13 @@ pub fn submit_file_with_timeout(
     // - Canary verifies our watcher is working
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let temp_path = submissions_dir.join(format!(".{submission_id}.tmp"));
+
+    // Atomic write: temp file in scratch/, then rename to submissions/
+    let temp_path = scratch_dir.join(format!("{submission_id}.tmp"));
     fs::write(&temp_path, &content)?;
     fs::rename(&temp_path, &request_path)?;
+
+    // Canary file for watcher verification
     fs::write(&canary_path, "sync")?;
 
     let start = Instant::now();
@@ -331,13 +336,16 @@ The key insight: watcher must be set up BEFORE writing files. Request and canary
 
 All files for a submission use the same UUID with different suffixes:
 ```
+scratch/
+└── <uuid>.tmp            # temp file for atomic write (not watched)
+
 submissions/
 ├── <uuid>.request.json   # submitter writes (triggers daemon)
 ├── <uuid>.response.json  # daemon writes (result)
-└── <uuid>.canary    # submitter writes (watcher verification)
+└── <uuid>.canary         # submitter writes (watcher verification)
 ```
 
-The daemon only reacts to `.request.json` files - canary and response files are ignored by `categorize_under_submissions()`.
+The daemon only reacts to `.request.json` files - canary and response files are ignored by `categorize_under_submissions()`. The `scratch/` directory is not watched at all.
 
 #### Error Handling
 
