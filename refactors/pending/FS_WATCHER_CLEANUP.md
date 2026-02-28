@@ -347,6 +347,202 @@ submissions/
 
 The daemon only reacts to `.request.json` files - canary and response files are ignored by `categorize_under_submissions()`. The `scratch/` directory is not watched at all.
 
+#### Canary Verification Abstraction
+
+The canary verification pattern is used in multiple places. Extract to a reusable abstraction:
+
+**File:** `crates/agent_pool/src/fs_util.rs`
+
+```rust
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::sync::mpsc;
+
+/// A verified file watcher that uses canary files to confirm the watcher is working.
+///
+/// The watcher is verified on creation by writing a canary file and waiting for
+/// the corresponding event. This ensures we won't miss events due to watcher issues.
+pub struct VerifiedWatcher {
+    pool_root: PathBuf,
+    watch_dir: PathBuf,
+    rx: mpsc::Receiver<PathBuf>,
+    _watcher: RecommendedWatcher,
+}
+
+impl VerifiedWatcher {
+    /// Create a new verified watcher on the given directory.
+    ///
+    /// This blocks until the watcher is verified via canary file, or times out.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool_root` - Pool root (for scratch directory access)
+    /// * `watch_dir` - Directory to watch (must be canonicalized)
+    /// * `canary_id` - Unique ID for the canary file (e.g., submission UUID)
+    /// * `verify_timeout` - How long to wait for canary verification
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if watcher creation fails or canary verification times out.
+    pub fn new(
+        pool_root: &Path,
+        watch_dir: &Path,
+        canary_id: &str,
+        verify_timeout: Duration,
+    ) -> io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let watch_dir_clone = watch_dir.to_path_buf();
+
+        let watcher = RecommendedWatcher::new(
+            move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    for path in event.paths {
+                        let _ = tx.send(path);
+                    }
+                }
+            },
+            Config::default(),
+        )
+        .map_err(io::Error::other)?;
+
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+
+        let canary_path = watch_dir.join(format!("{canary_id}.canary"));
+
+        // Verify watcher via canary
+        let start = Instant::now();
+        fs::write(&canary_path, "sync")?;
+
+        loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(path) if path == canary_path => {
+                    let _ = fs::remove_file(&canary_path);
+                    break;
+                }
+                Ok(_) => {
+                    // Other file event - might be what we're waiting for, re-queue
+                    // Actually, we can't re-queue easily. Just continue.
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if start.elapsed() > verify_timeout {
+                        let _ = fs::remove_file(&canary_path);
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "watcher verification timed out",
+                        ));
+                    }
+                    // Rewrite canary to trigger another event
+                    fs::write(&canary_path, start.elapsed().as_millis().to_string())?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = fs::remove_file(&canary_path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "watcher disconnected",
+                    ));
+                }
+            }
+        }
+
+        Ok(Self {
+            pool_root: pool_root.to_path_buf(),
+            watch_dir: watch_dir_clone,
+            rx,
+            _watcher: watcher,
+        })
+    }
+
+    /// Wait for a specific file to appear.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the timeout is exceeded.
+    pub fn wait_for(&self, target: &Path, timeout: Duration) -> io::Result<()> {
+        let start = Instant::now();
+
+        // Check if already exists
+        if target.exists() {
+            return Ok(());
+        }
+
+        loop {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                if target.exists() {
+                    return Ok(());
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("timed out waiting for {}", target.display()),
+                ));
+            }
+
+            match self.rx.recv_timeout(Duration::from_millis(100).min(remaining)) {
+                Ok(path) if path == target => return Ok(()),
+                Ok(_) => {
+                    // Different file, check if our target exists
+                    if target.exists() {
+                        return Ok(());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if target.exists() {
+                        return Ok(());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "watcher disconnected",
+                    ));
+                }
+            }
+        }
+    }
+}
+```
+
+**Usage in submit_file:**
+
+```rust
+pub fn submit_file_with_timeout(...) -> io::Result<Response> {
+    // ... setup ...
+
+    // Create verified watcher
+    let watcher = VerifiedWatcher::new(
+        root,
+        &submissions_dir,
+        &submission_id,
+        Duration::from_secs(5),  // canary verification timeout
+    )?;
+
+    // Write request file (watcher is already verified)
+    atomic_write_str(root, &request_path, &content)?;
+
+    // Wait for response
+    watcher.wait_for(&response_path, timeout)?;
+
+    // Read and return response
+    read_and_cleanup_response(&request_path, &response_path)
+}
+```
+
+**Usage in wait_for_pool_ready:**
+
+```rust
+pub fn wait_for_pool_ready(root: &Path, timeout: Duration) -> io::Result<()> {
+    let watcher = VerifiedWatcher::new(
+        root,
+        root,  // watch pool root for status file
+        "pool_ready",
+        Duration::from_secs(5),
+    )?;
+
+    watcher.wait_for(&root.join(STATUS_FILE), timeout)
+}
+```
+
 #### Error Handling
 
 - **Watcher creation fails:** Return error (notify not available)
