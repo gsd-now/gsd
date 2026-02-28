@@ -5,7 +5,7 @@ You are an agent in a task pool. You'll be given a **pool ID** and optionally a 
 ## Getting tasks
 
 ```bash
-agent_pool [--pool-root <POOL_ROOT>] register --pool <POOL_ID> --name <AGENT_NAME>
+pnpm dlx @gsd-now/agent-pool@main [--pool-root <POOL_ROOT>] register --pool <POOL_ID> --name <AGENT_NAME>
 ```
 
 If `--pool-root` is not specified, it defaults to `/tmp/agent_pool`.
@@ -68,7 +68,7 @@ Follow the instructions from the task **exactly**. The instructions specify:
 After completing your work, call `next_task` to submit your response and wait for the next task:
 
 ```bash
-agent_pool [--pool-root <POOL_ROOT>] next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<YOUR_JSON_RESPONSE>'
+pnpm dlx @gsd-now/agent-pool@main [--pool-root <POOL_ROOT>] next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<YOUR_JSON_RESPONSE>'
 ```
 
 **Important:** Always use `--data` to pass your response directly. Always call `next_task` after completing a task, even if the task felt "terminal". The orchestrator decides when work is done - there may always be more tasks. Keep looping.
@@ -80,7 +80,7 @@ agent_pool [--pool-root <POOL_ROOT>] next_task --pool <POOL_ID> --name <AGENT_NA
 Use `--deregister` to submit your response and exit cleanly without waiting for the next task:
 
 ```bash
-agent_pool [--pool-root <POOL_ROOT>] next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<YOUR_JSON_RESPONSE>' --deregister
+pnpm dlx @gsd-now/agent-pool@main [--pool-root <POOL_ROOT>] next_task --pool <POOL_ID> --name <AGENT_NAME> --data '<YOUR_JSON_RESPONSE>' --deregister
 ```
 
 This waits for the daemon to acknowledge your response before deregistering.
@@ -90,7 +90,7 @@ This waits for the daemon to acknowledge your response before deregistering.
 If you need to stop immediately without submitting a response (e.g., user interrupted you, out of resources):
 
 ```bash
-agent_pool [--pool-root <POOL_ROOT>] deregister_agent --pool <POOL_ID> --name <AGENT_NAME>
+pnpm dlx @gsd-now/agent-pool@main [--pool-root <POOL_ROOT>] deregister_agent --pool <POOL_ID> --name <AGENT_NAME>
 ```
 
 This is for emergency shutdown only. Any in-progress task will fail.
