@@ -122,7 +122,7 @@ loop {
 
 ```rust
 /// Suffix for submission canary files (watcher verification).
-pub const CANARY_SUFFIX: &str = ".canary.json";
+pub const CANARY_SUFFIX: &str = ".canary";
 ```
 
 **Step 2: Add explicit ignore in path_category.rs**
@@ -143,7 +143,7 @@ fn categorize_under_submissions(
         return Some(PathCategory::SubmissionRequest { id: id.to_string() });
     }
 
-    // Other files (.response.json, .canary.json, .tmp) are ignored:
+    // Other files (.response.json, .canary, .tmp) are ignored:
     // - Response files are written by daemon, no need to react
     // - Canary files are for client watcher verification
     // - Temp files are intermediate atomic write artifacts
@@ -334,7 +334,7 @@ All files for a submission use the same UUID with different suffixes:
 submissions/
 ├── <uuid>.request.json   # submitter writes (triggers daemon)
 ├── <uuid>.response.json  # daemon writes (result)
-└── <uuid>.canary.json    # submitter writes (watcher verification)
+└── <uuid>.canary    # submitter writes (watcher verification)
 ```
 
 The daemon only reacts to `.request.json` files - canary and response files are ignored by `categorize_under_submissions()`.
