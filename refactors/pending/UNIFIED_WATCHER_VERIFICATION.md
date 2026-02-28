@@ -107,10 +107,22 @@ Instead, `verified` is tracked internally, and `into_receiver()` should only be 
 When not yet verified, `wait_for()` and `ensure_verified()`:
 1. Write canary with content `"sync"`
 2. Use `recv_timeout(100ms)` to poll for events
-3. If canary seen → mark verified, delete canary
-4. If target seen → return success (implicitly verified - we saw an event!)
-5. If timeout → rewrite canary with timestamp (triggers new event)
-6. Repeat until verified + target seen, or timeout exceeded
+3. If ANY event seen → mark verified (see assumption below)
+4. If canary seen → delete canary
+5. If target seen → return success
+6. If timeout without events → rewrite canary with timestamp (triggers new event)
+7. Repeat until verified + target seen, or timeout exceeded
+
+### Key Assumption
+
+**Once we observe any filesystem event, the watcher is fully operational.**
+
+Filesystem watchers (FSEvents on macOS, inotify on Linux) don't "partially work". The only failure mode is during initial setup - there's a brief window after `watch()` returns where events might not be delivered yet. Once we receive ANY event, we can trust that:
+- The watcher is fully registered with the kernel
+- All subsequent filesystem operations in the watched directory will generate events
+- We won't miss events due to setup races
+
+This is why seeing the canary event (or any other event) is sufficient proof that the watcher works for all future operations.
 
 ---
 
@@ -306,7 +318,12 @@ impl VerifiedWatcher {
         })
     }
 
-    /// Block until watcher is verified (canary event seen).
+    /// Block until watcher is verified.
+    ///
+    /// Verification succeeds when ANY filesystem event is observed (canary or otherwise).
+    /// This relies on the assumption that filesystem watchers don't "partially work" -
+    /// once an event is delivered, the watcher is fully operational and will continue
+    /// delivering events for subsequent filesystem operations.
     ///
     /// Use when you need verification without waiting for a target file.
     pub fn ensure_verified(&mut self, timeout: Option<Duration>) -> io::Result<()> {
@@ -323,7 +340,9 @@ impl VerifiedWatcher {
                     return Ok(());
                 }
                 Ok(_) => {
-                    // Any event proves watcher works
+                    // Any filesystem event proves the watcher is working.
+                    // Once we've received one event, we can trust that future
+                    // filesystem operations will also generate observable events.
                     self.verified = true;
                     let _ = fs::remove_file(&self.canary_path);
                     return Ok(());
