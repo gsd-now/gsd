@@ -1,198 +1,95 @@
-//! Worker-side event loop for waiting on tasks.
+//! Worker-side utilities for the anonymous worker protocol.
 //!
-//! This module provides `notify`-based waiting functions for workers. Instead of
-//! polling the filesystem with `thread::sleep`, workers use these functions to
-//! block on file events.
+//! Workers use UUID-based flat files instead of named directories:
+//! - `<uuid>.ready.json` - Worker writes to signal availability
+//! - `<uuid>.task.json` - Daemon writes to assign task
+//! - `<uuid>.response.json` - Worker writes to complete task
+//!
+//! Each task cycle uses a fresh UUID. This eliminates race conditions
+//! and simplifies the protocol.
 
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::fs;
 use std::io;
-use std::sync::mpsc;
+use std::path::Path;
 use std::time::Duration;
 
-use crate::fs::is_write_complete;
-use crate::{RESPONSE_FILE, TASK_FILE, Transport};
+use uuid::Uuid;
 
-/// Events the agent cares about.
+use crate::constants::{AGENTS_DIR, canary_path, ready_path, response_path, task_path};
+use crate::fs::VerifiedWatcher;
+
+/// Result of waiting for a task.
 #[derive(Debug)]
-pub enum AgentEvent {
-    /// A file changed in the agent directory.
-    FileChanged,
-    /// The watcher encountered an error.
-    WatchError(notify::Error),
+pub struct TaskAssignment {
+    /// UUID for this task cycle (used to write response).
+    pub uuid: String,
+    /// Raw task content from the daemon.
+    pub content: String,
 }
 
-/// Create a watcher for a directory.
+/// Wait for a task assignment from the daemon.
 ///
-/// Watches the given directory with recursive mode. The caller should pass
-/// the parent of the agent directory so the watcher can be set up before
-/// the agent directory exists.
+/// This function:
+/// 1. Generates a fresh UUID
+/// 2. Writes `<uuid>.ready.json` to signal availability
+/// 3. Waits for `<uuid>.task.json` using a verified watcher
+/// 4. Returns the UUID and task content
 ///
-/// Returns the watcher (keep alive) and a receiver for events.
+/// The optional `name` parameter is included in the ready file for debugging.
 ///
 /// # Errors
 ///
-/// Returns an error if the filesystem watcher cannot be created.
-pub fn create_watcher(
-    watch_dir: &std::path::Path,
-) -> io::Result<(RecommendedWatcher, mpsc::Receiver<AgentEvent>)> {
-    let (tx, rx) = mpsc::channel();
-
-    let mut watcher = RecommendedWatcher::new(
-        move |res: Result<notify::Event, notify::Error>| match res {
-            Ok(event) => {
-                tracing::trace!(?event, "watcher event");
-                if is_write_complete(event.kind) {
-                    tracing::debug!(?event.kind, "watcher sending FileChanged");
-                    let _ = tx.send(AgentEvent::FileChanged);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(?e, "watcher error");
-                let _ = tx.send(AgentEvent::WatchError(e));
-            }
-        },
-        Config::default(),
-    )
-    .map_err(io::Error::other)?;
-
-    watcher
-        .watch(watch_dir, RecursiveMode::Recursive)
-        .map_err(io::Error::other)?;
-
-    Ok((watcher, rx))
-}
-
-/// Canary file used to verify watcher is receiving events.
-const CANARY_FILE: &str = "canary";
-
-/// Verify the watcher is actually receiving events by writing a canary file.
-///
-/// This is critical for avoiding race conditions: `watch()` returns immediately
-/// but `FSEvents` may not be fully set up yet. Writing a canary and waiting for
-/// the event confirms the watcher is live.
-///
-/// # Errors
-///
-/// Returns an error if the canary write fails or if no event is received
-/// within the timeout.
-pub fn verify_watcher_sync(
-    watch_dir: &std::path::Path,
-    events_rx: &mpsc::Receiver<AgentEvent>,
-    timeout: Duration,
-) -> io::Result<()> {
-    use std::fs;
-    use std::time::Instant;
-
-    let canary_path = watch_dir.join(CANARY_FILE);
-    let poll_interval = Duration::from_millis(100);
-    let start = Instant::now();
-    let mut retry_count = 0u32;
-
-    // Write initial canary
-    fs::write(&canary_path, "sync")?;
-
-    loop {
-        match events_rx.recv_timeout(poll_interval) {
-            Ok(AgentEvent::FileChanged) => {
-                // Got an event - watcher is working
-                let _ = fs::remove_file(&canary_path);
-                tracing::debug!("watcher sync verified via canary");
-                return Ok(());
-            }
-            Ok(AgentEvent::WatchError(e)) => {
-                let _ = fs::remove_file(&canary_path);
-                return Err(io::Error::other(format!("watcher error during sync: {e}")));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if start.elapsed() > timeout {
-                    let _ = fs::remove_file(&canary_path);
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "watcher sync timed out - no events received",
-                    ));
-                }
-                // Retry by rewriting canary with new value
-                retry_count += 1;
-                fs::write(&canary_path, retry_count.to_string())?;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = fs::remove_file(&canary_path);
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher channel disconnected during sync",
-                ));
-            }
-        }
-    }
-}
-
-/// Check if a task is ready to be processed (file-based only).
-///
-/// Returns `true` when `task.json` exists and `response.json` does not.
-/// For socket-based transports, always returns `false` (task readiness is
-/// determined by blocking on the socket).
-#[must_use]
-pub fn is_task_ready(transport: &Transport) -> bool {
-    let Some(dir) = transport.path() else {
-        // Socket transport - task readiness is handled by blocking read
-        return false;
-    };
-    let task_file = dir.join(TASK_FILE);
-    let response_file = dir.join(RESPONSE_FILE);
-    task_file.exists() && !response_file.exists()
-}
-
-/// Wait for a task to be ready (file-based transports).
-///
-/// Blocks until `task.json` exists and `response.json` does not.
-/// The condition `task.exists() && !response.exists()` handles all cases:
-/// - After writing response: keeps waiting until daemon cleans up and assigns new task
-/// - Fresh start: waits for first task assignment
-///
-/// For socket-based transports, just call `transport.read()` which blocks.
-///
-/// # Errors
-///
-/// Returns an error if the watcher encounters an error or the channel closes.
+/// Returns an error if:
+/// - File operations fail (writing ready file, reading task file)
+/// - Timeout is exceeded waiting for task
+/// - Watcher cannot be created
 pub fn wait_for_task(
-    transport: &Transport,
-    events_rx: &mpsc::Receiver<AgentEvent>,
-) -> io::Result<()> {
-    if is_task_ready(transport) {
-        return Ok(());
-    }
+    pool_root: &Path,
+    name: Option<&str>,
+    timeout: Option<Duration>,
+) -> io::Result<TaskAssignment> {
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let uuid = Uuid::new_v4().to_string();
 
-    loop {
-        match events_rx.recv() {
-            Ok(AgentEvent::FileChanged) => {
-                if is_task_ready(transport) {
-                    return Ok(());
-                }
-            }
-            Ok(AgentEvent::WatchError(e)) => {
-                return Err(io::Error::other(e));
-            }
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher channel closed",
-                ));
-            }
-        }
-    }
+    let ready = ready_path(&agents_dir, &uuid);
+    let task = task_path(&agents_dir, &uuid);
+    let canary = canary_path(&agents_dir, &uuid);
+
+    // Write ready file with optional metadata
+    let metadata = name.map_or_else(|| "{}".to_string(), |n| format!(r#"{{"name":"{n}"}}"#));
+    fs::write(&ready, &metadata)?;
+
+    // Wait for task file using VerifiedWatcher
+    let mut watcher = VerifiedWatcher::new(&agents_dir, canary)?;
+    watcher.wait_for(&task, timeout)?;
+
+    let content = fs::read_to_string(&task)?;
+    Ok(TaskAssignment { uuid, content })
+}
+
+/// Write a response for a completed task.
+///
+/// The daemon will clean up all files for this UUID after reading the response.
+///
+/// # Errors
+///
+/// Returns an error if the response file cannot be written.
+pub fn write_response(pool_root: &Path, uuid: &str, content: &str) -> io::Result<()> {
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let path = response_path(&agents_dir, uuid);
+    fs::write(&path, content)
 }
 
 #[cfg(test)]
 #[expect(clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::path::PathBuf;
 
     fn test_dir(name: &str) -> PathBuf {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".test-data")
-            .join("agent")
+            .join("worker")
             .join(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create test dir");
@@ -200,41 +97,17 @@ mod tests {
     }
 
     #[test]
-    fn is_task_ready_no_files() {
-        let dir = test_dir("no_files");
-        let transport = Transport::Directory(dir);
-        assert!(!is_task_ready(&transport));
-    }
+    fn write_response_creates_file() {
+        let pool_root = test_dir("write_response");
+        let agents_dir = pool_root.join(AGENTS_DIR);
+        fs::create_dir_all(&agents_dir).expect("create agents dir");
 
-    #[test]
-    fn is_task_ready_task_only() {
-        let dir = test_dir("task_only");
-        fs::write(dir.join(TASK_FILE), "{}").expect("write task");
-        let transport = Transport::Directory(dir);
-        assert!(is_task_ready(&transport));
-    }
+        let uuid = "test-uuid-123";
+        write_response(&pool_root, uuid, r#"{"result": "ok"}"#).expect("write response");
 
-    #[test]
-    fn is_task_ready_both_files() {
-        let dir = test_dir("both_files");
-        fs::write(dir.join(TASK_FILE), "{}").expect("write task");
-        fs::write(dir.join(RESPONSE_FILE), "{}").expect("write response");
-        let transport = Transport::Directory(dir);
-        assert!(!is_task_ready(&transport));
-    }
-
-    #[test]
-    fn is_task_ready_response_only() {
-        let dir = test_dir("response_only");
-        fs::write(dir.join(RESPONSE_FILE), "{}").expect("write response");
-        let transport = Transport::Directory(dir);
-        assert!(!is_task_ready(&transport));
-    }
-
-    #[test]
-    fn create_watcher_works() {
-        let dir = test_dir("watcher");
-        let result = create_watcher(&dir);
-        assert!(result.is_ok());
+        let path = response_path(&agents_dir, uuid);
+        assert!(path.exists());
+        let content = fs::read_to_string(&path).expect("read response");
+        assert_eq!(content, r#"{"result": "ok"}"#);
     }
 }

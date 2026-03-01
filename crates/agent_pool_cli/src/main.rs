@@ -5,15 +5,14 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, AgentEvent, DaemonConfig, Payload, RESPONSE_FILE, STATUS_FILE, TASK_FILE,
-    Transport, cleanup_stopped, create_watcher, default_pool_root, generate_id, id_to_path,
-    is_daemon_running, list_pools, resolve_pool, run_with_config, stop, submit, submit_file,
-    submit_file_with_timeout, verify_watcher_sync, wait_for_task,
+    AGENTS_DIR, DaemonConfig, Payload, STATUS_FILE, TASK_FILE, TaskAssignment, cleanup_stopped,
+    default_pool_root, generate_id, id_to_path, is_daemon_running, list_pools, resolve_pool,
+    response_path, run_with_config, stop, submit, submit_file, submit_file_with_timeout,
+    wait_for_task, write_response,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::mpsc;
 use std::time::Duration;
 use std::{fs, thread};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -128,7 +127,7 @@ enum Command {
         #[arg(long)]
         low_level: bool,
     },
-    /// Deregister an agent from the pool
+    /// Deregister an agent from the pool (deprecated: workers are now anonymous)
     #[command(name = "deregister_agent")]
     DeregisterAgent {
         /// Pool ID or path
@@ -138,15 +137,28 @@ enum Command {
         #[arg(long)]
         name: String,
     },
-    /// Register as an agent and wait for first task
+    /// Wait for and return the next task (for agents)
+    #[command(name = "get_task")]
+    GetTask {
+        /// Pool ID or path
+        #[arg(long)]
+        pool: String,
+        /// Agent name (optional, for debugging)
+        #[arg(long)]
+        name: Option<String>,
+        /// Log level
+        #[arg(short, long, default_value = "off")]
+        log_level: LogLevel,
+    },
+    /// Register as an agent and wait for first task (alias for `get_task`)
     #[command(name = "register")]
     Register {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
-        /// Agent name (must be unique within the pool)
+        /// Agent name (optional, for debugging)
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// Log level
         #[arg(short, long, default_value = "off")]
         log_level: LogLevel,
@@ -157,19 +169,22 @@ enum Command {
         /// Pool ID or path
         #[arg(long)]
         pool: String,
-        /// Agent name
+        /// UUID from the previous task (from `get_task` output)
         #[arg(long)]
-        name: String,
+        uuid: String,
         /// Response content as inline string
         #[arg(long, conflicts_with = "file")]
         data: Option<String>,
         /// Path to file containing response
         #[arg(long, conflicts_with = "data")]
         file: Option<PathBuf>,
+        /// Agent name (optional, for debugging)
+        #[arg(long)]
+        name: Option<String>,
         /// Log level
         #[arg(short, long, default_value = "off")]
         log_level: LogLevel,
-        /// Submit response and deregister (exit cleanly without waiting for next task)
+        /// Submit response and exit (don't wait for next task)
         #[arg(long)]
         deregister: bool,
     },
@@ -191,24 +206,18 @@ fn init_tracing(level: LogLevel) {
         .init();
 }
 
-/// Wait for a task file to appear and return the formatted output JSON.
-///
-/// Uses notify-based file watching instead of polling.
-fn wait_and_read_task(
-    transport: &Transport,
-    events_rx: &mpsc::Receiver<AgentEvent>,
-    name: &str,
-) -> Result<String, String> {
-    // Wait for task using notify (no polling!)
-    wait_for_task(transport, events_rx).map_err(|e| format!("Wait error: {e}"))?;
+/// Format a task assignment as JSON output.
+fn format_task_output(
+    assignment: &TaskAssignment,
+    pool_root: &std::path::Path,
+    name: Option<&str>,
+) -> String {
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let response_file = response_path(&agents_dir, &assignment.uuid);
 
-    // Read task using Transport
-    let raw = transport
-        .read(TASK_FILE)
-        .map_err(|e| format!("Failed to read task: {e}"))?;
-
+    // Parse the task envelope
     let envelope: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse task envelope: {e}"))?;
+        serde_json::from_str(&assignment.content).unwrap_or(serde_json::Value::Null);
 
     let kind = envelope
         .get("kind")
@@ -220,22 +229,21 @@ fn wait_and_read_task(
         .unwrap_or(serde_json::Value::Null);
     let instructions = envelope.get("instructions").cloned();
 
-    let response_file = transport
-        .path()
-        .map(|p| p.join(RESPONSE_FILE))
-        .ok_or("Socket transport not supported")?;
-
     let mut output = serde_json::json!({
+        "uuid": assignment.uuid,
         "kind": kind,
-        "agent_name": name,
         "response_file": response_file.display().to_string(),
         "content": content
     });
+
+    if let Some(n) = name {
+        output["agent_name"] = serde_json::Value::String(n.to_string());
+    }
     if let Some(inst) = instructions {
         output["instructions"] = inst;
     }
 
-    Ok(serde_json::to_string_pretty(&output).unwrap_or_default())
+    serde_json::to_string_pretty(&output).unwrap_or_default()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -432,11 +440,13 @@ fn main() -> ExitCode {
             print!("{output}");
         }
         Command::DeregisterAgent { pool, name } => {
+            // Deprecated: with anonymous workers, there's nothing to deregister.
+            // For backward compatibility, try to clean up legacy agent directories.
             let root = resolve_pool(&pool_root, &pool);
             let agent_dir = root.join(AGENTS_DIR).join(&name);
 
             if !agent_dir.exists() {
-                eprintln!("Agent '{name}' not found");
+                eprintln!("Agent '{name}' not found (note: workers are now anonymous)");
                 return ExitCode::SUCCESS;
             }
 
@@ -460,7 +470,12 @@ fn main() -> ExitCode {
 
             eprintln!("Deregistered agent '{name}'");
         }
-        Command::Register {
+        Command::GetTask {
+            pool,
+            name,
+            log_level,
+        }
+        | Command::Register {
             pool,
             name,
             log_level,
@@ -476,54 +491,29 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let agent_dir = root.join(AGENTS_DIR).join(&name);
-
-            // Create agent directory first
-            if let Err(e) = fs::create_dir_all(&agent_dir) {
-                eprintln!("Failed to create agent directory: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            // Set up watcher on agent directory
-            let (_watcher, events_rx) = match create_watcher(&agent_dir) {
-                Ok(w) => w,
-                Err(e) => {
-                    eprintln!("Failed to create watcher: {e}");
-                    return ExitCode::FAILURE;
+            // Wait for task assignment using the new anonymous worker protocol
+            match wait_for_task(&root, name.as_deref(), None) {
+                Ok(assignment) => {
+                    let output = format_task_output(&assignment, &root, name.as_deref());
+                    println!("{output}");
                 }
-            };
-
-            // Verify watcher is receiving events before proceeding
-            if let Err(e) = verify_watcher_sync(&agent_dir, &events_rx, Duration::from_secs(5)) {
-                eprintln!("Watcher sync failed: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            let transport = Transport::Directory(agent_dir);
-            match wait_and_read_task(&transport, &events_rx, &name) {
-                Ok(output) => println!("{output}"),
                 Err(e) => {
-                    eprintln!("{e}");
+                    eprintln!("Failed to get task: {e}");
                     return ExitCode::FAILURE;
                 }
             }
         }
         Command::NextTask {
             pool,
-            name,
+            uuid,
             data,
             file,
+            name,
             log_level,
             deregister,
         } => {
             init_tracing(log_level);
             let root = resolve_pool(&pool_root, &pool);
-            let agent_dir = root.join(AGENTS_DIR).join(&name);
-
-            if !agent_dir.exists() {
-                eprintln!("Agent not registered. Use 'register' first.");
-                return ExitCode::FAILURE;
-            }
 
             // Get response content from --data or --file
             let response_content = match (data, file) {
@@ -541,50 +531,24 @@ fn main() -> ExitCode {
                 }
             };
 
-            // Set up watcher on agent directory
-            let (_watcher, events_rx) = match create_watcher(&agent_dir) {
-                Ok(w) => w,
-                Err(e) => {
-                    eprintln!("Failed to create watcher: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-
-            // Verify watcher is receiving events before proceeding
-            if let Err(e) = verify_watcher_sync(&agent_dir, &events_rx, Duration::from_secs(5)) {
-                eprintln!("Watcher sync failed: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            let transport = Transport::Directory(agent_dir.clone());
-
-            // Write response using Transport (atomic write)
-            if let Err(e) = transport.write(RESPONSE_FILE, &response_content) {
+            // Write response for the current task
+            if let Err(e) = write_response(&root, &uuid, &response_content) {
                 eprintln!("Failed to write response: {e}");
                 return ExitCode::FAILURE;
             }
 
             if deregister {
-                // Wait for daemon to acknowledge (response.json deleted)
-                let response_path = agent_dir.join(RESPONSE_FILE);
-                if !wait_for_response_acknowledged(&response_path, &events_rx) {
-                    eprintln!("Timeout waiting for daemon to acknowledge response");
-                    return ExitCode::FAILURE;
-                }
-
-                // Remove agent directory to deregister
-                if let Err(e) = fs::remove_dir_all(&agent_dir) {
-                    eprintln!("Failed to deregister: {e}");
-                    return ExitCode::FAILURE;
-                }
-                eprintln!("Deregistered");
+                // Just exit after writing response
+                eprintln!("Response submitted");
             } else {
-                // Wait for next task (wait_for_task handles cleanup transition automatically:
-                // it blocks until task.json exists AND response.json doesn't)
-                match wait_and_read_task(&transport, &events_rx, &name) {
-                    Ok(output) => println!("{output}"),
+                // Wait for next task
+                match wait_for_task(&root, name.as_deref(), None) {
+                    Ok(assignment) => {
+                        let output = format_task_output(&assignment, &root, name.as_deref());
+                        println!("{output}");
+                    }
                     Err(e) => {
-                        eprintln!("{e}");
+                        eprintln!("Failed to get next task: {e}");
                         return ExitCode::FAILURE;
                     }
                 }
@@ -609,43 +573,4 @@ fn wait_for_status_file(status_file: &std::path::Path) -> bool {
         thread::sleep(POLL_INTERVAL);
     }
     false
-}
-
-/// Wait for the daemon to acknowledge the response (delete response.json).
-/// Returns true if acknowledged within timeout, false otherwise.
-fn wait_for_response_acknowledged(
-    response_path: &std::path::Path,
-    events_rx: &mpsc::Receiver<AgentEvent>,
-) -> bool {
-    const TIMEOUT: Duration = Duration::from_secs(30);
-
-    // Already gone?
-    if !response_path.exists() {
-        return true;
-    }
-
-    let start = std::time::Instant::now();
-    loop {
-        // Wait for file change event or timeout
-        match events_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(AgentEvent::FileChanged) => {
-                if !response_path.exists() {
-                    return true;
-                }
-            }
-            Ok(AgentEvent::WatchError(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return false;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Check timeout
-                if start.elapsed() > TIMEOUT {
-                    return false;
-                }
-                // Also check file in case we missed an event
-                if !response_path.exists() {
-                    return true;
-                }
-            }
-        }
-    }
 }

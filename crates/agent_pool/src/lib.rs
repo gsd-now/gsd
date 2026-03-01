@@ -39,7 +39,7 @@ mod worker;
 mod daemon;
 mod submit;
 
-pub use constants::{AGENTS_DIR, RESPONSE_FILE, STATUS_FILE, TASK_FILE};
+pub use constants::{AGENTS_DIR, RESPONSE_FILE, STATUS_FILE, TASK_FILE, response_path};
 pub use daemon::{DaemonConfig, run_with_config};
 pub use lock::is_daemon_running;
 pub use pool::{
@@ -50,4 +50,4 @@ pub use submit::{
     Payload, stop, submit, submit_file, submit_file_with_timeout, wait_for_pool_ready,
 };
 pub use transport::Transport;
-pub use worker::{AgentEvent, create_watcher, verify_watcher_sync, wait_for_task};
+pub use worker::{TaskAssignment, wait_for_task, write_response};
