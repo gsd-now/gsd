@@ -56,62 +56,52 @@ The flow:
 ```rust
 /// A file watcher with lazy canary verification.
 pub struct VerifiedWatcher {
-    rx: mpsc::Receiver<PathBuf>,
     _watcher: RecommendedWatcher,
-    canary_path: PathBuf,
-    verified: bool,
+    state: WatcherState,
+}
+
+enum WatcherState {
+    Connected {
+        rx: mpsc::Receiver<PathBuf>,
+        canary: Option<CanaryGuard>,  // Some = unverified, None = verified
+    },
+    Disconnected,
 }
 
 impl VerifiedWatcher {
     /// Create a watcher and start canary verification (non-blocking).
-    ///
-    /// Writes the canary file but returns immediately. Verification
-    /// completes during subsequent `wait_for()` calls, or explicitly
-    /// via `ensure_verified()`.
     pub fn new(watch_dir: &Path, canary_path: PathBuf) -> io::Result<Self>;
 
-    /// Block until watcher is verified (canary event seen).
-    ///
-    /// Use this when you need verification without waiting for a target file.
-    /// Example: daemon startup before writing status file.
+    /// Block until watcher is verified. Panics if disconnected.
     pub fn ensure_verified(&mut self, timeout: Option<Duration>) -> io::Result<()>;
 
-    /// Wait for a specific file to appear.
-    ///
-    /// If not yet verified, uses `recv_timeout` to catch both canary and
-    /// target events, retrying canary writes periodically. Once verified,
-    /// just waits for the target.
-    ///
-    /// If the target already exists, returns immediately (no verification needed).
+    /// Wait for a specific file. Panics if disconnected.
     pub fn wait_for(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()>;
 
-    /// Consume the watcher and return the raw event receiver.
-    ///
-    /// Use this when you need custom event processing (e.g., daemon main loop).
-    /// Should only be called after verification (either explicit or implicit).
+    /// Return the raw receiver. Panics if disconnected or unverified.
     pub fn into_receiver(self) -> mpsc::Receiver<PathBuf>;
 }
 ```
 
-### Why One Struct?
+### State Design
 
-Considered a typestate pattern (`MaybeVerifiedWatcher` → `VerifiedWatcher`), but:
-- `wait_for()` doesn't cleanly transition states (file might already exist → no verification needed)
-- The only API that truly requires verification is `into_receiver()`
-- Complexity not worth the type safety gain
+The primary distinction is **Connected vs Disconnected**. Within Connected:
+- `canary: Some(guard)` = unverified, canary file exists on disk
+- `canary: None` = verified, canary was cleaned up
 
-Instead, `verified` is tracked internally, and `into_receiver()` should only be called after verification (documented, not enforced by types).
+The `CanaryGuard` struct owns the canary path and cleans up the file when dropped.
+State transitions from unverified to verified simply set `canary = None`, which drops
+the guard and deletes the file.
 
 ### Canary Retry Logic
 
 When not yet verified, `wait_for()` and `ensure_verified()`:
-1. Write canary with content `"sync"`
+1. Canary file already written by constructor (content `"0"`)
 2. Use `recv_timeout(100ms)` to poll for events
-3. If ANY event seen → mark verified (see assumption below)
-4. If canary seen → delete canary
-5. If target seen → return success
-6. If timeout without events → rewrite canary with timestamp (triggers new event)
-7. Repeat until verified + target seen, or timeout exceeded
+3. If ANY event seen → set `canary = None` (drops guard, deletes file, marks verified)
+4. If target seen → return success
+5. If timeout without events → call `canary.retry()` to rewrite with incrementing number
+6. Repeat until done or timeout exceeded
 
 ### Key Assumption
 
@@ -490,17 +480,13 @@ impl VerifiedWatcher {
 
 ### Step 2: Update `submit_file.rs`
 
-Replace the polling implementation with `VerifiedWatcher`.
+Replace the polling implementation with `VerifiedWatcher`. Remove `wait_for_pool_ready` call - it's now just `wait_for(&status_path)`.
 
-### Step 3: Update `wait_for_pool_ready` in `client/mod.rs`
+### Step 3: Update daemon watcher verification
 
-Simplify to use `VerifiedWatcher`.
+Modify `sync_and_setup` to use `VerifiedWatcher::ensure_verified()` before writing status file.
 
-### Step 4: Update daemon watcher verification
-
-Modify `sync_and_setup` to use dual-canary verification.
-
-### Step 5: Update agent task waiting
+### Step 4: Update agent task waiting
 
 Replace polling in `agent.rs` with `VerifiedWatcher`.
 
@@ -510,11 +496,10 @@ Replace polling in `agent.rs` with `VerifiedWatcher`.
 
 | File | Change |
 |------|--------|
-| `crates/agent_pool/src/fs_util.rs` | Add `VerifiedWatcher` struct |
+| `crates/agent_pool/src/fs_util.rs` | Add `VerifiedWatcher`, `CanaryGuard`, `WatcherState` |
 | `crates/agent_pool/src/lib.rs` | Export `VerifiedWatcher` |
-| `crates/agent_pool/src/client/submit_file.rs` | Use `VerifiedWatcher`, single watcher |
-| `crates/agent_pool/src/client/mod.rs` | Simplify `wait_for_pool_ready` |
-| `crates/agent_pool/src/daemon/wiring.rs` | Dual-canary verification |
+| `crates/agent_pool/src/client/submit_file.rs` | Use `VerifiedWatcher`, remove `wait_for_pool_ready` call |
+| `crates/agent_pool/src/daemon/wiring.rs` | Use `ensure_verified()` before writing status |
 | `crates/agent_pool/src/agent.rs` | Use `VerifiedWatcher` for task waiting |
 
 ---
