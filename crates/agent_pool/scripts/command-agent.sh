@@ -54,15 +54,11 @@ fi
 
 # Generate agent name once at startup (8 random alphanumeric chars)
 NAME=$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 8)
-AGENT_DIR=""
 
 cleanup() {
-    echo "[$NAME] Deregistering and shutting down..." >&2
-    "$AGENT_POOL" deregister_agent --pool "$POOL" --name "$NAME" 2>/dev/null || true
-    # Clean up agent directory
-    if [ -n "$AGENT_DIR" ]; then
-        rm -rf "$AGENT_DIR" 2>/dev/null || true
-    fi
+    echo "[$NAME] Shutting down..." >&2
+    # With anonymous workers, there's nothing to clean up - just exit.
+    # The daemon handles file cleanup.
     exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -112,7 +108,6 @@ while true; do
 
         # Extract response file path, kind, and command
         RESPONSE_FILE=$(echo "$TASK_JSON" | jq -r '.response_file')
-        AGENT_DIR=$(dirname "$RESPONSE_FILE")
         KIND=$(echo "$TASK_JSON" | jq -r '.kind // "Task"')
         CMD=$(echo "$TASK_JSON" | jq -r '.content.data.cmd // empty')
 
