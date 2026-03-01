@@ -565,8 +565,9 @@ pub enum NotifyMethod {
     File,
 }
 
-/// Test timeout for file-based submissions (20 seconds).
-const TEST_FILE_TIMEOUT_SECS: u64 = 20;
+/// Test timeout for file-based submissions.
+/// Set higher than rstest timeout to ensure file notification isn't the bottleneck.
+const TEST_FILE_TIMEOUT_SECS: u64 = 60;
 
 /// Submit a task using the specified data source and notify method.
 ///
