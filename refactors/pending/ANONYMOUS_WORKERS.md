@@ -340,18 +340,32 @@ pub const WORKER_RESPONSE_SUFFIX: &str = ".response.json";
 
 **File:** `crates/agent_pool/src/daemon/core.rs`
 
-#### 3.1: Rename AgentId to WorkerId
+Core is the pure state machine - it deals only with IDs and state transitions, no files. The anonymous worker model simplifies core because workers are **one-shot**: they're removed after completing a task, not returned to idle.
+
+#### What stays the same in core
+
+- `WorkerStatus` is still `Idle` or `Busy { task_id }` - a worker either has a task or doesn't
+- Epoch-based timeout validation works the same way
+- Task queue (pending tasks) works the same way
+
+#### What changes in core
+
+1. **Renames**: Agent → Worker throughout
+2. **Behavioral change**: After task completion, worker is **removed** (not returned to idle)
+3. **Remove `AgentDeregistered`**: Workers don't deregister, they just get removed on timeout or completion
+
+#### 3.1: Rename types
 
 ```rust
 // Before
 pub(super) struct AgentId(pub(super) u32);
 pub(super) enum AgentStatus { Idle, Busy { task_id: TaskId } }
-pub(super) struct AgentState { ... }
+pub(super) struct AgentState { status, epoch }
 
 // After
 pub(super) struct WorkerId(pub(super) u32);
 pub(super) enum WorkerStatus { Idle, Busy { task_id: TaskId } }
-pub(super) struct WorkerState { ... }
+pub(super) struct WorkerState { status, epoch }
 ```
 
 #### 3.2: Update Events
@@ -372,19 +386,16 @@ pub(super) enum Event {
 pub(super) enum Event {
     TaskSubmitted { task_id: TaskId },
     TaskWithdrawn { task_id: TaskId },
-    WorkerReady { worker_id: WorkerId, heartbeat_task_id: Option<TaskId> },
+    WorkerReady { worker_id: WorkerId },
     WorkerResponded { worker_id: WorkerId },
     WorkerTimedOut { epoch: Epoch },
     AssignTaskToWorkerIfEpochMatches { epoch: Epoch, task_id: TaskId },
 }
 ```
 
-**Key changes:**
-- Rename `AgentRegistered` → `WorkerReady`
-- Rename `AgentResponded` → `WorkerResponded`
-- Rename `AgentTimedOut` → `WorkerTimedOut`
-- Rename `AssignTaskToAgentIfEpochMatches` → `AssignTaskToWorkerIfEpochMatches`
-- Remove `AgentDeregistered` - workers don't deregister, stale files cleaned up on timeout
+**Changes:**
+- Remove `AgentDeregistered` - workers don't deregister
+- Remove `heartbeat_task_id` from `WorkerReady` - IO layer handles heartbeat creation
 
 #### 3.3: Update Effects
 
@@ -408,17 +419,60 @@ pub(super) enum Effect {
 }
 ```
 
-**Key changes:**
-- Rename `AgentIdled` → `WorkerWaiting`
-- Rename `AgentRemoved` → `WorkerRemoved`
+**Rename:** `AgentIdled` → `WorkerWaiting` (worker is waiting for first task, not "returning to idle")
 
-**Semantic change:** In the named-agent model, `AgentIdled` was emitted in two cases:
-1. Agent registers but no task available
-2. Agent completes a task but no new task available (returns to idle)
+#### 3.4: Behavioral change in handle_worker_responded
 
-In the anonymous worker model, only case 1 exists - workers don't "return to idle" because they get a fresh UUID each cycle. Hence the rename to `WorkerWaiting` which better describes the semantics: "worker is waiting for first task."
+This is the key semantic change. Currently, after task completion:
+1. Agent transitions Busy → Idle
+2. If pending task exists, assign it (agent stays)
+3. Otherwise, agent remains idle
 
-**Note:** There is no `StartTimer` effect - timers are started implicitly by the IO layer when it handles `TaskAssigned` or `WorkerWaiting`.
+With anonymous workers:
+1. Worker transitions Busy → **removed**
+2. If worker wants more work, it creates a new UUID
+
+```rust
+// Before
+fn handle_agent_responded(mut state: PoolState, agent_id: AgentId) -> (PoolState, Vec<Effect>) {
+    let agent = state.agents.get_mut(&agent_id)?;
+    let (new_epoch, task_id) = agent.try_become_idle()?;
+
+    let mut effects = vec![Effect::TaskCompleted { agent_id, task_id }];
+
+    // Try to assign another task to this agent
+    if let Some(effect) = try_assign_pending_to_agent(&mut state, agent_id) {
+        effects.push(effect);
+    } else {
+        effects.push(Effect::AgentIdled { epoch: new_epoch });
+    }
+    (state, effects)
+}
+
+// After
+fn handle_worker_responded(mut state: PoolState, worker_id: WorkerId) -> (PoolState, Vec<Effect>) {
+    let worker = state.workers.remove(&worker_id)?;
+    let WorkerStatus::Busy { task_id } = worker.status else { return (state, vec![]); };
+
+    // Worker is REMOVED after completing task - no "return to idle"
+    (state, vec![
+        Effect::TaskCompleted { worker_id, task_id },
+        Effect::WorkerRemoved { worker_id },
+    ])
+}
+```
+
+This simplifies the state machine - no more "idle after completion" state.
+
+#### Idle timeout explained
+
+When a worker registers but no task is available:
+1. Core emits `WorkerWaiting { epoch }` effect
+2. IO layer starts an **idle timeout** timer (configurable, e.g., 60 seconds)
+3. If timer fires and worker still hasn't been assigned a task, IO sends `WorkerTimedOut` event
+4. Core emits `WorkerRemoved` effect
+
+This prevents workers from sitting idle forever, consuming daemon resources.
 
 ---
 
@@ -426,13 +480,58 @@ In the anonymous worker model, only case 1 exists - workers don't "return to idl
 
 **File:** `crates/agent_pool/src/daemon/io.rs`
 
-This is the most complex task. The IO layer maps abstract IDs to concrete transports and performs actual I/O. With anonymous workers, the key changes are:
+The IO layer maps abstract IDs to concrete file paths and performs actual I/O. This is where the typestate pattern lives - core deals with IDs, IO deals with files.
+
+#### Typestate Pattern for File Management
+
+Use RAII guards that automatically clean up files on state transitions:
+
+```rust
+/// Worker just registered - owns ready file.
+/// Drop deletes the ready file.
+struct WorkerReady {
+    uuid: String,
+    ready_path: PathBuf,
+    data: WorkerData,
+}
+
+/// Worker has task assigned - owns task file.
+/// Drop deletes the task file.
+struct WorkerAssigned {
+    uuid: String,
+    task_path: PathBuf,
+}
+
+impl Drop for WorkerReady {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.ready_path);
+    }
+}
+
+impl Drop for WorkerAssigned {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.task_path);
+    }
+}
+
+/// Storage for workers - keyed by WorkerId from core
+enum WorkerState {
+    Ready(WorkerReady),
+    Assigned(WorkerAssigned),
+}
+```
+
+**Transitions:**
+- `WorkerReady::assign_task(self, content)` → consumes self (deletes ready file), writes task file, returns `WorkerAssigned`
+- `WorkerAssigned` dropped on completion → deletes task file, we manually delete response file
+
+**Key changes:**
 
 1. **Type aliases** - Rename `AgentMap` → `WorkerMap`
 2. **Import rename** - `AgentId` → `WorkerId` (from core.rs)
 3. **Path registration** - Register flat files (`<uuid>.ready.json`) instead of directories
 4. **File operations** - Write to `<uuid>.task.json` instead of `<dir>/task.json`
-5. **Cleanup tracking** - Track cleaned-up UUIDs instead of directory paths
+5. **Cleanup tracking** - Track removed UUIDs instead of directory paths
 
 #### 4.1: Update imports and type alias
 
@@ -583,105 +682,83 @@ fn response_path_for_worker(ready_path: &Path) -> PathBuf {
 }
 ```
 
-#### 4.6: Update Effect::TaskCompleted
+#### 4.6: Update Effect::TaskCompleted (with typestate guards)
+
+The typestate guards handle file cleanup automatically:
 
 ```rust
-// Before
+// Before - manual file cleanup
 Effect::TaskCompleted { agent_id, task_id } => {
-    let agent_path = agent_map
-        .get_path(agent_id)
-        .expect("TaskCompleted for unknown agent - core bug");
-
-    match task_id {
-        TaskId::Heartbeat(_) => {
-            let _ = fs::remove_file(agent_path.join(TASK_FILE));
-            let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
-        }
-        TaskId::External(external_id) => {
-            let agent_output = agent_map
-                .read_from(agent_id, RESPONSE_FILE)
-                .expect("TaskCompleted for unknown agent - core bug");
-
-            let _ = fs::remove_file(agent_path.join(TASK_FILE));
-            let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
-            // ...
-        }
-    }
+    let agent_path = agent_map.get_path(agent_id).expect("...");
+    // Manual cleanup
+    let _ = fs::remove_file(agent_path.join(TASK_FILE));
+    let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
+    // ...
 }
 
-// After
+// After - guards handle cleanup
 Effect::TaskCompleted { worker_id, task_id } => {
-    let ready_path = worker_map
-        .get_path(worker_id)
-        .expect("TaskCompleted for unknown worker - core bug");
-    let task_path = task_path_for_worker(ready_path);
-    let response_path = response_path_for_worker(ready_path);
+    // Remove worker from map - this takes ownership of WorkerAssigned
+    let worker_state = worker_map.remove(worker_id).expect("...");
+    let WorkerState::Assigned(assigned) = worker_state else {
+        panic!("TaskCompleted but worker not in Assigned state");
+    };
+
+    let response_path = response_path_for_uuid(&assigned.uuid);
 
     match task_id {
         TaskId::Heartbeat(_) => {
-            // Clean up all three files for this worker
-            let _ = fs::remove_file(ready_path);
-            let _ = fs::remove_file(&task_path);
+            // assigned drops here → task file deleted automatically
             let _ = fs::remove_file(&response_path);
         }
         TaskId::External(external_id) => {
-            let agent_output = fs::read_to_string(&response_path)
-                .expect("TaskCompleted but response file missing - logic bug");
-
-            // Clean up all three files for this worker
-            let _ = fs::remove_file(ready_path);
-            let _ = fs::remove_file(&task_path);
+            let output = fs::read_to_string(&response_path).expect("...");
+            // assigned drops here → task file deleted automatically
             let _ = fs::remove_file(&response_path);
-            // ...
+            // Forward output to submitter...
         }
     }
+    // WorkerAssigned dropped → task file cleaned up by Drop impl
 }
 ```
 
-#### 4.7: Update Effect::AgentRemoved → Effect::WorkerRemoved
+Note: The response file is written by the worker (not the daemon), so we delete it manually. The ready file was deleted when transitioning Ready→Assigned. The task file is deleted by the Drop impl.
+
+#### 4.7: Update Effect::AgentRemoved → Effect::WorkerRemoved (with typestate guards)
 
 ```rust
-// Before
+// Before - manual cleanup
 Effect::AgentRemoved { agent_id } => {
-    let (transport, ()) = agent_map
-        .remove(agent_id)
-        .expect("AgentRemoved for unknown agent - core bug");
-
-    // Write kicked message so agent knows it was removed
-    let kicked_msg = serde_json::json!({
-        "kind": "Kicked",
-        "reason": "Timeout"
-    });
+    let (transport, ()) = agent_map.remove(agent_id).expect("...");
     let _ = transport.write(TASK_FILE, &kicked_msg.to_string());
-
-    // Track this path so we reject re-registration attempts
-    if let Some(agent_path) = transport.path() {
-        kicked_paths.insert(agent_path.to_path_buf());
-    }
+    kicked_paths.insert(agent_path.to_path_buf());
 }
 
-// After
+// After - guards handle cleanup
 Effect::WorkerRemoved { worker_id } => {
-    let (transport, _data) = worker_map
-        .remove(worker_id)
-        .expect("WorkerRemoved for unknown worker - core bug");
+    let worker_state = worker_map.remove(worker_id).expect("...");
 
-    // Write kicked message to task file
-    if let Some(ready_path) = transport.path() {
-        let task_path = task_path_for_worker(ready_path);
-        let kicked_msg = serde_json::json!({
-            "kind": "Kicked",
-            "reason": "Timeout"
-        });
-        let _ = fs::write(&task_path, kicked_msg.to_string());
+    let uuid = match &worker_state {
+        WorkerState::Ready(r) => r.uuid.clone(),
+        WorkerState::Assigned(a) => a.uuid.clone(),
+    };
 
-        // Track this UUID so we reject stale events
-        if let Some(uuid) = extract_uuid(ready_path) {
-            removed_workers.insert(uuid.to_string());
-        }
-    }
+    // Write kicked message so worker knows it was removed
+    let task_path = task_path_for_uuid(&uuid);
+    let kicked_msg = serde_json::json!({ "kind": "Kicked", "reason": "Timeout" });
+    let _ = fs::write(&task_path, kicked_msg.to_string());
+
+    // Track UUID to reject stale events
+    removed_workers.insert(uuid);
+
+    // worker_state drops here:
+    // - If Ready: ready file deleted
+    // - If Assigned: task file deleted (but we just wrote to it - that's fine,
+    //   the kicked message is what matters, worker reads it then we clean up)
 }
 ```
+
+Note: When a worker is removed while Assigned, the task file deletion happens after we write the Kicked message. The worker reads the Kicked message first, then file cleanup happens.
 
 #### 4.8: Update kicked_paths to removed_workers
 
@@ -882,132 +959,6 @@ Document the new three-file protocol.
 
 No migration needed - this is a breaking change to the protocol. All existing agents will need to update to the new protocol.
 
-## Typestate Pattern for Worker Lifecycle
-
-Use RAII guards that automatically clean up files when transitioning between states. Each state owns the files relevant to that state, and dropping the state deletes those files.
-
-### Worker States
-
-```rust
-/// Worker just registered - holds ready file.
-/// Dropping deletes the ready file.
-struct WorkerReady {
-    uuid: String,
-    ready_path: PathBuf,
-    data: WorkerData,
-}
-
-/// Worker has task assigned - ready file already cleaned.
-/// Dropping deletes the task file.
-struct WorkerAssigned {
-    uuid: String,
-    task_path: PathBuf,
-}
-
-/// Worker completed task - task file already cleaned.
-/// Dropping deletes the response file.
-struct WorkerComplete {
-    uuid: String,
-    response_path: PathBuf,
-    response_content: String,
-}
-```
-
-### State Transitions
-
-```rust
-impl WorkerReady {
-    /// Assign a task to this worker.
-    /// Consumes self (drops ready file), writes task file.
-    fn assign_task(self, task_content: &str) -> io::Result<WorkerAssigned> {
-        let task_path = self.ready_path.with_file_name(
-            format!("{}{TASK_SUFFIX}", self.uuid)
-        );
-        fs::write(&task_path, task_content)?;
-
-        // self drops here -> ready file deleted
-        Ok(WorkerAssigned {
-            uuid: self.uuid,
-            task_path,
-        })
-    }
-}
-
-impl WorkerAssigned {
-    /// Mark task as complete after reading response.
-    /// Consumes self (drops task file), reads response file.
-    fn complete(self, agents_dir: &Path) -> io::Result<WorkerComplete> {
-        let response_path = agents_dir.join(
-            format!("{}{WORKER_RESPONSE_SUFFIX}", self.uuid)
-        );
-        let response_content = fs::read_to_string(&response_path)?;
-
-        // self drops here -> task file deleted
-        Ok(WorkerComplete {
-            uuid: self.uuid,
-            response_path,
-            response_content,
-        })
-    }
-}
-
-impl WorkerComplete {
-    /// Finish processing and clean up.
-    /// Returns the response content, drops self (deletes response file).
-    fn finish(self) -> String {
-        // self drops here -> response file deleted
-        self.response_content
-    }
-}
-```
-
-### Drop Implementations
-
-```rust
-impl Drop for WorkerReady {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.ready_path);
-    }
-}
-
-impl Drop for WorkerAssigned {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.task_path);
-    }
-}
-
-impl Drop for WorkerComplete {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.response_path);
-    }
-}
-```
-
-### Benefits
-
-1. **Automatic cleanup** - Files are deleted when states transition, no manual cleanup needed
-2. **Compiler-enforced correctness** - Can't forget to clean up, can't access wrong state's data
-3. **Clear ownership** - Each state owns exactly the files it's responsible for
-4. **Panic safety** - Even if code panics, Drop runs and cleans up files
-
-### Worker State Enum for Storage
-
-The IO layer stores workers in a map. Use an enum to hold the current state:
-
-```rust
-enum WorkerState {
-    Ready(WorkerReady),
-    Assigned(WorkerAssigned),
-    // Complete is transient - processed immediately then dropped
-}
-
-type WorkerMap = HashMap<String, WorkerState>;  // Keyed by UUID
-```
-
----
-
 ## Open Questions
 
 1. **Should ready.json contain metadata?** - Currently proposed to include optional `name` field for debugging. Could also include capabilities, version, etc.
-
-2. ~~**Cleanup timing**~~ - Resolved by typestate pattern. Files are cleaned up automatically on state transitions.
