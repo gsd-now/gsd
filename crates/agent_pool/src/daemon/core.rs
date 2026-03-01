@@ -68,7 +68,7 @@ pub(super) enum TaskId {
 /// Either tasks are waiting for workers, or workers are waiting for tasks, or neither.
 /// Never both - any arrival triggers immediate matching.
 ///
-/// Invariant: VecDeque is always non-empty in Tasks/Workers variants.
+/// Invariant: `VecDeque` is always non-empty in Tasks/Workers variants.
 /// When the last item is removed, transition to None.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) enum Waiting {
@@ -86,7 +86,7 @@ pub(super) enum Waiting {
 pub(super) struct PoolState {
     /// What's currently waiting (tasks or workers or nothing)
     pub(super) waiting: Waiting,
-    /// Workers that have been assigned tasks (worker_id -> task_id)
+    /// Workers that have been assigned tasks (`worker_id` -> `task_id`)
     pub(super) busy_workers: HashMap<WorkerId, TaskId>,
 }
 
@@ -142,6 +142,7 @@ pub(super) enum Event {
     TaskSubmitted { submission_id: SubmissionId },
 
     /// A task was withdrawn (client disconnected before completion).
+    #[allow(dead_code)] // Will be used when socket-based submissions are implemented
     TaskWithdrawn { submission_id: SubmissionId },
 
     /// A worker registered (wrote ready.json).
@@ -217,6 +218,7 @@ pub(super) fn step(state: PoolState, event: Event) -> (PoolState, Vec<Effect>) {
 // Event Handlers
 // =============================================================================
 
+#[allow(clippy::expect_used)] // Invariant: Workers variant is always non-empty
 fn handle_task_submitted(
     mut state: PoolState,
     submission_id: SubmissionId,
@@ -259,18 +261,19 @@ fn handle_task_withdrawn(
     submission_id: SubmissionId,
 ) -> (PoolState, Vec<Effect>) {
     // Remove from pending queue if present
-    if let Waiting::Tasks(submission_ids) = &mut state.waiting {
-        if let Some(pos) = submission_ids.iter().position(|&id| id == submission_id) {
-            submission_ids.remove(pos);
-            if submission_ids.is_empty() {
-                state.waiting = Waiting::None;
-            }
+    if let Waiting::Tasks(submission_ids) = &mut state.waiting
+        && let Some(pos) = submission_ids.iter().position(|&id| id == submission_id)
+    {
+        submission_ids.remove(pos);
+        if submission_ids.is_empty() {
+            state.waiting = Waiting::None;
         }
     }
     // If already dispatched, we can't recall it - response will be discarded
     (state, vec![])
 }
 
+#[allow(clippy::expect_used)] // Invariant: Tasks variant is always non-empty
 fn handle_worker_ready(mut state: PoolState, worker_id: WorkerId) -> (PoolState, Vec<Effect>) {
     // PANIC: IO layer guarantees WorkerReady is sent exactly once per worker.
     assert!(

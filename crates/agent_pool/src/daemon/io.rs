@@ -83,6 +83,7 @@ impl IdAllocator {
     }
 
     /// Allocate a worker ID.
+    #[allow(clippy::missing_const_for_fn)] // const fn with &mut self not stable
     pub fn allocate_worker(&mut self) -> WorkerId {
         let id = WorkerId(self.next_worker_id);
         self.next_worker_id += 1;
@@ -90,6 +91,7 @@ impl IdAllocator {
     }
 
     /// Allocate a submission ID.
+    #[allow(clippy::missing_const_for_fn)] // const fn with &mut self not stable
     pub fn allocate_submission(&mut self) -> SubmissionId {
         let id = SubmissionId(self.next_submission_id);
         self.next_submission_id += 1;
@@ -166,6 +168,7 @@ impl<Id: TransportId> TransportMap<Id> {
     /// Register a directory-based transport with associated data.
     ///
     /// Returns `None` if the path is already registered (duplicate FS event).
+    #[allow(dead_code)] // Will be used by anonymous worker protocol
     pub fn register_directory(&mut self, path: PathBuf, data: Id::Data) -> Option<Id> {
         let id = self.allocate_id();
         if self.register(id, path, data) {

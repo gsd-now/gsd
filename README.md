@@ -10,6 +10,8 @@ GSD is an attempt to provide structure and solve that problem.
 
 With GSD, you define a state machine via JSON config where individual tasks are performed by long-lived agents running in a worker pool. Transitions between states are validated. This not only makes it easy to reason about the possible states and actions that your agents will be asked to perform, but also allows us to provide just the right context that an agent needs to execute a given task.
 
+For example, if an agent is asked to list all the files in a folder and analyze each file, you would naively provide instructions for both tasks to the agent at the same time. With GSD, there is no need to provide both sets of instructions at once. Those instructions can be split into two steps. The agent that works on an individual task will only see exactly the instructions that it needs. With this added structure, agents can more reliably and rigorously handle tasks of increasing complexity.
+
 See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
 
 ## Components
