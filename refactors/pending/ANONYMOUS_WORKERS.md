@@ -413,13 +413,16 @@ pub(super) enum Effect {
 pub(super) enum Effect {
     TaskAssigned { task_id: TaskId, epoch: Epoch },
     WorkerWaiting { epoch: Epoch },
-    TaskCompleted { worker_id: WorkerId, task_id: TaskId },
+    TaskCompleted { worker_id: WorkerId, task_id: TaskId },  // implies worker removal
     TaskFailed { task_id: TaskId },
-    WorkerRemoved { worker_id: WorkerId },
+    WorkerRemoved { worker_id: WorkerId },  // only for timeouts/kicks
 }
 ```
 
-**Rename:** `AgentIdled` → `WorkerWaiting` (worker is waiting for first task, not "returning to idle")
+**Changes:**
+- `AgentIdled` → `WorkerWaiting` (waiting for first task, not "returning to idle")
+- `TaskCompleted` now **implies worker removal** - it's a matching service, when match completes both are cleaned up
+- `WorkerRemoved` is only for unhappy paths (timeout while idle, timeout while busy)
 
 #### 3.4: Behavioral change in handle_worker_responded
 
@@ -455,14 +458,14 @@ fn handle_worker_responded(mut state: PoolState, worker_id: WorkerId) -> (PoolSt
     let WorkerStatus::Busy { task_id } = worker.status else { return (state, vec![]); };
 
     // Worker is REMOVED after completing task - no "return to idle"
-    (state, vec![
-        Effect::TaskCompleted { worker_id, task_id },
-        Effect::WorkerRemoved { worker_id },
-    ])
+    // TaskCompleted implies worker removal in the anonymous model
+    (state, vec![Effect::TaskCompleted { worker_id, task_id }])
 }
 ```
 
 This simplifies the state machine - no more "idle after completion" state.
+
+**Key simplification:** `TaskCompleted` now implies worker removal. It's a matching service - task and worker are paired, and when the match completes, both are removed. No need for separate `WorkerRemoved` effect on the happy path. (`WorkerRemoved` is only emitted on timeout/kick scenarios where there's no task completion.)
 
 **Methods to remove from `WorkerState`:**
 - `try_become_idle()` - workers don't return to idle, they're removed
