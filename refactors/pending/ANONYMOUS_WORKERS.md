@@ -428,14 +428,16 @@ Note: There's no "idle timeout → remove" path. When a worker is idle too long,
 
 #### 3.4: Behavioral change in handle_worker_responded
 
-This is the key semantic change. Currently, after task completion:
-1. Agent transitions Busy → Idle
-2. If pending task exists, assign it (agent stays)
-3. Otherwise, agent remains idle
+This is the key semantic change.
 
-With anonymous workers:
-1. Worker transitions Busy → **removed**
-2. If worker wants more work, it creates a new UUID
+**Current behavior (named agents):**
+1. Agent transitions Busy → Idle
+2. If pending task exists, assign it immediately
+3. Otherwise, agent remains idle, waiting
+
+**New behavior (anonymous workers):**
+1. Worker completes task → **removed**
+2. If worker wants more work, it creates a new UUID and re-registers
 
 ```rust
 // Before
@@ -469,9 +471,9 @@ This simplifies the state machine - no more "idle after completion" state.
 
 **Key simplification:** `TaskCompleted` now implies worker removal. It's a matching service - task and worker are paired, and when the match completes, both are removed. No need for separate `WorkerRemoved` effect on the happy path. (`WorkerRemoved` is only emitted on timeout/kick scenarios where there's no task completion.)
 
-**Methods to remove from `WorkerState`:**
-- `try_become_idle()` - workers don't return to idle, they're removed
-- `try_assign_pending_to_agent()` helper - no longer needed after completion
+**Methods to remove:**
+- `AgentState::try_become_idle()` - workers don't return to idle, they're removed
+- `try_assign_pending_to_agent()` - no longer called after completion (workers don't get reassigned)
 
 #### Idle timeout explained
 
