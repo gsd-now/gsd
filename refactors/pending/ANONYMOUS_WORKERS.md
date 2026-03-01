@@ -52,7 +52,7 @@ pub(super) enum PathCategory {
 - `AgentResponse` is nested two levels deep
 - Asymmetric: submissions are flat, agents are nested
 
-### Current worker.rs (324 lines)
+### Current worker.rs
 
 **File:** `crates/agent_pool/src/worker.rs`
 
@@ -112,10 +112,10 @@ pub(super) enum PathCategory {
 
 1. Worker generates UUID, writes `agents/<uuid>.ready.json`
 2. Daemon sees `FileWritten` event → `PathCategory::WorkerReady`
-3. Daemon assigns task, writes `agents/<uuid>.task.json`
+3. Daemon assigns task, writes `agents/<uuid>.task.json`, deletes ready file (RAII guard)
 4. Worker reads task, processes, writes `agents/<uuid>.response.json`
 5. Daemon sees `FileWritten` event → `PathCategory::WorkerResponse`
-6. Daemon cleans up all three files
+6. Daemon reads response, deletes task file (RAII guard), deletes response file
 7. Worker generates new UUID, repeats from step 1
 
 **No race condition:** All events are file writes, which are reliable on both Linux and macOS.
@@ -164,7 +164,7 @@ pub fn wait_for_task(
 }
 ```
 
-This replaces ~300 lines with ~30 lines.
+This significantly simplifies the executor code.
 
 ---
 
@@ -596,12 +596,14 @@ fn handle_assign_task_to_worker_if_epoch_matches(
 ) -> (PoolState, Vec<Effect>) {
     let worker_id = epoch.worker_id;
 
-    // DEFENSIVE: Worker might have been removed by timeout
+    // DEFENSIVE: Worker might have completed a task and been removed.
+    // Idle workers don't have timeouts - this timer is for heartbeat assignment.
+    // But worker could have gotten a real task, completed it, and been removed.
     let Some(worker) = state.workers.get_mut(&worker_id) else {
         return (state, vec![]);
     };
 
-    // DEFENSIVE: Stale timer - worker did work since timer started
+    // DEFENSIVE: Stale timer - worker got a real task since timer started
     if worker.epoch != epoch {
         return (state, vec![]);
     }
@@ -616,7 +618,8 @@ fn handle_assign_task_to_worker_if_epoch_matches(
 fn handle_worker_timed_out(mut state: PoolState, epoch: Epoch) -> (PoolState, Vec<Effect>) {
     let worker_id = epoch.worker_id;
 
-    // DEFENSIVE: Worker might have been removed already
+    // DEFENSIVE: Worker might have responded and been removed (TaskCompleted).
+    // WorkerResponded could have been processed before this timeout event.
     let Some(worker) = state.workers.remove(&worker_id) else {
         return (state, vec![]);
     };
@@ -708,10 +711,10 @@ impl FsEventKind {
     fn target_state(self) -> UuidState {
         match self {
             Self::ReadyCreated => UuidState::Ready,
-            Self::ReadyDeleted => UuidState::Assigned,  // We delete ready when assigning
-            Self::TaskCreated => UuidState::Assigned,
-            Self::TaskDeleted => UuidState::Responded,  // We delete task on completion
-            Self::ResponseCreated => UuidState::Responded,
+            Self::ReadyDeleted => UuidState::Assigned,  // Deleted after task.json written
+            Self::TaskCreated => UuidState::Assigned,   // Primary trigger for Assigned
+            Self::TaskDeleted => UuidState::Responded,  // Deleted after response read
+            Self::ResponseCreated => UuidState::Responded,  // Primary trigger for Responded
             Self::ResponseDeleted => UuidState::Removed,
         }
     }
