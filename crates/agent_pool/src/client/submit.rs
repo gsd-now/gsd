@@ -1,12 +1,18 @@
 //! Task submission to the agent pool daemon.
 
 use super::payload::Payload;
-use super::{DEFAULT_POOL_READY_TIMEOUT, wait_for_pool_ready};
-use crate::constants::SOCKET_NAME;
+use crate::constants::{SOCKET_NAME, STATUS_FILE};
+use crate::fs_util::VerifiedWatcher;
 use crate::response::Response;
 use interprocess::local_socket::{GenericFilePath, Stream, prelude::*};
+use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// Default timeout for waiting for pool to become ready (10 seconds).
+const POOL_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Submit a task to the agent pool and wait for the result.
 ///
@@ -21,10 +27,13 @@ use std::path::Path;
 /// - Communication with the daemon fails
 /// - The response contains invalid JSON
 pub fn submit(root: impl AsRef<Path>, payload: &Payload) -> io::Result<Response> {
-    let root = root.as_ref();
+    let root = fs::canonicalize(root.as_ref())?;
 
-    // Wait for daemon to be ready
-    wait_for_pool_ready(root, DEFAULT_POOL_READY_TIMEOUT)?;
+    // Wait for daemon to be ready using filesystem watcher
+    let canary_path = root.join(format!("{}.canary", Uuid::new_v4()));
+    let status_path = root.join(STATUS_FILE);
+    let mut watcher = VerifiedWatcher::new(&root, canary_path)?;
+    watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
 
     let socket_path = root.join(SOCKET_NAME);
 

@@ -61,7 +61,7 @@ pub use constants::{
     TASK_FILE,
 };
 pub use daemon::{DaemonConfig, DaemonHandle, run, run_with_config, spawn, spawn_with_config};
-pub use fs_util::{atomic_write, atomic_write_str};
+pub use fs_util::{VerifiedWatcher, atomic_write, atomic_write_str};
 pub use lock::is_daemon_running;
 pub use pool::{
     PoolInfo, cleanup_stopped, default_pool_root, generate_id, id_to_path, list_pools, resolve_pool,

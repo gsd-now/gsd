@@ -16,22 +16,20 @@
 //! - If submitter is killed, files may be orphaned (daemon could clean up stale files)
 
 use super::payload::Payload;
-use super::{DEFAULT_POOL_READY_TIMEOUT, wait_for_pool_ready};
-use crate::constants::{REQUEST_SUFFIX, RESPONSE_SUFFIX, SUBMISSIONS_DIR};
-use crate::fs_util::atomic_write_str;
+use crate::constants::{REQUEST_SUFFIX, RESPONSE_SUFFIX, STATUS_FILE, SUBMISSIONS_DIR};
+use crate::fs_util::{VerifiedWatcher, atomic_write_str};
 use crate::response::Response;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Default timeout for file-based submission (5 minutes).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Poll interval when waiting for response.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Default timeout for waiting for pool to become ready (10 seconds).
+const POOL_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Submit a task using file-based protocol and wait for the result.
 ///
@@ -57,6 +55,9 @@ pub fn submit_file(root: impl AsRef<Path>, payload: &Payload) -> io::Result<Resp
 
 /// Submit a task with a custom timeout.
 ///
+/// Uses a filesystem watcher to efficiently wait for the response instead of
+/// polling with `thread::sleep`.
+///
 /// # Errors
 ///
 /// Returns an error if:
@@ -69,55 +70,43 @@ pub fn submit_file_with_timeout(
     payload: &Payload,
     timeout: Duration,
 ) -> io::Result<Response> {
-    let root = root.as_ref();
+    let root = fs::canonicalize(root.as_ref())?;
     let submissions_dir = root.join(SUBMISSIONS_DIR);
-
-    // Wait for daemon to be ready
-    wait_for_pool_ready(root, DEFAULT_POOL_READY_TIMEOUT)?;
 
     // Generate unique submission ID
     let submission_id = Uuid::new_v4().to_string();
 
-    // Flat files directly in submissions directory (no subdirectory creation!)
+    // File paths
     let request_path = submissions_dir.join(format!("{submission_id}{REQUEST_SUFFIX}"));
     let response_path = submissions_dir.join(format!("{submission_id}{RESPONSE_SUFFIX}"));
+    let canary_path = root.join(format!("{submission_id}.canary"));
+    let status_path = root.join(STATUS_FILE);
+
+    // Create watcher on pool root (watches recursively to see both status and response)
+    let mut watcher = VerifiedWatcher::new(&root, canary_path)?;
+
+    // Wait for pool to become ready (returns immediately if status file exists)
+    watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
 
     // Write request file with serialized payload (atomic via scratch/)
     let content = serde_json::to_string(payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    atomic_write_str(root, &request_path, &content)?;
+    atomic_write_str(&root, &request_path, &content)?;
 
-    // Poll for response
-    let start = Instant::now();
-    loop {
-        if response_path.exists() {
-            // Read and parse response
-            let response_content = fs::read_to_string(&response_path)?;
+    // Wait for response using the same watcher (already verified)
+    watcher.wait_for(&response_path, Some(timeout))?;
 
-            // Clean up both files
-            let _ = fs::remove_file(&request_path);
-            let _ = fs::remove_file(&response_path);
+    // Read and parse response
+    let response_content = fs::read_to_string(&response_path)?;
 
-            let response: Response = serde_json::from_str(&response_content)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // Clean up both files
+    let _ = fs::remove_file(&request_path);
+    let _ = fs::remove_file(&response_path);
 
-            return Ok(response);
-        }
+    let response: Response = serde_json::from_str(&response_content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Check timeout
-        if start.elapsed() > timeout {
-            // Clean up on timeout
-            let _ = fs::remove_file(&request_path);
-            let _ = fs::remove_file(&response_path);
-
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("file-based submit timed out after {timeout:?}"),
-            ));
-        }
-
-        thread::sleep(POLL_INTERVAL);
-    }
+    Ok(response)
 }
 
 /// Clean up a pending submission's files.
