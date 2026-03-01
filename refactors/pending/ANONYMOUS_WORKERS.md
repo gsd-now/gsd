@@ -533,9 +533,8 @@ Note: There's no "idle timeout → remove" path. When a worker is idle too long,
 So there's a strict causal chain: WorkerReady → core sets Idle → TaskAssigned effect → IO writes task.json → worker responds → WorkerResponded → core was Busy. If we receive WorkerResponded, the worker *must* have been Busy.
 
 **Timers are independent and asynchronous.** They can fire at any point:
-- After worker already responded (stale timeout)
-- After worker was removed by another timeout
-- After worker got a real task (stale heartbeat)
+- After worker already responded (WorkerResponded processed first, worker gone)
+- After worker got a real task (stale heartbeat assignment)
 
 All timer-originated events need defensive handling for "worker not found" and "epoch mismatch."
 
