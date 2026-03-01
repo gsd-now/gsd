@@ -141,26 +141,28 @@ pub fn wait_for_task(
     name: Option<&str>,
     timeout: Option<Duration>,
 ) -> io::Result<(String, String)> {  // Returns (uuid, task_content)
+    use crate::constants::{AGENTS_DIR, ready_path, task_path, canary_path};
+
     let agents_dir = pool_root.join(AGENTS_DIR);
     let uuid = Uuid::new_v4().to_string();
 
-    let ready_path = agents_dir.join(format!("{uuid}.ready.json"));
-    let task_path = agents_dir.join(format!("{uuid}.task.json"));
-    let canary_path = agents_dir.join(format!("{uuid}.canary"));
+    let ready = ready_path(&agents_dir, &uuid);
+    let task = task_path(&agents_dir, &uuid);
+    let canary = canary_path(&agents_dir, &uuid);
 
     // Write ready file with optional metadata
     let metadata = match name {
         Some(n) => format!(r#"{{"name":"{}"}}"#, n),
         None => "{}".to_string(),
     };
-    fs::write(&ready_path, &metadata)?;
+    fs::write(&ready, &metadata)?;
 
     // Wait for task using VerifiedWatcher
-    let mut watcher = VerifiedWatcher::new(&agents_dir, canary_path)?;
-    watcher.wait_for(&task_path, timeout)?;
+    let mut watcher = VerifiedWatcher::new(&agents_dir, canary)?;
+    watcher.wait_for(&task, timeout)?;
 
-    let task = fs::read_to_string(&task_path)?;
-    Ok((uuid, task))
+    let content = fs::read_to_string(&task)?;
+    Ok((uuid, content))
 }
 ```
 
@@ -329,9 +331,27 @@ pub const RESPONSE_FILE: &str = "response.json";
 pub const READY_SUFFIX: &str = ".ready.json";
 pub const TASK_SUFFIX: &str = ".task.json";
 pub const WORKER_RESPONSE_SUFFIX: &str = ".response.json";
+pub const CANARY_SUFFIX: &str = ".canary";
 
 // Keep TASK_FILE and RESPONSE_FILE for now (remove in later cleanup)
 // Or remove if no longer used after all changes
+
+// Path helpers (shared by daemon IO and worker)
+pub fn ready_path(agents_dir: &Path, uuid: &str) -> PathBuf {
+    agents_dir.join(format!("{uuid}{READY_SUFFIX}"))
+}
+
+pub fn task_path(agents_dir: &Path, uuid: &str) -> PathBuf {
+    agents_dir.join(format!("{uuid}{TASK_SUFFIX}"))
+}
+
+pub fn response_path(agents_dir: &Path, uuid: &str) -> PathBuf {
+    agents_dir.join(format!("{uuid}{WORKER_RESPONSE_SUFFIX}"))
+}
+
+pub fn canary_path(agents_dir: &Path, uuid: &str) -> PathBuf {
+    agents_dir.join(format!("{uuid}{CANARY_SUFFIX}"))
+}
 ```
 
 ---
@@ -664,10 +684,11 @@ impl WorkerReady {
     /// Assign a task. Deletes ready file, writes task file, returns new guard.
     /// Caller provides UUID (looked up from worker_id_to_uuid map).
     fn assign_task(self, worker_uuid: &WorkerUuid, agents_dir: &Path, content: &str) -> io::Result<WorkerAssigned> {
-        let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
-        fs::write(&task_path, content)?;
+        use crate::constants::task_path;
+        let path = task_path(agents_dir, &worker_uuid.0);
+        fs::write(&path, content)?;
         // self drops here → ready file deleted
-        Ok(WorkerAssigned { worker_id: self.worker_id, task_path })
+        Ok(WorkerAssigned { worker_id: self.worker_id, task_path: path })
     }
 }
 
@@ -729,6 +750,8 @@ fn on_task_assigned(io: &mut IoState, worker_id: WorkerId, task_id: TaskId) {
 }
 
 fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
+    use crate::constants::response_path;
+
     // PANIC: Core guarantees this worker exists
     io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
     // state drops → task file deleted by RAII
@@ -738,41 +761,27 @@ fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
     io.uuid_to_worker_id.remove(&worker_uuid).expect("worker_uuid not in uuid_to_worker_id map");
 
     // Delete response file (worker created it, we must clean it up)
-    let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
-    let _ = fs::remove_file(&response_path);
+    let path = response_path(&agents_dir, &worker_uuid.0);
+    let _ = fs::remove_file(&path);
 }
 
 fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
+    use crate::constants::{task_path, response_path};
+
     // PANIC: Both maps must be in sync
     let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in worker_id_to_uuid map");
     io.uuid_to_worker_id.remove(&worker_uuid).expect("worker_uuid not in uuid_to_worker_id map");
 
     // Write kicked message so worker knows to exit
-    let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
-    let _ = fs::write(&task_path, r#"{"kind":"Kicked"}"#);
+    let task = task_path(&agents_dir, &worker_uuid.0);
+    let _ = fs::write(&task, r#"{"kind":"Kicked"}"#);
 
     io.workers.remove(&worker_id);
     // state drops → ready/task file cleaned up by RAII
 
     // Clean up response file if it exists (worker may have written it before timeout)
-    let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
-    let _ = fs::remove_file(&response_path);
-}
-```
-
-#### Helper for paths
-
-```rust
-fn task_path(agents_dir: &Path, uuid: &str) -> PathBuf {
-    agents_dir.join(format!("{uuid}{TASK_SUFFIX}"))
-}
-
-fn response_path(agents_dir: &Path, uuid: &str) -> PathBuf {
-    agents_dir.join(format!("{uuid}{WORKER_RESPONSE_SUFFIX}"))
-}
-
-fn ready_path(agents_dir: &Path, uuid: &str) -> PathBuf {
-    agents_dir.join(format!("{uuid}{READY_SUFFIX}"))
+    let resp = response_path(&agents_dir, &worker_uuid.0);
+    let _ = fs::remove_file(&resp);
 }
 ```
 
@@ -785,7 +794,7 @@ fn ready_path(agents_dir: &Path, uuid: &str) -> PathBuf {
 ```rust
 //! Task execution utilities for workers.
 
-use crate::constants::{AGENTS_DIR, READY_SUFFIX, TASK_SUFFIX};
+use crate::constants::{AGENTS_DIR, ready_path, task_path, canary_path, response_path};
 use crate::fs::VerifiedWatcher;
 use std::fs;
 use std::io;
@@ -811,31 +820,30 @@ pub fn wait_for_task(
     let agents_dir = pool_root.join(AGENTS_DIR);
     let uuid = Uuid::new_v4().to_string();
 
-    let ready_path = agents_dir.join(format!("{uuid}{READY_SUFFIX}"));
-    let task_path = agents_dir.join(format!("{uuid}{TASK_SUFFIX}"));
-    let canary_path = agents_dir.join(format!("{uuid}.canary"));
+    let ready = ready_path(&agents_dir, &uuid);
+    let task = task_path(&agents_dir, &uuid);
+    let canary = canary_path(&agents_dir, &uuid);
 
     // Write ready file with optional metadata
     let metadata = match name {
         Some(n) => format!(r#"{{"name":"{}"}}"#, n),
         None => "{}".to_string(),
     };
-    fs::write(&ready_path, &metadata)?;
+    fs::write(&ready, &metadata)?;
 
     // Wait for task using VerifiedWatcher
-    let mut watcher = VerifiedWatcher::new(&agents_dir, canary_path)?;
-    watcher.wait_for(&task_path, timeout)?;
+    let mut watcher = VerifiedWatcher::new(&agents_dir, canary)?;
+    watcher.wait_for(&task, timeout)?;
 
-    let task = fs::read_to_string(&task_path)?;
-    Ok((uuid, task))
+    let content = fs::read_to_string(&task)?;
+    Ok((uuid, content))
 }
 
 /// Write a response for the given task.
-pub fn write_response(pool_root: &Path, uuid: &str, response: &str) -> io::Result<()> {
-    use crate::constants::WORKER_RESPONSE_SUFFIX;
+pub fn write_response(pool_root: &Path, uuid: &str, content: &str) -> io::Result<()> {
     let agents_dir = pool_root.join(AGENTS_DIR);
-    let response_path = agents_dir.join(format!("{uuid}{WORKER_RESPONSE_SUFFIX}"));
-    fs::write(&response_path, response)
+    let path = response_path(&agents_dir, uuid);
+    fs::write(&path, content)
 }
 ```
 
