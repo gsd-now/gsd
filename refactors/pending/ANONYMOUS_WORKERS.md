@@ -12,6 +12,7 @@ Simplify agent protocol from "named agents with persistent directories" to "anon
 2. **Simplify registration** - Worker creates one file, waits for response
 3. **Remove agent identity** - Workers are anonymous, names are debug-only metadata
 4. **Unify patterns** - Agents and submissions use identical flat-file protocol
+5. **Simplify executor** - Use `VerifiedWatcher` directly, eliminate custom watcher code
 
 ## Current Architecture
 
@@ -27,7 +28,7 @@ Simplify agent protocol from "named agents with persistent directories" to "anon
 │       ├── task.json
 │       └── response.json
 └── submissions/
-    ├── <uuid>.request.json   # Client writes request
+    ├── <uuid>.request.json   # Submitter writes request
     └── <uuid>.response.json  # Daemon writes response
 ```
 
@@ -51,15 +52,22 @@ pub(super) enum PathCategory {
 - `AgentResponse` is nested two levels deep
 - Asymmetric: submissions are flat, agents are nested
 
-### Agent Registration Flow (Before)
+### Current executor.rs (324 lines)
 
-1. Agent creates directory: `agents/<name>/`
-2. Daemon sees `FolderCreated` event → `PathCategory::AgentDir`
-3. Daemon registers agent, writes `task.json` with heartbeat
-4. Agent writes `response.json`
-5. Daemon sees `FileWritten` event → `PathCategory::AgentResponse`
+**File:** `crates/agent_pool/src/executor.rs`
 
-**Race condition:** On Linux, inotify may fire `FolderCreated` before the directory is visible to `readdir()`.
+Contains:
+- `is_file_write_event()` - platform-specific event detection (DUPLICATED in `daemon/path_category.rs` as `is_write_complete()`)
+- `AgentEvent` enum
+- `create_watcher()` - creates notify watcher
+- `verify_watcher_sync()` - canary verification
+- `is_task_ready()` - checks `task.exists() && !response.exists()`
+- `wait_for_task()`, `wait_for_task_with_timeout()`
+
+**After anonymous workers:** Most of this becomes unnecessary because:
+- `VerifiedWatcher` handles watcher creation + canary verification
+- Simple `task.exists()` check (no response file ambiguity with fresh UUIDs)
+- Platform-specific code consolidated in one place
 
 ---
 
@@ -74,7 +82,7 @@ pub(super) enum PathCategory {
 │   ├── <uuid>.task.json      # Daemon writes (assigns task)
 │   └── <uuid>.response.json  # Worker writes (task result)
 └── submissions/
-    ├── <uuid>.request.json   # Client writes request
+    ├── <uuid>.request.json   # Submitter writes request
     └── <uuid>.response.json  # Daemon writes response
 ```
 
@@ -112,9 +120,106 @@ pub(super) enum PathCategory {
 
 **No race condition:** All events are file writes, which are reliable on both Linux and macOS.
 
+### Simplified executor.rs (After)
+
+With anonymous workers + `VerifiedWatcher`, the executor becomes trivial:
+
+```rust
+//! Task execution utilities.
+
+use crate::fs::VerifiedWatcher;
+use crate::constants::AGENTS_DIR;
+use std::path::Path;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// Wait for a task assignment.
+///
+/// Writes a ready file, waits for task file to appear, returns task content.
+pub fn wait_for_task(
+    pool_root: &Path,
+    name: Option<&str>,
+    timeout: Option<Duration>,
+) -> io::Result<(String, String)> {  // Returns (uuid, task_content)
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let uuid = Uuid::new_v4().to_string();
+
+    let ready_path = agents_dir.join(format!("{uuid}.ready.json"));
+    let task_path = agents_dir.join(format!("{uuid}.task.json"));
+    let canary_path = agents_dir.join(format!("{uuid}.canary"));
+
+    // Write ready file with optional metadata
+    let metadata = match name {
+        Some(n) => format!(r#"{{"name":"{}"}}"#, n),
+        None => "{}".to_string(),
+    };
+    fs::write(&ready_path, &metadata)?;
+
+    // Wait for task using VerifiedWatcher
+    let mut watcher = VerifiedWatcher::new(&agents_dir, canary_path)?;
+    watcher.wait_for(&task_path, timeout)?;
+
+    let task = fs::read_to_string(&task_path)?;
+    Ok((uuid, task))
+}
+```
+
+This replaces ~300 lines with ~30 lines.
+
 ---
 
 ## Implementation Plan
+
+### Task 0: Consolidate Platform-Specific Code
+
+**Problem:** `is_file_write_event()` in `executor.rs` duplicates `is_write_complete()` in `daemon/path_category.rs`.
+
+**File:** `crates/agent_pool/src/fs.rs` (add to existing file)
+
+```rust
+/// Check if event kind indicates a file write is complete.
+///
+/// Platform-specific behavior:
+/// - **Linux inotify**: Only `Close(Write)` guarantees data is flushed
+/// - **macOS FSEvents**: `Create(File)` and `Modify(Data)` are accepted
+#[cfg(target_os = "linux")]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+```
+
+Then update:
+- `daemon/path_category.rs` - use `crate::fs::is_write_complete`
+- `executor.rs` - use `crate::fs::is_write_complete`
+
+---
 
 ### Task 1: Update PathCategory
 
@@ -153,11 +258,9 @@ fn categorize_under_agents(
     let name = components[0].as_os_str().to_str()?.to_string();
 
     match components.len() {
-        // Agent directory - meaningful on folder creation or removal
         1 if is_folder_created(event_kind) || is_folder_removed(event_kind) => {
             Some(PathCategory::AgentDir { name })
         }
-        // Agent response - only meaningful when write is complete
         2 if is_write_complete(event_kind) => {
             let filename = components[1].as_os_str().to_str()?;
             if filename == RESPONSE_FILE {
@@ -171,14 +274,13 @@ fn categorize_under_agents(
 }
 
 // After
-const READY_SUFFIX: &str = ".ready.json";
-const RESPONSE_SUFFIX: &str = ".response.json";
-
 fn categorize_under_agents(
     path: &Path,
     event_kind: EventKind,
     agents_dir: &Path,
 ) -> Option<PathCategory> {
+    use crate::constants::{READY_SUFFIX, WORKER_RESPONSE_SUFFIX};
+
     // Only process when write is complete (same as submissions)
     if !is_write_complete(event_kind) {
         return None;
@@ -197,75 +299,40 @@ fn categorize_under_agents(
     if let Some(id) = filename.strip_suffix(READY_SUFFIX) {
         return Some(PathCategory::WorkerReady { id: id.to_string() });
     }
-    if let Some(id) = filename.strip_suffix(RESPONSE_SUFFIX) {
+    if let Some(id) = filename.strip_suffix(WORKER_RESPONSE_SUFFIX) {
         return Some(PathCategory::WorkerResponse { id: id.to_string() });
     }
     None
 }
 ```
 
-#### 1.3: Update tests
+#### 1.3: Remove folder event helpers
+
+Delete `is_folder_created()` and `is_folder_removed()` - no longer needed.
+
+#### 1.4: Update tests
 
 Update all `PathCategory` tests to use flat file patterns instead of nested directories.
 
 ---
 
-### Task 2: Update IO Layer
+### Task 2: Update Constants
 
-**File:** `crates/agent_pool/src/daemon/io.rs`
-
-#### 2.1: Change AgentId to WorkerId
+**File:** `crates/agent_pool/src/constants.rs`
 
 ```rust
 // Before
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct AgentId(pub(super) u32);
+pub const TASK_FILE: &str = "task.json";
+pub const RESPONSE_FILE: &str = "response.json";
 
-pub(super) type AgentMap = TransportMap<AgentId>;
+// After - add suffixes for flat worker files
+pub const READY_SUFFIX: &str = ".ready.json";
+pub const TASK_SUFFIX: &str = ".task.json";
+pub const WORKER_RESPONSE_SUFFIX: &str = ".response.json";
 
-// After
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct WorkerId(pub(super) u32);
-
-pub(super) type WorkerMap = TransportMap<WorkerId>;
+// Keep TASK_FILE and RESPONSE_FILE for now (remove in later cleanup)
+// Or remove if no longer used after all changes
 ```
-
-**Note:** `WorkerId` maps to the UUID from the file path, not an auto-incrementing ID.
-
-#### 2.2: Track workers by UUID string
-
-The current `TransportMap` uses auto-incrementing IDs. For the new model, we track by UUID:
-
-```rust
-// Before: TransportMap with auto-incrementing IDs
-pub(super) struct TransportMap<Id: TransportId> {
-    entries: HashMap<Id, (Transport, Id::Data)>,
-    path_to_id: HashMap<PathBuf, Id>,
-    next_id: u32,
-}
-
-// After: WorkerMap keyed by UUID string
-pub(super) struct WorkerMap {
-    /// Maps worker UUID to transport and state
-    workers: HashMap<String, WorkerEntry>,
-}
-
-struct WorkerEntry {
-    /// Path to the agents/ directory (not individual files)
-    agents_dir: PathBuf,
-    /// Current state
-    state: WorkerState,
-}
-
-enum WorkerState {
-    /// Worker has written ready file, waiting for task assignment
-    Ready,
-    /// Worker is processing a task
-    Busy { task_id: TaskId },
-}
-```
-
-**Avoiding impossible states:** The `WorkerState` enum ensures a worker can only be in valid states.
 
 ---
 
@@ -278,19 +345,13 @@ enum WorkerState {
 ```rust
 // Before
 pub(super) struct AgentId(pub(super) u32);
-
-pub(super) enum AgentStatus {
-    Idle,
-    Busy { task_id: TaskId },
-}
+pub(super) enum AgentStatus { Idle, Busy { task_id: TaskId } }
+pub(super) struct AgentState { ... }
 
 // After
 pub(super) struct WorkerId(pub(super) u32);
-
-pub(super) enum WorkerStatus {
-    Idle,
-    Busy { task_id: TaskId },
-}
+pub(super) enum WorkerStatus { Idle, Busy { task_id: TaskId } }
+pub(super) struct WorkerState { ... }
 ```
 
 #### 3.2: Update Events
@@ -318,7 +379,7 @@ pub(super) enum Event {
 }
 ```
 
-**Key change:** Remove `AgentDeregistered`. Workers don't deregister - they just stop calling `get_task`. Stale ready files are cleaned up by the daemon on timeout.
+**Key change:** Remove `AgentDeregistered`. Workers don't deregister - stale files are cleaned up on timeout.
 
 #### 3.3: Update Effects
 
@@ -326,7 +387,7 @@ pub(super) enum Event {
 // Before
 pub(super) enum Effect {
     TaskAssigned { agent_id: AgentId, task_id: TaskId },
-    TaskCompleted { agent_id: AgentId, task_id: TaskId, response: String },
+    TaskCompleted { agent_id: AgentId, task_id: TaskId },
     AgentIdled { epoch: Epoch },
     AgentKicked { agent_id: AgentId },
     StartTimer { kind: TimerKind, epoch: Epoch, duration: Duration },
@@ -335,184 +396,145 @@ pub(super) enum Effect {
 // After
 pub(super) enum Effect {
     TaskAssigned { worker_id: WorkerId, task_id: TaskId },
-    TaskCompleted { worker_id: WorkerId, task_id: TaskId, response: String },
+    TaskCompleted { worker_id: WorkerId, task_id: TaskId },
     WorkerIdled { epoch: Epoch },
-    CleanupWorker { worker_id: WorkerId },  // Replaces AgentKicked
+    CleanupWorker { worker_id: WorkerId },
     StartTimer { kind: TimerKind, epoch: Epoch, duration: Duration },
 }
 ```
 
-**Key change:** `CleanupWorker` instead of `AgentKicked`. The daemon just removes the files, doesn't need to signal the worker.
+---
+
+### Task 4: Update IO Layer
+
+**File:** `crates/agent_pool/src/daemon/io.rs`
+
+#### 4.1: Rename AgentMap to WorkerMap
+
+Update type aliases and all usages.
+
+#### 4.2: Track workers by UUID
+
+Workers are now identified by UUID string from the file path.
 
 ---
 
-### Task 4: Update Wiring
+### Task 5: Update Wiring
 
 **File:** `crates/agent_pool/src/daemon/wiring.rs`
 
-#### 4.1: Update event handlers
+#### 5.1: Update event handlers
 
 ```rust
 // Before
-fn handle_fs_event(...) {
-    match category {
-        PathCategory::AgentDir { name } => {
-            let agent_path = agents_dir.join(&name);
-            handle_agent_dir(&agent_path, ...);
-        }
-        PathCategory::AgentResponse { name } => {
-            let agent_path = agents_dir.join(&name);
-            handle_agent_response(&agent_path, path, ...);
-        }
-        PathCategory::SubmissionRequest { id } => {
-            register_submission(&id, ...);
-        }
-    }
+match category {
+    PathCategory::AgentDir { name } => { ... }
+    PathCategory::AgentResponse { name } => { ... }
+    PathCategory::SubmissionRequest { id } => { ... }
 }
 
 // After
-fn handle_fs_event(...) {
-    match category {
-        PathCategory::WorkerReady { id } => {
-            handle_worker_ready(&id, agents_dir, ...);
-        }
-        PathCategory::WorkerResponse { id } => {
-            handle_worker_response(&id, agents_dir, ...);
-        }
-        PathCategory::SubmissionRequest { id } => {
-            register_submission(&id, ...);
-        }
+match category {
+    PathCategory::WorkerReady { id } => {
+        handle_worker_ready(&id, agents_dir, ...);
     }
-}
-```
-
-#### 4.2: Implement worker handlers
-
-```rust
-fn handle_worker_ready(
-    worker_uuid: &str,
-    agents_dir: &Path,
-    events_tx: &mpsc::Sender<Event>,
-    worker_map: &mut WorkerMap,
-    task_id_allocator: &mut TaskIdAllocator,
-    io_config: &IoConfig,
-) {
-    let ready_path = agents_dir.join(format!("{worker_uuid}.ready.json"));
-
-    // Skip if file doesn't exist (may have been cleaned up)
-    if !ready_path.exists() {
-        return;
+    PathCategory::WorkerResponse { id } => {
+        handle_worker_response(&id, agents_dir, ...);
     }
-
-    // Register worker and emit event
-    if let Some(worker_id) = worker_map.register(worker_uuid.to_string(), agents_dir.to_path_buf()) {
-        let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
-            Some(task_id_allocator.allocate_heartbeat())
-        } else {
-            None
-        };
-        let _ = events_tx.send(Event::WorkerReady {
-            worker_id,
-            heartbeat_task_id,
-        });
-    }
-}
-
-fn handle_worker_response(
-    worker_uuid: &str,
-    agents_dir: &Path,
-    events_tx: &mpsc::Sender<Event>,
-    worker_map: &mut WorkerMap,
-    pending_responses: &mut HashSet<WorkerId>,
-) {
-    let response_path = agents_dir.join(format!("{worker_uuid}.response.json"));
-
-    if !response_path.exists() {
-        return;
-    }
-
-    if let Some(worker_id) = worker_map.get_id_by_uuid(worker_uuid) {
-        if pending_responses.insert(worker_id) {
-            let _ = events_tx.send(Event::WorkerResponded { worker_id });
-        }
+    PathCategory::SubmissionRequest { id } => {
+        register_submission(&id, ...);
     }
 }
 ```
 
 ---
 
-### Task 5: Update CLI Commands
+### Task 6: Simplify executor.rs
+
+**File:** `crates/agent_pool/src/executor.rs`
+
+Replace the current ~324 lines with a simple wrapper around `VerifiedWatcher`:
+
+```rust
+//! Task execution utilities for workers.
+
+use crate::constants::{AGENTS_DIR, READY_SUFFIX, TASK_SUFFIX};
+use crate::fs::VerifiedWatcher;
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// Wait for a task assignment.
+///
+/// 1. Generates a UUID
+/// 2. Writes `<uuid>.ready.json` to signal availability
+/// 3. Waits for `<uuid>.task.json` using VerifiedWatcher
+/// 4. Returns the UUID and task content
+///
+/// # Errors
+///
+/// Returns an error if file operations fail or timeout is exceeded.
+pub fn wait_for_task(
+    pool_root: &Path,
+    name: Option<&str>,
+    timeout: Option<Duration>,
+) -> io::Result<(String, String)> {
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let uuid = Uuid::new_v4().to_string();
+
+    let ready_path = agents_dir.join(format!("{uuid}{READY_SUFFIX}"));
+    let task_path = agents_dir.join(format!("{uuid}{TASK_SUFFIX}"));
+    let canary_path = agents_dir.join(format!("{uuid}.canary"));
+
+    // Write ready file with optional metadata
+    let metadata = match name {
+        Some(n) => format!(r#"{{"name":"{}"}}"#, n),
+        None => "{}".to_string(),
+    };
+    fs::write(&ready_path, &metadata)?;
+
+    // Wait for task using VerifiedWatcher
+    let mut watcher = VerifiedWatcher::new(&agents_dir, canary_path)?;
+    watcher.wait_for(&task_path, timeout)?;
+
+    let task = fs::read_to_string(&task_path)?;
+    Ok((uuid, task))
+}
+
+/// Write a response for the given task.
+pub fn write_response(pool_root: &Path, uuid: &str, response: &str) -> io::Result<()> {
+    use crate::constants::WORKER_RESPONSE_SUFFIX;
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let response_path = agents_dir.join(format!("{uuid}{WORKER_RESPONSE_SUFFIX}"));
+    fs::write(&response_path, response)
+}
+```
+
+**Removed:**
+- `AgentEvent` enum
+- `create_watcher()`
+- `verify_watcher_sync()`
+- `is_task_ready()` (no longer needed - fresh UUID each cycle)
+- `wait_for_task_with_timeout()` (merged into `wait_for_task`)
+- Platform-specific `is_file_write_event()` (moved to `fs.rs`)
+
+---
+
+### Task 7: Update CLI Commands
 
 **File:** `crates/agent_pool/src/bin/agent_pool.rs`
 
-#### 5.1: Consolidate commands
-
-```rust
-// Before: Separate register and next_task commands
-Commands::Register { pool, name } => { ... }
-Commands::NextTask { pool, name, response_file } => { ... }
-Commands::GetTask { pool, name } => { ... }
-
-// After: Single get_task command
-Commands::GetTask { pool, name } => {
-    // 1. Generate UUID
-    let uuid = Uuid::new_v4().to_string();
-    let agents_dir = root.join(AGENTS_DIR);
-
-    // 2. Write ready file with optional name metadata
-    let ready_path = agents_dir.join(format!("{uuid}.ready.json"));
-    let ready_content = json!({ "name": name });
-    fs::write(&ready_path, ready_content.to_string())?;
-
-    // 3. Wait for task file (using VerifiedWatcher)
-    let task_path = agents_dir.join(format!("{uuid}.task.json"));
-    let canary_path = agents_dir.join(format!("{uuid}.canary"));
-    let mut watcher = VerifiedWatcher::new(&agents_dir, canary_path)?;
-    watcher.wait_for(&task_path, None)?;  // None = wait forever
-
-    // 4. Read and output task
-    let task = fs::read_to_string(&task_path)?;
-    println!("{task}");
-}
-```
-
-#### 5.2: Remove deprecated commands
-
-Remove `register`, `deregister_agent`, and consolidate into single `get_task` workflow.
+Consolidate `register`, `get_task`, `next_task` into single workflow using new executor functions.
 
 ---
 
-### Task 6: Update Constants
-
-**File:** `crates/agent_pool/src/constants.rs`
-
-```rust
-// Before
-pub const TASK_FILE: &str = "task.json";
-pub const RESPONSE_FILE: &str = "response.json";
-
-// After (add suffixes for flat files)
-pub const READY_SUFFIX: &str = ".ready.json";
-pub const TASK_SUFFIX: &str = ".task.json";
-pub const WORKER_RESPONSE_SUFFIX: &str = ".response.json";
-
-// Keep for submissions (unchanged)
-pub const REQUEST_SUFFIX: &str = ".request.json";
-pub const RESPONSE_SUFFIX: &str = ".response.json";
-```
-
----
-
-### Task 7: Update Protocol Documentation
+### Task 8: Update Protocol Documentation
 
 **File:** `crates/agent_pool/AGENT_PROTOCOL.md`
 
-Document the new three-file protocol:
-
-1. Worker writes `<uuid>.ready.json` with optional metadata (name)
-2. Daemon writes `<uuid>.task.json` with task content
-3. Worker writes `<uuid>.response.json` with result
-4. Daemon cleans up all three files
+Document the new three-file protocol.
 
 ---
 
