@@ -10,8 +10,8 @@ mod common;
 
 use agent_pool::Response;
 use common::{
-    AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_pool, generate_pool,
-    is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
+    AgentPoolHandle, AgentsSnapshot, DataSource, NotifyMethod, SubmissionsSnapshot, TestAgent,
+    cleanup_pool, generate_pool, is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
 };
 use rstest::rstest;
 use std::thread;
@@ -40,11 +40,17 @@ fn single_agent_queues_multiple_tasks(
         return;
     }
 
+    // === Sync point 1: Pool started, no agents yet ===
     let _pool_handle = AgentPoolHandle::start(&pool, &pool);
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_no_agents();
+
     let mut agent = TestAgent::echo(&pool, "only-agent", Duration::from_millis(50), &pool);
 
-    // Wait for agent to be ready (has processed initial heartbeat)
+    // === Sync point 2: Agent ready ===
     agent.wait_ready();
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_agent_exists("only-agent");
 
     // Submit 4 tasks rapidly (they should queue since there's only one agent)
     let handles: Vec<_> = ["Task-A", "Task-B", "Task-C", "Task-D"]
@@ -72,7 +78,13 @@ fn single_agent_queues_multiple_tasks(
         assert!(stdout.contains("[processed]"));
     }
 
+    // === Sync point 3: All tasks processed, submissions clean ===
+    let submissions = SubmissionsSnapshot::capture(&pool);
+    submissions.assert_empty();
+
+    // === Sync point 4: Agent stopped ===
     let _ = agent.stop();
+    AgentsSnapshot::capture(&pool).assert_agent_not_exists("only-agent");
 
     cleanup_pool(&pool);
 }

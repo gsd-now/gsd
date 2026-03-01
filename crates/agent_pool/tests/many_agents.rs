@@ -10,8 +10,8 @@ mod common;
 
 use agent_pool::Response;
 use common::{
-    AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_pool, generate_pool,
-    is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
+    AgentPoolHandle, AgentsSnapshot, DataSource, NotifyMethod, SubmissionsSnapshot, TestAgent,
+    cleanup_pool, generate_pool, is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
 };
 use rstest::rstest;
 use std::thread;
@@ -47,15 +47,22 @@ fn multiple_agents_parallel_tasks(
         return;
     }
 
+    // === Sync point 1: Pool started, no agents yet ===
     let _pool_handle = AgentPoolHandle::start(&pool, &pool);
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_no_agents();
 
     // 3 agents with varying response times
     let mut agent1 = TestAgent::echo(&pool, "fast-agent", Duration::from_millis(10), &pool);
     let mut agent2 = TestAgent::echo(&pool, "medium-agent", Duration::from_millis(30), &pool);
     let mut agent3 = TestAgent::echo(&pool, "slow-agent", Duration::from_millis(50), &pool);
 
-    // Wait for all agents to be ready (have processed initial heartbeats)
+    // === Sync point 2: All agents ready ===
     wait_all_ready(&mut [&mut agent1, &mut agent2, &mut agent3]);
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_agent_exists("fast-agent");
+    agents.assert_agent_exists("medium-agent");
+    agents.assert_agent_exists("slow-agent");
 
     // Submit 6 tasks rapidly - they'll be distributed across agents
     let handles: Vec<_> = (1..=6)
@@ -81,9 +88,18 @@ fn multiple_agents_parallel_tasks(
         assert!(stdout.contains("[processed]"));
     }
 
+    // === Sync point 3: All tasks processed, submissions clean ===
+    let submissions = SubmissionsSnapshot::capture(&pool);
+    submissions.assert_empty();
+
+    // === Sync point 4: All agents stopped ===
     let _ = agent1.stop();
     let _ = agent2.stop();
     let _ = agent3.stop();
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_agent_not_exists("fast-agent");
+    agents.assert_agent_not_exists("medium-agent");
+    agents.assert_agent_not_exists("slow-agent");
 
     cleanup_pool(&pool);
 }

@@ -9,8 +9,8 @@ mod common;
 
 use agent_pool::Response;
 use common::{
-    AgentPoolHandle, DataSource, NotifyMethod, TestAgent, cleanup_pool, generate_pool,
-    is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
+    AgentPoolHandle, AgentsSnapshot, DataSource, NotifyMethod, SubmissionsSnapshot, TestAgent,
+    cleanup_pool, generate_pool, is_ipc_available, mode_abbrev, pool_path, submit_with_mode,
 };
 use rstest::rstest;
 use std::time::Duration;
@@ -38,11 +38,17 @@ fn greeting_casual_and_formal(
         return;
     }
 
+    // === Sync point 1: Pool started, no agents yet ===
     let _pool_handle = AgentPoolHandle::start(&pool, &pool);
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_no_agents();
+
     let mut agent = TestAgent::greeting(&pool, "friendly-bot", Duration::from_millis(10), &pool);
 
-    // Wait for agent to be ready (has processed initial heartbeat)
+    // === Sync point 2: Agent ready ===
     agent.wait_ready();
+    let agents = AgentsSnapshot::capture(&pool);
+    agents.assert_agent_exists("friendly-bot");
 
     let casual = submit_with_mode(
         &pool,
@@ -71,9 +77,14 @@ fn greeting_casual_and_formal(
         "Salutations friendly-bot, how are you doing on this most splendiferous and utterly magnificent day?"
     );
 
-    // Note: processed contains the full task JSON
+    // === Sync point 3: Tasks processed, submissions clean ===
+    let submissions = SubmissionsSnapshot::capture(&pool);
+    submissions.assert_empty();
+
+    // === Sync point 4: Agent stopped ===
     eprintln!("[{pool}] TEST: assertions passed, stopping agent...");
     let _ = agent.stop();
+    AgentsSnapshot::capture(&pool).assert_agent_not_exists("friendly-bot");
     eprintln!("[{pool}] TEST: agent stopped, cleaning up...");
 
     cleanup_pool(&pool);
