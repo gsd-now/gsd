@@ -544,97 +544,33 @@ This keeps workers engaged. There's no "idle → removed" path - idle workers ge
 
 The IO layer maps abstract IDs to concrete file paths and performs actual I/O. It maintains a per-UUID state machine that handles duplicate/delayed FS events gracefully.
 
-#### UUID State Machine (Monotonic Transitions)
+#### Handling FS Events
 
-For each UUID, the IO layer tracks state and only transitions **upward**. This provides the guarantees that let core panic on violations.
-
-```rust
-// =============================================================================
-// UUID State Tracking
-// =============================================================================
-
-/// State of a UUID in the filesystem protocol.
-/// States are ordered - we only ever transition to higher states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub(super) enum UuidState {
-    #[default]
-    Unknown = 0,    // Haven't seen this UUID yet
-    Ready = 1,      // ready.json exists (worker registered)
-    Assigned = 2,   // task.json written (by daemon)
-    Responded = 3,  // response.json exists (worker responded)
-    Removed = 4,    // Worker removed, files cleaned up
-}
-
-/// FS events we might receive for a UUID.
-/// Multiple events can map to the same state (e.g., Create + Modify + Close for one write).
-#[derive(Debug, Clone, Copy)]
-pub(super) enum FsEventKind {
-    ReadyCreated,
-    ReadyDeleted,
-    TaskCreated,
-    TaskDeleted,
-    ResponseCreated,
-    ResponseDeleted,
-}
-
-impl FsEventKind {
-    /// What state does this event indicate we should be in (at minimum)?
-    fn target_state(self) -> UuidState {
-        match self {
-            Self::ReadyCreated => UuidState::Ready,
-            Self::ReadyDeleted => UuidState::Assigned,  // Deleted after task.json written
-            Self::TaskCreated => UuidState::Assigned,   // Primary trigger for Assigned
-            Self::TaskDeleted => UuidState::Responded,  // Deleted after response read
-            Self::ResponseCreated => UuidState::Responded,  // Primary trigger for Responded
-            Self::ResponseDeleted => UuidState::Removed,
-        }
-    }
-}
-
-/// Tracker for a single UUID's state.
-#[derive(Default)]
-pub(super) struct UuidTracker {
-    pub state: UuidState,
-}
-```
-
-#### Handling FS Events (Monotonic Transitions)
+The WorkerMap IS the state. No separate tracking needed.
 
 ```rust
 impl IoState {
-    /// Handle a filesystem event for a UUID.
-    /// Only transitions to higher states. Duplicate/delayed events are ignored.
-    fn handle_fs_event(&mut self, uuid: &str, event_kind: FsEventKind) -> Option<Event> {
-        let target_state = event_kind.target_state();
-        let tracker = self.uuid_trackers.entry(uuid.to_string()).or_default();
-
-        if target_state <= tracker.state {
-            return None;  // Duplicate or delayed event
+    fn handle_ready_created(&mut self, uuid: &str) -> Option<Event> {
+        if self.workers.contains_key(uuid) {
+            return None;  // Duplicate event
         }
+        let ready = WorkerReady::from_path(...)?;
+        self.workers.insert(uuid.to_string(), IoWorkerState::Ready(ready));
+        Some(Event::WorkerReady { uuid: uuid.to_string() })
+    }
 
-        let old_state = tracker.state;
-        tracker.state = target_state;
-
-        match (old_state, target_state) {
-            (UuidState::Unknown, UuidState::Ready) => {
-                Some(Event::WorkerReady { uuid: uuid.to_string() })
-            }
-            (UuidState::Assigned, UuidState::Responded) => {
+    fn handle_response_created(&mut self, uuid: &str) -> Option<Event> {
+        match self.workers.get(uuid) {
+            Some(IoWorkerState::Assigned(_)) => {
                 Some(Event::WorkerResponded { uuid: uuid.to_string() })
             }
-            _ => None,  // Other transitions are initiated by us
+            _ => None,  // Not assigned, ignore
         }
     }
 }
 ```
 
-**Key properties:**
-1. **Monotonic**: State only increases, never decreases
-2. **Idempotent**: Duplicate events for same state are ignored
-3. **Tolerant**: Delayed events from lower states are ignored
-4. **Events to core only on transitions**: WorkerReady sent exactly once (Unknown→Ready), WorkerResponded sent exactly once (Assigned→Responded)
-
-This is what enables core to panic on violations - IO guarantees it will never send duplicate events or events for invalid states.
+Simple checks against WorkerMap. No separate state machine.
 
 #### File Ownership (RAII Guards)
 
