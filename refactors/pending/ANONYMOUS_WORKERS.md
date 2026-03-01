@@ -589,15 +589,16 @@ No reverse map needed - when handling Effects, we look up `workers[worker_id]` a
 ```rust
 impl IoState {
     /// A worker wrote `<uuid>.ready.json` to signal availability.
-    fn on_ready_file_created(&mut self, worker_uuid: WorkerUuid) -> Option<Event> {
+    fn on_ready_file_created(&mut self, worker_uuid: WorkerUuid, ready_path: PathBuf) -> Option<Event> {
         if self.worker_uuids.contains_key(&worker_uuid) {
             return None;  // Duplicate event for same file
         }
         let worker_id = WorkerId(self.next_worker_id);
         self.next_worker_id += 1;
-        self.worker_uuids.insert(worker_uuid.clone(), worker_id);
 
-        let ready = WorkerReady::from_path(...)?;
+        // Clone needed: UUID stored in both the lookup map and the WorkerReady struct
+        let ready = WorkerReady::new(worker_uuid.clone(), ready_path)?;
+        self.worker_uuids.insert(worker_uuid, worker_id);
         self.workers.insert(worker_id, IoWorkerState::Ready(ready));
         Some(Event::WorkerReady { worker_id })
     }
@@ -647,18 +648,10 @@ pub(super) struct WorkerAssigned {
 }
 
 impl WorkerReady {
-    /// Create from a ready file path. Parses metadata from file.
-    fn from_path(ready_path: PathBuf) -> io::Result<Self> {
-        let uuid_str = ready_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(READY_SUFFIX))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid ready path"))?;
-        let worker_uuid = WorkerUuid(uuid_str.to_string());
-
+    /// Create from UUID and path. Parses metadata from file.
+    fn new(worker_uuid: WorkerUuid, ready_path: PathBuf) -> io::Result<Self> {
         let content = fs::read_to_string(&ready_path).unwrap_or_default();
         let data: WorkerData = serde_json::from_str(&content).unwrap_or_default();
-
         Ok(Self { worker_uuid, ready_path, data })
     }
 
