@@ -715,11 +715,15 @@ fn on_task_assigned(io: &mut IoState, worker_id: WorkerId, task_id: TaskId) {
 
 fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
     io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
-    // state drops → files cleaned up by RAII
+    // state drops → task file deleted by RAII
 
     // Clean up both UUID maps
     let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
     io.uuid_to_worker_id.remove(&worker_uuid);
+
+    // Delete response file (worker created it, we must clean it up)
+    let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
+    let _ = fs::remove_file(&response_path);
 }
 
 fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
@@ -730,11 +734,15 @@ fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
     let _ = fs::write(&task_path, r#"{"kind":"Kicked"}"#);
 
     io.workers.remove(&worker_id);
-    // state drops → files cleaned up by RAII
+    // state drops → ready/task file cleaned up by RAII
 
     // Clean up both UUID maps
     let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
     io.uuid_to_worker_id.remove(&worker_uuid);
+
+    // Clean up response file if it exists (worker may have written it before timeout)
+    let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
+    let _ = fs::remove_file(&response_path);
 }
 ```
 
