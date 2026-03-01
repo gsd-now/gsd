@@ -372,7 +372,6 @@ Because of these guarantees, core can **panic on violations** rather than handli
 #### 3.1: Core Data Structures
 
 ```rust
-// Newtypes for type safety - both are just u32 internally
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct WorkerId(u32);
 
@@ -384,14 +383,21 @@ enum TaskId {
     Heartbeat,
 }
 
+/// Either tasks are waiting for workers, or workers are waiting for tasks, or neither.
+/// Never both - any arrival triggers immediate matching.
+enum Waiting {
+    None,
+    Tasks(VecDeque<SubmissionId>),
+    Workers(VecDeque<WorkerId>),
+}
+
 struct PoolState {
-    pending_tasks: VecDeque<SubmissionId>,
-    waiting_workers: VecDeque<WorkerId>,
+    waiting: Waiting,
     busy_workers: HashMap<WorkerId, TaskId>,
 }
 ```
 
-Core uses cheap u32 IDs. IO layer maps UUID ↔ ID on the boundary.
+The `Waiting` enum makes the invariant impossible to violate at the type level.
 
 #### 3.2: Events and Effects
 
@@ -430,14 +436,47 @@ All u32 IDs. IO layer handles UUID ↔ ID mapping.
 
 ```rust
 fn handle_worker_ready(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
-    assert!(!state.waiting_workers.contains(&worker) && !state.busy_workers.contains_key(&worker));
+    assert!(!state.busy_workers.contains_key(&worker));
 
-    if let Some(submission) = state.pending_tasks.pop_front() {
-        state.busy_workers.insert(worker, TaskId::External(submission));
-        vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
-    } else {
-        state.waiting_workers.push_back(worker);
-        vec![Effect::WorkerWaiting { worker }]
+    match &mut state.waiting {
+        Waiting::Tasks(tasks) => {
+            let submission = tasks.pop_front().expect("Tasks variant with empty queue");
+            if tasks.is_empty() {
+                state.waiting = Waiting::None;
+            }
+            state.busy_workers.insert(worker, TaskId::External(submission));
+            vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
+        }
+        Waiting::Workers(workers) => {
+            assert!(!workers.contains(&worker));
+            workers.push_back(worker);
+            vec![Effect::WorkerWaiting { worker }]
+        }
+        Waiting::None => {
+            state.waiting = Waiting::Workers(VecDeque::from([worker]));
+            vec![Effect::WorkerWaiting { worker }]
+        }
+    }
+}
+
+fn handle_task_submitted(state: &mut PoolState, submission: SubmissionId) -> Vec<Effect> {
+    match &mut state.waiting {
+        Waiting::Workers(workers) => {
+            let worker = workers.pop_front().expect("Workers variant with empty queue");
+            if workers.is_empty() {
+                state.waiting = Waiting::None;
+            }
+            state.busy_workers.insert(worker, TaskId::External(submission));
+            vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
+        }
+        Waiting::Tasks(tasks) => {
+            tasks.push_back(submission);
+            vec![]
+        }
+        Waiting::None => {
+            state.waiting = Waiting::Tasks(VecDeque::from([submission]));
+            vec![]
+        }
     }
 }
 
@@ -449,10 +488,16 @@ fn handle_worker_responded(state: &mut PoolState, worker: WorkerId) -> Vec<Effec
 }
 
 fn handle_heartbeat_if_idle(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
-    let Some(pos) = state.waiting_workers.iter().position(|w| *w == worker) else {
+    let Waiting::Workers(workers) = &mut state.waiting else {
         return vec![];
     };
-    state.waiting_workers.remove(pos);
+    let Some(pos) = workers.iter().position(|w| *w == worker) else {
+        return vec![];
+    };
+    workers.remove(pos);
+    if workers.is_empty() {
+        state.waiting = Waiting::None;
+    }
     state.busy_workers.insert(worker, TaskId::Heartbeat);
     vec![Effect::TaskAssigned { worker, task: TaskId::Heartbeat }]
 }
