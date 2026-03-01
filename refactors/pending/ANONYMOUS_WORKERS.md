@@ -864,50 +864,44 @@ The tasks above are organized for logical readability, not implementation order.
 - Keep old constants for now (still used)
 - ✅ COMMIT: Tests pass, constants are unused
 
-**Step 3: Core data structures only (part of Task 3)**
-- Add `WorkerId`, `SubmissionId`, `TaskId`, `Waiting` types
-- Add `Event` and `Effect` enums
-- Add handler functions (not wired up yet)
-- ✅ COMMIT: Tests pass, new code is dead code
-
 ### Phase 2: The Big Bang (single atomic change)
 
-**Step 4: PathCategory + IO + Core wiring**
+**Step 3: Task 1 + Task 3 + Task 4**
 
 This is the irreducible core - these changes are interdependent and must happen together:
 
 1. **Task 1**: Change `PathCategory` variants (`AgentDir`/`AgentResponse` → `WorkerReady`/`WorkerResponse`)
-2. **Task 4**: Update IO layer to:
+2. **Task 3**: Rewrite core with new types (`WorkerId`, `SubmissionId`, `Waiting` enum, new Event/Effect)
+3. **Task 4**: Update IO layer to:
    - Handle new `PathCategory` variants
    - Implement UUID ↔ ID mapping
    - Wire up to new core Event/Effect types
    - Add RAII guards for file cleanup
-3. **Task 3 (wiring)**: Connect IO layer to core handlers
 
-⚠️ BROKEN STATE: Between changing PathCategory and completing IO updates, the daemon won't compile or work.
+⚠️ BROKEN STATE: These three must change together. The daemon won't compile until all three are done.
 
 - ❌ Tests fail during this phase
 - ✅ COMMIT: When daemon compiles and basic flow works
 
 ### Phase 3: Worker Side (committable after Phase 2)
 
-**Step 5: Task 5 - Simplify worker.rs**
+**Step 4: Task 5 - Simplify worker.rs**
 - Replace old registration flow with UUID-based flat files
 - Remove `AgentEvent`, `create_watcher`, etc.
 - ✅ COMMIT: Tests pass, workers use new protocol
 
-**Step 6: Task 7 - Update CLI commands**
+**Step 5: Task 7 - Update CLI commands**
 - Consolidate `register`/`get_task`/`next_task`
 - ✅ COMMIT: Tests pass, CLI works
 
 ### Phase 4: Cleanup
 
-**Step 7: Remove dead code**
+**Step 6: Remove dead code**
 - Delete old constants (`TASK_FILE`, `RESPONSE_FILE`)
 - Delete `is_folder_created`, `is_folder_removed`
 - ✅ COMMIT: Tests pass, code is cleaner
 
-**Step 8: Task 8 - Update documentation**
+**Step 7: Task 8 - Update documentation**
 - Update `AGENT_PROTOCOL.md` with new three-file protocol
 - ✅ COMMIT: Docs match code
 
@@ -915,9 +909,9 @@ This is the irreducible core - these changes are interdependent and must happen 
 
 | Phase | Steps | Duration | State |
 |-------|-------|----------|-------|
-| 1 | 1-3 | Incremental | ✅ Always green |
-| 2 | 4 | Atomic | ❌ Red until complete |
-| 3 | 5-6 | Incremental | ✅ Green after each |
-| 4 | 7-8 | Incremental | ✅ Green after each |
+| 1 | 1-2 | Incremental | ✅ Always green |
+| 2 | 3 | Atomic | ❌ Red until complete |
+| 3 | 4-5 | Incremental | ✅ Green after each |
+| 4 | 6-7 | Incremental | ✅ Green after each |
 
 Phase 2 is the only risky part. Everything else can be done incrementally with passing tests after each commit.
