@@ -542,7 +542,7 @@ fn io_loop(
                 });
             }
             IoEvent::Effect(effect) => {
-                info!(?effect, "executing effect");
+                debug!(?effect, "executing effect");
                 // Clear pending response tracking when TaskCompleted cleans up the response file
                 if let Effect::TaskCompleted { agent_id, .. } = &effect {
                     pending_responses.remove(agent_id);
