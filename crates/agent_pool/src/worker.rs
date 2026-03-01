@@ -1,7 +1,7 @@
-//! Agent-side event loop for waiting on tasks.
+//! Worker-side event loop for waiting on tasks.
 //!
-//! This module provides `notify`-based waiting functions for agents. Instead of
-//! polling the filesystem with `thread::sleep`, agents use these functions to
+//! This module provides `notify`-based waiting functions for workers. Instead of
+//! polling the filesystem with `thread::sleep`, workers use these functions to
 //! block on file events.
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};

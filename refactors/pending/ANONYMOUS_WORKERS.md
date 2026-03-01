@@ -52,9 +52,9 @@ pub(super) enum PathCategory {
 - `AgentResponse` is nested two levels deep
 - Asymmetric: submissions are flat, agents are nested
 
-### Current executor.rs (324 lines)
+### Current worker.rs (324 lines)
 
-**File:** `crates/agent_pool/src/executor.rs`
+**File:** `crates/agent_pool/src/worker.rs`
 
 Contains:
 - `is_file_write_event()` - platform-specific event detection (DUPLICATED in `daemon/path_category.rs` as `is_write_complete()`)
@@ -120,7 +120,7 @@ pub(super) enum PathCategory {
 
 **No race condition:** All events are file writes, which are reliable on both Linux and macOS.
 
-### Simplified executor.rs (After)
+### Simplified worker.rs (After)
 
 With anonymous workers + `VerifiedWatcher`, the executor becomes trivial:
 
@@ -172,7 +172,7 @@ This replaces ~300 lines with ~30 lines.
 
 ### Task 0: Consolidate Platform-Specific Code
 
-**Problem:** `is_file_write_event()` in `executor.rs` duplicates `is_write_complete()` in `daemon/path_category.rs`.
+**Problem:** `is_file_write_event()` in `worker.rs` duplicates `is_write_complete()` in `daemon/path_category.rs`.
 
 **File:** `crates/agent_pool/src/fs.rs` (add to existing file)
 
@@ -217,7 +217,7 @@ pub const fn is_write_complete(kind: notify::EventKind) -> bool {
 
 Then update:
 - `daemon/path_category.rs` - use `crate::fs::is_write_complete`
-- `executor.rs` - use `crate::fs::is_write_complete`
+- `worker.rs` - use `crate::fs::is_write_complete`
 
 ---
 
@@ -449,9 +449,9 @@ match category {
 
 ---
 
-### Task 6: Simplify executor.rs
+### Task 6: Simplify worker.rs
 
-**File:** `crates/agent_pool/src/executor.rs`
+**File:** `crates/agent_pool/src/worker.rs`
 
 Replace the current ~324 lines with a simple wrapper around `VerifiedWatcher`:
 
