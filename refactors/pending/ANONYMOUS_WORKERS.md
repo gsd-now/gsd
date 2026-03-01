@@ -359,49 +359,66 @@ pub(super) struct WorkerState { ... }
 ```rust
 // Before
 pub(super) enum Event {
-    AgentRegistered { agent_id: AgentId, heartbeat_task_id: Option<TaskId> },
-    AgentResponded { agent_id: AgentId },
-    AgentDeregistered { agent_id: AgentId },
     TaskSubmitted { task_id: TaskId },
-    TaskTimeout { epoch: Epoch },
-    IdleTimeout { epoch: Epoch },
-    Shutdown,
+    TaskWithdrawn { task_id: TaskId },
+    AgentRegistered { agent_id: AgentId, heartbeat_task_id: Option<TaskId> },
+    AgentDeregistered { agent_id: AgentId },
+    AgentResponded { agent_id: AgentId },
+    AgentTimedOut { epoch: Epoch },
+    AssignTaskToAgentIfEpochMatches { epoch: Epoch, task_id: TaskId },
 }
 
 // After
 pub(super) enum Event {
+    TaskSubmitted { task_id: TaskId },
+    TaskWithdrawn { task_id: TaskId },
     WorkerReady { worker_id: WorkerId, heartbeat_task_id: Option<TaskId> },
     WorkerResponded { worker_id: WorkerId },
-    TaskSubmitted { task_id: TaskId },
-    TaskTimeout { epoch: Epoch },
-    IdleTimeout { epoch: Epoch },
-    Shutdown,
+    WorkerTimedOut { epoch: Epoch },
+    AssignTaskToWorkerIfEpochMatches { epoch: Epoch, task_id: TaskId },
 }
 ```
 
-**Key change:** Remove `AgentDeregistered`. Workers don't deregister - stale files are cleaned up on timeout.
+**Key changes:**
+- Rename `AgentRegistered` → `WorkerReady`
+- Rename `AgentResponded` → `WorkerResponded`
+- Rename `AgentTimedOut` → `WorkerTimedOut`
+- Rename `AssignTaskToAgentIfEpochMatches` → `AssignTaskToWorkerIfEpochMatches`
+- Remove `AgentDeregistered` - workers don't deregister, stale files cleaned up on timeout
 
 #### 3.3: Update Effects
 
 ```rust
 // Before
 pub(super) enum Effect {
-    TaskAssigned { agent_id: AgentId, task_id: TaskId },
-    TaskCompleted { agent_id: AgentId, task_id: TaskId },
+    TaskAssigned { task_id: TaskId, epoch: Epoch },
     AgentIdled { epoch: Epoch },
-    AgentKicked { agent_id: AgentId },
-    StartTimer { kind: TimerKind, epoch: Epoch, duration: Duration },
+    TaskCompleted { agent_id: AgentId, task_id: TaskId },
+    TaskFailed { task_id: TaskId },
+    AgentRemoved { agent_id: AgentId },
 }
 
 // After
 pub(super) enum Effect {
-    TaskAssigned { worker_id: WorkerId, task_id: TaskId },
+    TaskAssigned { task_id: TaskId, epoch: Epoch },
+    WorkerWaiting { epoch: Epoch },
     TaskCompleted { worker_id: WorkerId, task_id: TaskId },
-    WorkerIdled { epoch: Epoch },
-    CleanupWorker { worker_id: WorkerId },
-    StartTimer { kind: TimerKind, epoch: Epoch, duration: Duration },
+    TaskFailed { task_id: TaskId },
+    WorkerRemoved { worker_id: WorkerId },
 }
 ```
+
+**Key changes:**
+- Rename `AgentIdled` → `WorkerWaiting`
+- Rename `AgentRemoved` → `WorkerRemoved`
+
+**Semantic change:** In the named-agent model, `AgentIdled` was emitted in two cases:
+1. Agent registers but no task available
+2. Agent completes a task but no new task available (returns to idle)
+
+In the anonymous worker model, only case 1 exists - workers don't "return to idle" because they get a fresh UUID each cycle. Hence the rename to `WorkerWaiting` which better describes the semantics: "worker is waiting for first task."
+
+**Note:** There is no `StartTimer` effect - timers are started implicitly by the IO layer when it handles `TaskAssigned` or `WorkerWaiting`.
 
 ---
 
@@ -621,7 +638,7 @@ Effect::TaskCompleted { worker_id, task_id } => {
 }
 ```
 
-#### 4.7: Update Effect::AgentRemoved → Effect::CleanupWorker
+#### 4.7: Update Effect::AgentRemoved → Effect::WorkerRemoved
 
 ```rust
 // Before
@@ -644,10 +661,10 @@ Effect::AgentRemoved { agent_id } => {
 }
 
 // After
-Effect::CleanupWorker { worker_id } => {
+Effect::WorkerRemoved { worker_id } => {
     let (transport, _data) = worker_map
         .remove(worker_id)
-        .expect("CleanupWorker for unknown worker - core bug");
+        .expect("WorkerRemoved for unknown worker - core bug");
 
     // Write kicked message to task file
     if let Some(ready_path) = transport.path() {
@@ -660,13 +677,13 @@ Effect::CleanupWorker { worker_id } => {
 
         // Track this UUID so we reject stale events
         if let Some(uuid) = extract_uuid(ready_path) {
-            cleaned_up_workers.insert(uuid.to_string());
+            removed_workers.insert(uuid.to_string());
         }
     }
 }
 ```
 
-#### 4.8: Update kicked_paths to cleaned_up_workers
+#### 4.8: Update kicked_paths to removed_workers
 
 ```rust
 // Before (in execute_effect signature)
@@ -685,7 +702,7 @@ pub(super) fn execute_effect(
     worker_map: &mut WorkerMap,
     external_task_map: &mut ExternalTaskMap,
     task_id_allocator: &mut TaskIdAllocator,
-    cleaned_up_workers: &mut HashSet<String>,  // UUIDs
+    removed_workers: &mut HashSet<String>,  // UUIDs
     // ...
 )
 ```
