@@ -760,6 +760,10 @@ Document the new three-file protocol.
 
 No migration needed - this is a breaking change to the protocol. All existing agents will need to update to the new protocol.
 
+## Follow-up Optimizations
+
+1. **Intern submission UUIDs** - Currently using `String` for submission UUIDs which means cloning. Could intern them (store once, pass references) or map to `u32` IDs. Not blocking for initial implementation.
+
 ## Open Questions
 
 1. **Should ready.json contain metadata?** - Currently proposed to include optional `name` field for debugging. Could also include capabilities, version, etc.
