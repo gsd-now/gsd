@@ -406,20 +406,20 @@ The `Waiting` enum makes the invariant impossible to violate at the type level.
 
 ```rust
 enum Event {
-    TaskSubmitted { id: SubmissionId },
-    TaskWithdrawn { id: SubmissionId },
-    WorkerReady { id: WorkerId },
-    WorkerResponded { id: WorkerId },
-    WorkerTimedOut { id: WorkerId },
-    AssignHeartbeatIfIdle { id: WorkerId },
+    TaskSubmitted { submission_id: SubmissionId },
+    TaskWithdrawn { submission_id: SubmissionId },
+    WorkerReady { worker_id: WorkerId },
+    WorkerResponded { worker_id: WorkerId },
+    WorkerTimedOut { worker_id: WorkerId },
+    AssignHeartbeatIfIdle { worker_id: WorkerId },
 }
 
 enum Effect {
-    TaskAssigned { worker: WorkerId, task: TaskId },
-    WorkerWaiting { worker: WorkerId },
-    TaskCompleted { worker: WorkerId, task: TaskId },
-    TaskFailed { submission: SubmissionId },
-    WorkerRemoved { worker: WorkerId },
+    TaskAssigned { worker_id: WorkerId, task_id: TaskId },
+    WorkerWaiting { worker_id: WorkerId },
+    TaskCompleted { worker_id: WorkerId, task_id: TaskId },
+    TaskFailed { submission_id: SubmissionId },
+    WorkerRemoved { worker_id: WorkerId },
 }
 ```
 
@@ -438,95 +438,95 @@ All u32 IDs. IO layer handles UUID ↔ ID mapping.
 **FS events are sequenced** by the IO layer. **Timer events need defensive handling** (worker might be gone or in different state).
 
 ```rust
-fn handle_worker_ready(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
+fn handle_worker_ready(state: &mut PoolState, worker_id: WorkerId) -> Vec<Effect> {
     // PANIC: IO layer guarantees WorkerReady is sent exactly once per worker.
     // A duplicate would be a bug in IO's UUID→ID mapping.
-    assert!(!state.busy_workers.contains_key(&worker));
+    assert!(!state.busy_workers.contains_key(&worker_id));
 
     match &mut state.waiting {
-        Waiting::Tasks(tasks) => {
-            let submission = tasks.pop_front().expect("Tasks variant with empty queue");
-            if tasks.is_empty() {
+        Waiting::Tasks(submission_ids) => {
+            let submission_id = submission_ids.pop_front().expect("Tasks variant with empty queue");
+            if submission_ids.is_empty() {
                 state.waiting = Waiting::None;
             }
-            state.busy_workers.insert(worker, TaskId::External(submission));
-            vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
+            state.busy_workers.insert(worker_id, TaskId::External(submission_id));
+            vec![Effect::TaskAssigned { worker_id, task_id: TaskId::External(submission_id) }]
         }
-        Waiting::Workers(workers) => {
+        Waiting::Workers(worker_ids) => {
             // PANIC: Same worker appearing twice in waiting queue is a bug.
-            assert!(!workers.contains(&worker));
-            workers.push_back(worker);
-            vec![Effect::WorkerWaiting { worker }]
+            assert!(!worker_ids.contains(&worker_id));
+            worker_ids.push_back(worker_id);
+            vec![Effect::WorkerWaiting { worker_id }]
         }
         Waiting::None => {
-            state.waiting = Waiting::Workers(VecDeque::from([worker]));
-            vec![Effect::WorkerWaiting { worker }]
+            state.waiting = Waiting::Workers(VecDeque::from([worker_id]));
+            vec![Effect::WorkerWaiting { worker_id }]
         }
     }
 }
 
-fn handle_task_submitted(state: &mut PoolState, submission: SubmissionId) -> Vec<Effect> {
+fn handle_task_submitted(state: &mut PoolState, submission_id: SubmissionId) -> Vec<Effect> {
     // No defensive checks needed - submissions are independent of each other
     // and IO allocates fresh IDs.
     match &mut state.waiting {
-        Waiting::Workers(workers) => {
-            let worker = workers.pop_front().expect("Workers variant with empty queue");
-            if workers.is_empty() {
+        Waiting::Workers(worker_ids) => {
+            let worker_id = worker_ids.pop_front().expect("Workers variant with empty queue");
+            if worker_ids.is_empty() {
                 state.waiting = Waiting::None;
             }
-            state.busy_workers.insert(worker, TaskId::External(submission));
-            vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
+            state.busy_workers.insert(worker_id, TaskId::External(submission_id));
+            vec![Effect::TaskAssigned { worker_id, task_id: TaskId::External(submission_id) }]
         }
-        Waiting::Tasks(tasks) => {
-            tasks.push_back(submission);
+        Waiting::Tasks(submission_ids) => {
+            submission_ids.push_back(submission_id);
             vec![]
         }
         Waiting::None => {
-            state.waiting = Waiting::Tasks(VecDeque::from([submission]));
+            state.waiting = Waiting::Tasks(VecDeque::from([submission_id]));
             vec![]
         }
     }
 }
 
-fn handle_worker_responded(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
+fn handle_worker_responded(state: &mut PoolState, worker_id: WorkerId) -> Vec<Effect> {
     // DEFENSIVE: Worker might not be in busy_workers if:
     // - Timeout fired first and already removed the worker
     // IO guarantees we only get WorkerResponded for workers that were Assigned,
     // but timers can race and remove the worker before we process the response.
-    let Some(task) = state.busy_workers.remove(&worker) else {
+    let Some(task_id) = state.busy_workers.remove(&worker_id) else {
         return vec![];
     };
-    vec![Effect::TaskCompleted { worker, task }]
+    vec![Effect::TaskCompleted { worker_id, task_id }]
 }
 
-fn handle_heartbeat_if_idle(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
+fn handle_heartbeat_if_idle(state: &mut PoolState, worker_id: WorkerId) -> Vec<Effect> {
     // DEFENSIVE: Timer event - worker state may have changed since timer was scheduled.
     // Worker might be:
     // - Gone (timed out, or completed a task and re-registered with new ID)
     // - Busy (got a real task before heartbeat timer fired)
-    let Waiting::Workers(workers) = &mut state.waiting else {
+    let Waiting::Workers(worker_ids) = &mut state.waiting else {
         return vec![]; // No idle workers at all
     };
-    let Some(pos) = workers.iter().position(|w| *w == worker) else {
+    let Some(pos) = worker_ids.iter().position(|id| *id == worker_id) else {
         return vec![]; // This specific worker not idle (busy or gone)
     };
-    workers.remove(pos);
-    if workers.is_empty() {
+    worker_ids.remove(pos);
+    if worker_ids.is_empty() {
         state.waiting = Waiting::None;
     }
-    state.busy_workers.insert(worker, TaskId::Heartbeat);
-    vec![Effect::TaskAssigned { worker, task: TaskId::Heartbeat }]
+    state.busy_workers.insert(worker_id, TaskId::Heartbeat);
+    vec![Effect::TaskAssigned { worker_id, task_id: TaskId::Heartbeat }]
 }
 
-fn handle_worker_timeout(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
+fn handle_worker_timeout(state: &mut PoolState, worker_id: WorkerId) -> Vec<Effect> {
     // DEFENSIVE: Timer event - worker might have already responded.
     // WorkerResponded could have been processed first, removing the worker.
-    let Some(task) = state.busy_workers.remove(&worker) else {
+    let Some(task_id) = state.busy_workers.remove(&worker_id) else {
         return vec![];
     };
-    let mut effects = vec![Effect::WorkerRemoved { worker }];
-    if let TaskId::External(submission) = task {
-        effects.push(Effect::TaskFailed { submission });
+    let mut effects = vec![Effect::WorkerRemoved { worker_id }];
+    if let TaskId::External(submission_id) = task_id {
+        effects.push(Effect::TaskFailed { submission_id });
     }
     effects
 }
