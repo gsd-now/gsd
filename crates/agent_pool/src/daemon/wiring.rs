@@ -569,7 +569,7 @@ fn handle_agent_response(
 /// Handle a worker ready file (anonymous workers protocol).
 ///
 /// Worker writes `<uuid>.ready.json` to signal availability.
-/// We register the worker and send WorkerReady event.
+/// We register the worker and send `WorkerReady` event.
 fn handle_worker_ready_file(
     uuid: &str,
     ready_path: &Path,
@@ -606,7 +606,7 @@ fn handle_worker_ready_file(
 /// Handle a worker response file (anonymous workers protocol).
 ///
 /// Worker writes `<uuid>.response.json` to signal task completion.
-/// We send WorkerResponded event.
+/// We send `WorkerResponded` event.
 fn handle_worker_response_file(
     uuid: &str,
     response_path: &Path,

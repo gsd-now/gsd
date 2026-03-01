@@ -18,15 +18,17 @@ See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
 
 ### 1. GSD (`crates/gsd`)
 
+A CLI tool for running a task queue defined in a configuration file, using long-lived agents operating in a worker pool.
+
 ```bash
 # Run a state machine
-gsd run config.json --root /tmp/pool --initial '[{"kind": "Start", "value": {}}]'
+pnpm dlx @gsd-now/gsd@main run config.json --pool /tmp/pool --initial '[{"kind": "Start", "value": {}}]'
 
 # Validate a config file
-gsd validate config.json
+pnpm dlx @gsd-now/gsd@main validate config.json
 
 # Generate documentation
-gsd docs config.json
+pnpm dlx @gsd-now/gsd@main docs config.json
 ```
 
 See [crates/gsd/DESIGN.md](crates/gsd/DESIGN.md) for the config format and protocol.
