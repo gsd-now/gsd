@@ -517,9 +517,33 @@ Note: There's no "idle timeout → remove" path. When a worker is idle too long,
 
 #### 3.4: Event Handlers (with panic reasoning)
 
-**Panic vs Defensive:**
-- **Panic**: Invariant violation - IO guarantees this can't happen
-- **Defensive**: Race condition - legitimate concurrent events can cause this
+**Event sources and race analysis:**
+
+| Source | Events | Can race with |
+|--------|--------|---------------|
+| FS (watcher) | WorkerReady, WorkerResponded | Timers only |
+| Timers | WorkerTimedOut, AssignTaskIfEpoch | Everything |
+| Submissions | TaskSubmitted, TaskWithdrawn | TaskWithdrawn (same submission) |
+
+**FS events don't race with each other.** The IO layer's UUID state machine sequences them:
+- WorkerReady only sent on Unknown→Ready transition
+- WorkerResponded only sent on Assigned→Responded transition
+- IO only reaches Assigned after *we* write task.json (via TaskAssigned effect)
+
+So there's a strict causal chain: WorkerReady → core sets Idle → TaskAssigned effect → IO writes task.json → worker responds → WorkerResponded → core was Busy. If we receive WorkerResponded, the worker *must* have been Busy.
+
+**Timers are independent and asynchronous.** They can fire at any point:
+- After worker already responded (stale timeout)
+- After worker was removed by another timeout
+- After worker got a real task (stale heartbeat)
+
+All timer-originated events need defensive handling for "worker not found" and "epoch mismatch."
+
+**Submissions are independent.** Each gets a unique ExternalTaskId regardless of transport (socket vs file). TaskWithdrawn needs defensive handling because the submitter can give up at any point (task queued, assigned, or already completed).
+
+**Panic vs Defensive summary:**
+- **Panic**: FS event violates IO layer guarantees (e.g., WorkerResponded for non-Busy worker)
+- **Defensive**: Timer event or withdrawal - legitimate races can cause stale/missing state
 
 ```rust
 fn handle_worker_ready(mut state: PoolState, worker_id: WorkerId) -> (PoolState, Vec<Effect>) {
