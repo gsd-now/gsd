@@ -10,17 +10,15 @@ Agent pool daemon for managing workers with file-based task dispatch.
 
 ## Usage
 
-```rust
-use agent_pool::{spawn, submit_file};
+```bash
+# Start daemon
+agent_pool start --pool my-pool
 
-// Start daemon
-let handle = spawn("/tmp/my-pool")?;
+# Submit a task (in another terminal)
+agent_pool submit_task --pool my-pool --data '{"kind":"Task","task":{"instructions":"...","data":{}}}'
 
-// Submit a task
-let response = submit_file("/tmp/my-pool", r#"{"kind":"Task","task":{"instructions":"...","data":{}}}"#)?;
-
-// Shutdown
-handle.shutdown()?;
+# Stop daemon
+agent_pool stop --pool my-pool
 ```
 
 ## Protocol
