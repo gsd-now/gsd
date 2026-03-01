@@ -21,7 +21,8 @@ use tracing::{debug, info, trace, warn};
 use std::collections::HashSet;
 
 use crate::constants::{
-    AGENTS_DIR, LOCK_FILE, REQUEST_SUFFIX, SOCKET_NAME, STATUS_FILE, SUBMISSIONS_DIR, TASK_FILE,
+    AGENTS_DIR, LOCK_FILE, REQUEST_SUFFIX, SCRATCH_DIR, SOCKET_NAME, STATUS_FILE, SUBMISSIONS_DIR,
+    TASK_FILE,
 };
 use crate::lock::{LockGuard, acquire_lock};
 use crate::submit::Payload;
@@ -182,6 +183,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     let socket_path = root.join(SOCKET_NAME);
     let agents_dir = root.join(AGENTS_DIR);
     let submissions_dir = root.join(SUBMISSIONS_DIR);
+    let scratch_dir = root.join(SCRATCH_DIR);
 
     // Clean up stale socket if it exists
     if socket_path.exists() {
@@ -203,6 +205,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
         &socket_path,
         &submissions_dir,
         &agents_dir,
+        &scratch_dir,
         &io_rx,
     )?;
 
@@ -793,6 +796,7 @@ fn sync_and_setup(
     socket_path: &Path,
     submissions_dir: &Path,
     agents_dir: &Path,
+    scratch_dir: &Path,
     io_rx: &mpsc::Receiver<IoEvent>,
 ) -> io::Result<(LockGuard, Listener)> {
     const POLL_TIMEOUT: Duration = Duration::from_millis(100);
@@ -809,6 +813,7 @@ fn sync_and_setup(
     // Create directories
     fs::create_dir_all(submissions_dir)?;
     fs::create_dir_all(agents_dir)?;
+    fs::create_dir_all(scratch_dir)?;
 
     // Write canary file to trigger an event
     fs::write(&canary_path, "0")?;
