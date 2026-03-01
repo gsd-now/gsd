@@ -1,22 +1,36 @@
 # GSD (Get Sh*** Done)
 
-A set of libraries and binaries for defining task queues managed by pools of agents.
-
 ## What is this?
 
-GSD provides two complementary systems for parallel task processing:
+GSD is a set of tools for defining task queues as type-safe state machines whose tasks are executed by long-lived agents. There are two interfaces provided and the underlying Rust libraries.
 
-### 1. Task Queue (`crates/task_queue`)
+### 1. GSD (`crates/gsd`)
+
+Define state machines via JSON config with JSON schema validation, and run them from the terminal.
+
+```bash
+# Run a state machine
+gsd run config.json --root /tmp/pool --initial '[{"kind": "Start", "value": {}}]'
+
+# Validate a config file
+gsd validate config.json
+
+# Generate documentation
+gsd docs config.json
+```
+
+See [crates/gsd/DESIGN.md](crates/gsd/DESIGN.md) for the config format and protocol.
+
+### 2. Task Queue (`crates/task_queue`)
 
 A Rust library for defining task queues as type-safe state machines. Tasks execute arbitrary shell scripts and deserialize their stdout.
 
 **Interfaces:**
 - **Rust API** - Define tasks with compile-time type safety, state machine semantics, and automatic task chaining
-- **Binary API** *(planned)* - Submit tasks via JSON for use from any language
 
 See [crates/task_queue/README.md](crates/task_queue/README.md) for API documentation.
 
-### 2. Agent Pool (`crates/agent_pool`)
+### 3. Agent Pool (`crates/agent_pool`)
 
 A daemon that manages a pool of long-running agents. Tasks are dispatched to available agents via a file-based protocol, enabling persistent workers that don't pay startup costs per task.
 
@@ -68,23 +82,8 @@ Context {
 
 Setting `max_attempts = 1` turns this into a pure linter (validate only, no fixes).
 
-### 3. GSD Runner (`crates/gsd`)
+## Documentation
 
-A high-level JSON-based orchestrator that sits on top of agent_pool. Define state machines via JSON config with JSON Schema validation.
-
-```bash
-# Run a state machine
-gsd run config.json --root /tmp/pool --initial '[{"kind": "Start", "value": {}}]'
-
-# Validate a config file
-gsd validate config.json
-
-# Generate documentation
-gsd docs config.json
-```
-
-See [crates/gsd/DESIGN.md](crates/gsd/DESIGN.md) for the config format and protocol.
-
-## Future Work
-
-See [FUTURE.md](FUTURE.md) for the full roadmap.
+- [Mental Model](docs/mental-model.md) - Architecture overview and key concepts
+- [Recipes](docs/recipes/README.md) - Common patterns and workflows
+- [TODOs and Future Work](refactors/pending/todos.md) - Planned improvements and ideas
