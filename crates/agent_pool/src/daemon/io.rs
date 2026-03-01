@@ -17,13 +17,13 @@ use std::thread;
 use std::time::Duration;
 
 use interprocess::local_socket::Stream;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use crate::Transport;
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_FILE, RESPONSE_SUFFIX, TASK_FILE};
 use crate::response::{NotProcessedReason, Response};
 
-use super::core::{AgentId, Effect, Epoch, Event, ExternalTaskId, HeartbeatId, TaskId};
+use super::core::{Effect, Event, SubmissionId, TaskId, WorkerId};
 
 // =============================================================================
 // Configuration
@@ -32,24 +32,20 @@ use super::core::{AgentId, Effect, Epoch, Event, ExternalTaskId, HeartbeatId, Ta
 /// I/O configuration.
 #[derive(Debug, Clone)]
 pub(super) struct IoConfig {
-    /// How long an idle agent can wait before being deregistered.
-    /// Agents that are still alive will re-register by calling `get_task` again.
-    pub idle_agent_timeout: Duration,
+    /// How long an idle worker can wait before receiving a heartbeat.
+    pub idle_timeout: Duration,
     /// Default timeout for tasks (used when submission doesn't specify one).
     pub default_task_timeout: Duration,
-    /// Whether to send an immediate heartbeat when an agent connects.
-    pub immediate_heartbeat_enabled: bool,
-    /// Whether to send periodic heartbeats after idle timeout.
-    pub periodic_heartbeat_enabled: bool,
+    /// Whether to send periodic heartbeats to idle workers.
+    pub heartbeat_enabled: bool,
 }
 
 impl Default for IoConfig {
     fn default() -> Self {
         Self {
-            idle_agent_timeout: Duration::from_secs(180),
+            idle_timeout: Duration::from_secs(180),
             default_task_timeout: Duration::from_secs(300),
-            immediate_heartbeat_enabled: true,
-            periodic_heartbeat_enabled: true,
+            heartbeat_enabled: true,
         }
     }
 }
@@ -66,60 +62,52 @@ pub(super) trait TransportId:
     type Data: std::fmt::Debug;
 }
 
-impl TransportId for AgentId {
+impl TransportId for WorkerId {
     type Data = ();
 }
 
 // =============================================================================
-// Task ID Allocator
+// ID Allocators
 // =============================================================================
 
-/// Allocates task IDs.
+/// Allocates worker and submission IDs.
 #[derive(Debug, Default)]
-pub(super) struct TaskIdAllocator {
-    next_external_id: u32,
-    next_heartbeat_id: u32,
+pub(super) struct IdAllocator {
+    next_worker_id: u32,
+    next_submission_id: u32,
 }
 
-impl TaskIdAllocator {
+impl IdAllocator {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Allocate an external task ID.
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn allocate_external(&mut self) -> ExternalTaskId {
-        let id = ExternalTaskId(self.next_external_id);
-        self.next_external_id += 1;
+    /// Allocate a worker ID.
+    pub fn allocate_worker(&mut self) -> WorkerId {
+        let id = WorkerId(self.next_worker_id);
+        self.next_worker_id += 1;
         id
     }
 
-    /// Allocate a heartbeat ID (as `TaskId` for sending to core).
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn allocate_heartbeat(&mut self) -> TaskId {
-        let id = HeartbeatId(self.next_heartbeat_id);
-        self.next_heartbeat_id += 1;
-        TaskId::Heartbeat(id)
+    /// Allocate a submission ID.
+    pub fn allocate_submission(&mut self) -> SubmissionId {
+        let id = SubmissionId(self.next_submission_id);
+        self.next_submission_id += 1;
+        id
     }
 }
 
-/// Data stored per external task submission.
+/// Data stored per submission (external task).
 #[derive(Debug)]
-pub(super) struct ExternalTaskData {
-    /// The task content to send to the agent.
+pub(super) struct SubmissionData {
+    /// The task content to send to the worker.
     pub content: String,
-    /// How long the agent has to complete this task.
+    /// How long the worker has to complete this task.
     pub timeout: Duration,
 }
 
-impl TransportId for ExternalTaskId {
-    type Data = ExternalTaskData;
-}
-
-impl From<u32> for ExternalTaskId {
-    fn from(id: u32) -> Self {
-        ExternalTaskId(id)
-    }
+impl TransportId for SubmissionId {
+    type Data = SubmissionData;
 }
 
 // =============================================================================
@@ -250,27 +238,27 @@ impl<Id: TransportId> TransportMap<Id> {
 // Type Aliases
 // =============================================================================
 
-/// Map of agents to their transports.
-pub(super) type AgentMap = TransportMap<AgentId>;
+/// Map of workers to their transports.
+pub(super) type WorkerMap = TransportMap<WorkerId>;
 
-/// Map of external tasks to their transports and data.
-pub(super) type ExternalTaskMap = TransportMap<ExternalTaskId>;
+/// Map of submissions to their transports and data.
+pub(super) type SubmissionMap = TransportMap<SubmissionId>;
 
 // =============================================================================
-// ExternalTaskMap Extensions
+// SubmissionMap Extensions
 // =============================================================================
 
-impl ExternalTaskMap {
-    /// Finish a task: write response to transport and remove from map.
+impl SubmissionMap {
+    /// Finish a submission: write response to transport and remove from map.
     ///
     /// Used for both success and failure - the response content determines the outcome.
     /// For directory transports, writes to response.json.
     /// For socket transports, sends length-prefixed response over the socket.
-    pub fn finish(&mut self, id: ExternalTaskId, response: &str) -> io::Result<ExternalTaskData> {
-        debug!(external_task_id = id.0, "finish: completing task");
+    pub fn finish(&mut self, id: SubmissionId, response: &str) -> io::Result<SubmissionData> {
+        debug!(submission_id = id.0, "finish: completing submission");
         let (mut transport, data) = self
             .remove(id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "task not found"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "submission not found"))?;
 
         match &mut transport {
             #[allow(clippy::expect_used)]
@@ -285,7 +273,7 @@ impl ExternalTaskMap {
                         .expect("request path should have REQUEST_SUFFIX"),
                 );
                 debug!(
-                    external_task_id = id.0,
+                    submission_id = id.0,
                     path = %response_path.display(),
                     "finish: writing response"
                 );
@@ -299,7 +287,7 @@ impl ExternalTaskMap {
                 fs::rename(&temp_path, &response_path)?;
             }
             Transport::Socket(stream) => {
-                debug!(external_task_id = id.0, "finish: sending socket response");
+                debug!(submission_id = id.0, "finish: sending socket response");
                 writeln!(stream, "{}", response.len())?;
                 stream.write_all(response.as_bytes())?;
                 stream.flush()?;
@@ -328,102 +316,90 @@ impl ExternalTaskMap {
 #[allow(clippy::too_many_lines)] // Large match on Effect variants
 pub(super) fn execute_effect(
     effect: Effect,
-    agent_map: &mut AgentMap,
-    external_task_map: &mut ExternalTaskMap,
-    task_id_allocator: &mut TaskIdAllocator,
+    worker_map: &mut WorkerMap,
+    submission_map: &mut SubmissionMap,
     kicked_paths: &mut HashSet<PathBuf>,
     events_tx: &mpsc::Sender<Event>,
     config: &IoConfig,
 ) -> io::Result<()> {
     match effect {
-        Effect::TaskAssigned { task_id, epoch } => {
+        Effect::TaskAssigned { worker_id, task_id } => {
             match task_id {
-                TaskId::External(external_id) => {
-                    let task_data = external_task_map
-                        .get_data(external_id)
-                        .expect("TaskAssigned for unknown task - core bug");
+                TaskId::External(submission_id) => {
+                    let submission_data = submission_map
+                        .get_data(submission_id)
+                        .expect("TaskAssigned for unknown submission - core bug");
 
-                    // Submission format is identical to agent format:
+                    // Submission format is identical to worker format:
                     // {"kind": "Task", "task": {"instructions": "...", "data": {...}}}
                     // Pass through directly.
-                    agent_map
-                        .write_to(epoch.agent_id, TASK_FILE, &task_data.content)
-                        .expect("TaskAssigned for unknown agent - core bug");
+                    worker_map
+                        .write_to(worker_id, TASK_FILE, &submission_data.content)
+                        .expect("TaskAssigned for unknown worker - core bug");
 
-                    start_timeout_timer(events_tx.clone(), epoch, task_data.timeout);
+                    start_task_timeout_timer(events_tx.clone(), worker_id, submission_data.timeout);
                 }
-                TaskId::Heartbeat(_) => {
+                TaskId::Heartbeat => {
                     let heartbeat = serde_json::json!({
                         "kind": "Heartbeat",
                         "task": {
-                            "instructions": "Respond with any valid JSON to confirm you're alive. The daemon discards your response - this exists to detect stuck agents.",
+                            "instructions": "Respond with any valid JSON to confirm you're alive. The daemon discards your response - this exists to detect stuck workers.",
                             "data": null,
                         },
                     });
-                    agent_map
-                        .write_to(epoch.agent_id, TASK_FILE, &heartbeat.to_string())
-                        .expect("TaskAssigned for unknown agent - core bug");
+                    worker_map
+                        .write_to(worker_id, TASK_FILE, &heartbeat.to_string())
+                        .expect("TaskAssigned for unknown worker - core bug");
 
-                    start_timeout_timer(events_tx.clone(), epoch, config.idle_agent_timeout);
+                    start_task_timeout_timer(events_tx.clone(), worker_id, config.idle_timeout);
                 }
             }
         }
-        Effect::AgentIdled { epoch } => {
-            if config.periodic_heartbeat_enabled {
-                let heartbeat_task_id = task_id_allocator.allocate_heartbeat();
-                trace!(?heartbeat_task_id, "allocated heartbeat for idle agent");
-
-                start_idle_timer(
-                    events_tx.clone(),
-                    epoch,
-                    heartbeat_task_id,
-                    config.idle_agent_timeout,
-                );
+        Effect::WorkerWaiting { worker_id } => {
+            if config.heartbeat_enabled {
+                start_idle_timer(events_tx.clone(), worker_id, config.idle_timeout);
             }
         }
-        Effect::TaskCompleted { agent_id, task_id } => {
-            let agent_path = agent_map
-                .get_path(agent_id)
-                .expect("TaskCompleted for unknown agent - core bug");
+        Effect::TaskCompleted { worker_id, task_id } => {
+            let worker_path = worker_map
+                .get_path(worker_id)
+                .expect("TaskCompleted for unknown worker - core bug");
 
             match task_id {
-                TaskId::Heartbeat(_) => {
-                    let _ = fs::remove_file(agent_path.join(TASK_FILE));
-                    let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
+                TaskId::Heartbeat => {
+                    let _ = fs::remove_file(worker_path.join(TASK_FILE));
+                    let _ = fs::remove_file(worker_path.join(RESPONSE_FILE));
                 }
-                TaskId::External(external_id) => {
-                    let agent_output = agent_map
-                        .read_from(agent_id, RESPONSE_FILE)
-                        .expect("TaskCompleted for unknown agent - core bug");
+                TaskId::External(submission_id) => {
+                    let worker_output = worker_map
+                        .read_from(worker_id, RESPONSE_FILE)
+                        .expect("TaskCompleted for unknown worker - core bug");
 
-                    let _ = fs::remove_file(agent_path.join(TASK_FILE));
-                    let _ = fs::remove_file(agent_path.join(RESPONSE_FILE));
+                    let _ = fs::remove_file(worker_path.join(TASK_FILE));
+                    let _ = fs::remove_file(worker_path.join(RESPONSE_FILE));
 
-                    // Wrap agent output in typed Response
-                    let response = Response::processed(agent_output);
+                    // Wrap worker output in typed Response
+                    let response = Response::processed(worker_output);
                     let response_json = serde_json::to_string(&response)
                         .expect("Response serialization cannot fail");
-                    external_task_map.finish(external_id, &response_json)?;
+                    submission_map.finish(submission_id, &response_json)?;
                 }
             }
         }
-        Effect::TaskFailed { task_id } => match task_id {
-            TaskId::Heartbeat(_) => {}
-            TaskId::External(external_id) => {
-                let response = Response::not_processed(NotProcessedReason::Timeout);
-                let response_json =
-                    serde_json::to_string(&response).expect("Response serialization cannot fail");
-                external_task_map.finish(external_id, &response_json)?;
+        Effect::TaskFailed { submission_id } => {
+            let response = Response::not_processed(NotProcessedReason::Timeout);
+            let response_json =
+                serde_json::to_string(&response).expect("Response serialization cannot fail");
+            submission_map.finish(submission_id, &response_json)?;
 
-                warn!(external_task_id = external_id.0, "task failed (timeout)");
-            }
-        },
-        Effect::AgentRemoved { agent_id } => {
-            let (transport, ()) = agent_map
-                .remove(agent_id)
-                .expect("AgentRemoved for unknown agent - core bug");
+            warn!(submission_id = submission_id.0, "task failed (timeout)");
+        }
+        Effect::WorkerRemoved { worker_id } => {
+            let (transport, ()) = worker_map
+                .remove(worker_id)
+                .expect("WorkerRemoved for unknown worker - core bug");
 
-            // Write kicked message so agent knows it was removed
+            // Write kicked message so worker knows it was removed
             let kicked_msg = serde_json::json!({
                 "kind": "Kicked",
                 "reason": "Timeout"
@@ -431,39 +407,31 @@ pub(super) fn execute_effect(
             let _ = transport.write(TASK_FILE, &kicked_msg.to_string());
 
             // Track this path so we reject re-registration attempts
-            if let Some(agent_path) = transport.path() {
-                kicked_paths.insert(agent_path.to_path_buf());
+            if let Some(worker_path) = transport.path() {
+                kicked_paths.insert(worker_path.to_path_buf());
             }
         }
     }
     Ok(())
 }
 
-/// Start a task/heartbeat timeout timer that sends `AgentTimedOut` after the given duration.
-///
-/// The timer is "fire and forget" - core ignores it if the epoch doesn't match.
-fn start_timeout_timer(events_tx: mpsc::Sender<Event>, epoch: Epoch, timeout: Duration) {
-    thread::spawn(move || {
-        thread::sleep(timeout);
-        let _ = events_tx.send(Event::AgentTimedOut { epoch });
-    });
-}
-
-/// Start an idle timer that sends `AssignTaskToAgentIfEpochMatches` after the given duration.
-///
-/// When this fires, core will assign the heartbeat task to the agent if epoch still matches.
-fn start_idle_timer(
+/// Start a task timeout timer that sends `WorkerTimedOut` after the given duration.
+fn start_task_timeout_timer(
     events_tx: mpsc::Sender<Event>,
-    epoch: Epoch,
-    heartbeat_task_id: TaskId,
+    worker_id: WorkerId,
     timeout: Duration,
 ) {
     thread::spawn(move || {
         thread::sleep(timeout);
-        let _ = events_tx.send(Event::AssignTaskToAgentIfEpochMatches {
-            epoch,
-            task_id: heartbeat_task_id,
-        });
+        let _ = events_tx.send(Event::WorkerTimedOut { worker_id });
+    });
+}
+
+/// Start an idle timer that sends `AssignHeartbeatIfIdle` after the given duration.
+fn start_idle_timer(events_tx: mpsc::Sender<Event>, worker_id: WorkerId, timeout: Duration) {
+    thread::spawn(move || {
+        thread::sleep(timeout);
+        let _ = events_tx.send(Event::AssignHeartbeatIfIdle { worker_id });
     });
 }
 
@@ -474,12 +442,12 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn agent_map_register_and_lookup() {
-        let mut map = AgentMap::new();
-        let path = PathBuf::from("/tmp/test/agents/agent-1");
+    fn worker_map_register_and_lookup() {
+        let mut map = WorkerMap::new();
+        let path = PathBuf::from("/tmp/test/agents/worker-1");
 
         let id = map.register_directory(path.clone(), ()).unwrap();
-        assert_eq!(id, AgentId(0));
+        assert_eq!(id, WorkerId(0));
 
         // Look up by ID
         assert!(map.get_transport(id).is_some());
@@ -492,9 +460,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_map_remove() {
-        let mut map = AgentMap::new();
-        let path = PathBuf::from("/tmp/test/agents/agent-1");
+    fn worker_map_remove() {
+        let mut map = WorkerMap::new();
+        let path = PathBuf::from("/tmp/test/agents/worker-1");
 
         let id = map.register_directory(path.clone(), ()).unwrap();
         let (transport, ()) = map.remove(id).unwrap();
@@ -505,28 +473,28 @@ mod tests {
     }
 
     #[test]
-    fn external_task_map_register_and_finish() {
+    fn submission_map_register_and_finish() {
         let tmp = TempDir::new().unwrap();
         let request_path = tmp.path().join("submission-1.request.json");
 
-        let mut map = ExternalTaskMap::new();
+        let mut map = SubmissionMap::new();
         let id = map
             .register_directory(
                 request_path,
-                ExternalTaskData {
+                SubmissionData {
                     content: "test content".to_string(),
                     timeout: Duration::from_secs(60),
                 },
             )
             .unwrap();
 
-        assert_eq!(id, ExternalTaskId(0));
+        assert_eq!(id, SubmissionId(0));
         assert_eq!(map.get_data(id).unwrap().content, "test content");
 
-        // Finish the task
+        // Finish the submission
         map.finish(id, r#"{"result": "ok"}"#).unwrap();
 
-        // Task should be removed
+        // Submission should be removed
         assert!(map.get_data(id).is_none());
 
         // Response should be written to the derived response path

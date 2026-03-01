@@ -27,10 +27,8 @@ use crate::constants::{
 use crate::lock::{LockGuard, acquire_lock};
 use crate::submit::Payload;
 
-use super::core::{AgentId, Effect, Event, TaskId};
-use super::io::{
-    AgentMap, ExternalTaskData, ExternalTaskMap, IoConfig, TaskIdAllocator, execute_effect,
-};
+use super::core::{Effect, Event, WorkerId};
+use super::io::{IdAllocator, IoConfig, SubmissionData, SubmissionMap, WorkerMap, execute_effect};
 use super::path_category::{self, PathCategory};
 
 // =============================================================================
@@ -69,7 +67,7 @@ fn cleanup_pool_state(root: &Path) {
         }
     }
 
-    // Clean agents directory (subdirectories)
+    // Clean agents directory (subdirectories for legacy, flat files for anonymous workers)
     if agents_dir.exists()
         && let Ok(entries) = fs::read_dir(&agents_dir)
     {
@@ -77,6 +75,8 @@ fn cleanup_pool_state(root: &Path) {
             let path = entry.path();
             if path.is_dir() {
                 let _ = fs::remove_dir_all(&path);
+            } else if path.is_file() {
+                let _ = fs::remove_file(&path);
             }
         }
     }
@@ -112,23 +112,20 @@ fn cleanup_pool_state(root: &Path) {
 /// Configuration for the daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    /// How long an idle agent can wait before being deregistered.
-    pub idle_agent_timeout: Duration,
+    /// How long an idle worker can wait before receiving a heartbeat.
+    pub idle_timeout: Duration,
     /// Default timeout for tasks.
     pub default_task_timeout: Duration,
-    /// Whether to send an immediate heartbeat when an agent connects.
-    pub immediate_heartbeat_enabled: bool,
-    /// Whether to send periodic heartbeats after idle timeout.
-    pub periodic_heartbeat_enabled: bool,
+    /// Whether to send periodic heartbeats to idle workers.
+    pub heartbeat_enabled: bool,
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            idle_agent_timeout: Duration::from_secs(180),
+            idle_timeout: Duration::from_secs(180),
             default_task_timeout: Duration::from_secs(300),
-            immediate_heartbeat_enabled: true,
-            periodic_heartbeat_enabled: true,
+            heartbeat_enabled: true,
         }
     }
 }
@@ -136,10 +133,9 @@ impl Default for DaemonConfig {
 impl From<DaemonConfig> for IoConfig {
     fn from(config: DaemonConfig) -> Self {
         IoConfig {
-            idle_agent_timeout: config.idle_agent_timeout,
-            immediate_heartbeat_enabled: config.immediate_heartbeat_enabled,
-            periodic_heartbeat_enabled: config.periodic_heartbeat_enabled,
+            idle_timeout: config.idle_timeout,
             default_task_timeout: config.default_task_timeout,
+            heartbeat_enabled: config.heartbeat_enabled,
         }
     }
 }
@@ -252,13 +248,13 @@ fn run_daemon(
     let _socket_thread = spawn_socket_accept_thread(listener, socket_io_tx);
 
     // I/O state
-    let mut agent_map = AgentMap::new();
-    let mut external_task_map = ExternalTaskMap::new();
-    let mut task_id_allocator = TaskIdAllocator::new();
-    // Track agents with pending responses to deduplicate FSWatcher events
-    let mut pending_responses: HashSet<AgentId> = HashSet::new();
+    let mut worker_map = WorkerMap::new();
+    let mut submission_map = SubmissionMap::new();
+    let mut id_allocator = IdAllocator::new();
+    // Track workers with pending responses to deduplicate FSWatcher events
+    let mut pending_responses: HashSet<WorkerId> = HashSet::new();
 
-    // Track kicked agent paths to reject re-registration attempts
+    // Track kicked worker paths to reject re-registration attempts
     let mut kicked_paths: HashSet<PathBuf> = HashSet::new();
 
     // Spawn event loop in a separate thread - sends IoEvent::Effect to unified channel
@@ -268,9 +264,9 @@ fn run_daemon(
     let result = io_loop(
         io_rx,
         &events_tx,
-        &mut agent_map,
-        &mut external_task_map,
-        &mut task_id_allocator,
+        &mut worker_map,
+        &mut submission_map,
+        &mut id_allocator,
         &mut pending_responses,
         &mut kicked_paths,
         agents_dir,
@@ -284,7 +280,7 @@ fn run_daemon(
         .map_err(|_| io::Error::other("event loop thread panicked"))?;
 
     debug!(
-        agents = final_state.agent_count(),
+        workers = final_state.worker_count(),
         pending = final_state.pending_count(),
         "daemon shutdown complete"
     );
@@ -324,7 +320,7 @@ fn run_event_loop(
 
     debug!(
         pending = state.pending_count(),
-        agents = state.agent_count(),
+        workers = state.worker_count(),
         "event loop stopped"
     );
 
@@ -338,10 +334,10 @@ fn run_event_loop(
 fn io_loop(
     io_rx: mpsc::Receiver<IoEvent>,
     events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
-    external_task_map: &mut ExternalTaskMap,
-    task_id_allocator: &mut TaskIdAllocator,
-    pending_responses: &mut HashSet<AgentId>,
+    worker_map: &mut WorkerMap,
+    submission_map: &mut SubmissionMap,
+    id_allocator: &mut IdAllocator,
+    pending_responses: &mut HashSet<WorkerId>,
     kicked_paths: &mut HashSet<PathBuf>,
     agents_dir: &Path,
     submissions_dir: &Path,
@@ -360,9 +356,9 @@ fn io_loop(
                 handle_fs_event(
                     &event,
                     events_tx,
-                    agent_map,
-                    external_task_map,
-                    task_id_allocator,
+                    worker_map,
+                    submission_map,
+                    id_allocator,
                     pending_responses,
                     kicked_paths,
                     agents_dir,
@@ -379,28 +375,26 @@ fn io_loop(
                     }
                 };
 
-                let external_id = external_task_map.register_socket(
+                let submission_id = id_allocator.allocate_submission();
+                submission_map.register_socket(
                     stream,
-                    ExternalTaskData {
+                    SubmissionData {
                         content,
                         timeout: io_config.default_task_timeout,
                     },
                 );
-                let _ = events_tx.send(Event::TaskSubmitted {
-                    task_id: TaskId::External(external_id),
-                });
+                let _ = events_tx.send(Event::TaskSubmitted { submission_id });
             }
             IoEvent::Effect(effect) => {
                 debug!(?effect, "executing effect");
                 // Clear pending response tracking when TaskCompleted cleans up the response file
-                if let Effect::TaskCompleted { agent_id, .. } = &effect {
-                    pending_responses.remove(agent_id);
+                if let Effect::TaskCompleted { worker_id, .. } = &effect {
+                    pending_responses.remove(worker_id);
                 }
                 execute_effect(
                     effect,
-                    agent_map,
-                    external_task_map,
-                    task_id_allocator,
+                    worker_map,
+                    submission_map,
                     kicked_paths,
                     events_tx,
                     io_config,
@@ -422,10 +416,10 @@ fn io_loop(
 fn handle_fs_event(
     event: &notify::Event,
     events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
-    external_task_map: &mut ExternalTaskMap,
-    task_id_allocator: &mut TaskIdAllocator,
-    pending_responses: &mut HashSet<AgentId>,
+    worker_map: &mut WorkerMap,
+    submission_map: &mut SubmissionMap,
+    id_allocator: &mut IdAllocator,
+    pending_responses: &mut HashSet<WorkerId>,
     kicked_paths: &mut HashSet<PathBuf>,
     agents_dir: &Path,
     submissions_dir: &Path,
@@ -439,15 +433,15 @@ fn handle_fs_event(
         };
 
         match category {
+            // Legacy agent protocol - treat as workers
             PathCategory::AgentDir { name } => {
                 let agent_path = agents_dir.join(&name);
                 handle_agent_dir(
                     &agent_path,
                     events_tx,
-                    agent_map,
+                    worker_map,
+                    id_allocator,
                     kicked_paths,
-                    task_id_allocator,
-                    io_config,
                 );
             }
             PathCategory::AgentResponse { name } => {
@@ -456,13 +450,20 @@ fn handle_fs_event(
                     &agent_path,
                     path,
                     events_tx,
-                    agent_map,
+                    worker_map,
+                    id_allocator,
                     pending_responses,
                     kicked_paths,
-                    task_id_allocator,
-                    io_config,
                 );
             }
+            // Anonymous workers protocol
+            PathCategory::WorkerReady { id } => {
+                trace!(id = %id, "WorkerReady: anonymous workers not yet implemented");
+            }
+            PathCategory::WorkerResponse { id } => {
+                trace!(id = %id, "WorkerResponse: anonymous workers not yet implemented");
+            }
+            // Submissions
             PathCategory::SubmissionRequest { id } => {
                 // Skip if file doesn't exist (may have been cleaned up already)
                 if !path.exists() {
@@ -473,96 +474,80 @@ fn handle_fs_event(
                     &id,
                     submissions_dir,
                     events_tx,
-                    external_task_map,
-                    task_id_allocator,
+                    submission_map,
+                    id_allocator,
                     io_config,
                 );
-            }
-            // Anonymous workers protocol - not yet implemented
-            PathCategory::WorkerReady { id } => {
-                trace!(id = %id, "WorkerReady: anonymous workers not yet implemented");
-            }
-            PathCategory::WorkerResponse { id } => {
-                trace!(id = %id, "WorkerResponse: anonymous workers not yet implemented");
             }
         }
     }
 }
 
 /// Handle an agent directory event (creation or deletion).
+///
+/// In the new model, we treat legacy agent directories as workers.
+/// When the directory is created, we register a worker.
+/// When the directory is deleted, we don't need to do anything (workers are one-shot,
+/// they're removed when they complete a task).
 fn handle_agent_dir(
     agent_path: &Path,
     events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
+    worker_map: &mut WorkerMap,
+    id_allocator: &mut IdAllocator,
     kicked_paths: &mut HashSet<PathBuf>,
-    task_id_allocator: &mut TaskIdAllocator,
-    io_config: &IoConfig,
 ) {
     if !agent_path.exists() {
-        // Directory deleted - clean up tracking
+        // Directory deleted - clean up kicked tracking (allow re-registration)
         kicked_paths.remove(agent_path);
-        if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
-            // Remove from agent_map immediately to prevent races where core
-            // assigns a task to an agent whose directory is already gone.
-            agent_map.remove(agent_id);
-            let _ = events_tx.send(Event::AgentDeregistered { agent_id });
-        }
-    } else if agent_path.is_dir()
-        && !kicked_paths.contains(agent_path)
-        && !is_kicked_agent(agent_path)
-    {
-        // Only register if not kicked (in-memory or via task.json)
-        if let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ()) {
-            let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
-                Some(task_id_allocator.allocate_heartbeat())
-            } else {
-                None
-            };
-            let _ = events_tx.send(Event::AgentRegistered {
-                agent_id,
-                heartbeat_task_id,
-            });
+        // In the new model, workers are one-shot - no deregistration event needed.
+        // The worker was already removed when it completed its task.
+        return;
+    }
+
+    // Directory created - register as worker
+    if agent_path.is_dir() && !kicked_paths.contains(agent_path) && !is_kicked_agent(agent_path) {
+        // Only register if not already registered
+        if worker_map.get_id_by_path(agent_path).is_none() {
+            let worker_id = id_allocator.allocate_worker();
+            if worker_map.register(worker_id, agent_path.to_path_buf(), ()) {
+                let _ = events_tx.send(Event::WorkerReady { worker_id });
+            }
         }
     }
 }
 
 /// Handle an agent response file event.
-#[allow(clippy::too_many_arguments)]
 fn handle_agent_response(
     agent_path: &Path,
     response_path: &Path,
     events_tx: &mpsc::Sender<Event>,
-    agent_map: &mut AgentMap,
-    pending_responses: &mut HashSet<AgentId>,
+    worker_map: &mut WorkerMap,
+    id_allocator: &mut IdAllocator,
+    pending_responses: &mut HashSet<WorkerId>,
     kicked_paths: &HashSet<PathBuf>,
-    task_id_allocator: &mut TaskIdAllocator,
-    io_config: &IoConfig,
 ) {
     if !response_path.exists() || kicked_paths.contains(agent_path) {
         return;
     }
 
-    // Register agent if not already known (response arrived before we saw the directory)
-    if agent_map.get_id_by_path(agent_path).is_none()
-        && let Some(agent_id) = agent_map.register_directory(agent_path.to_path_buf(), ())
-    {
-        let heartbeat_task_id = if io_config.immediate_heartbeat_enabled {
-            Some(task_id_allocator.allocate_heartbeat())
-        } else {
-            None
-        };
-        let _ = events_tx.send(Event::AgentRegistered {
-            agent_id,
-            heartbeat_task_id,
-        });
+    // Register worker if not already known (response arrived before we saw the directory)
+    if worker_map.get_id_by_path(agent_path).is_none() {
+        let worker_id = id_allocator.allocate_worker();
+        if !worker_map.register(worker_id, agent_path.to_path_buf(), ()) {
+            return; // Registration failed (duplicate path)
+        }
+        let _ = events_tx.send(Event::WorkerReady { worker_id });
     }
 
     // Send response event (deduplicated)
-    if let Some(agent_id) = agent_map.get_id_by_path(agent_path) {
-        if pending_responses.insert(agent_id) {
-            let _ = events_tx.send(Event::AgentResponded { agent_id });
+    if let Some(worker_id) = worker_map.get_id_by_path(agent_path) {
+        if pending_responses.insert(worker_id) {
+            let _ = events_tx.send(Event::WorkerResponded { worker_id });
         } else {
-            trace!(agent_id = agent_id.0, "skipping duplicate AgentResponded");
+            trace!(
+                worker_id = worker_id.0,
+                "skipping duplicate WorkerResponded"
+            );
         }
     }
 }
@@ -572,8 +557,8 @@ fn register_submission(
     id: &str,
     submissions_dir: &Path,
     events_tx: &mpsc::Sender<Event>,
-    external_task_map: &mut ExternalTaskMap,
-    task_id_allocator: &mut TaskIdAllocator,
+    submission_map: &mut SubmissionMap,
+    id_allocator: &mut IdAllocator,
     io_config: &IoConfig,
 ) {
     let request_path = submissions_dir.join(format!("{id}{REQUEST_SUFFIX}"));
@@ -597,18 +582,16 @@ fn register_submission(
     };
 
     // Register the submission
-    let external_id = task_id_allocator.allocate_external();
-    if external_task_map.register(
-        external_id,
+    let submission_id = id_allocator.allocate_submission();
+    if submission_map.register(
+        submission_id,
         request_path,
-        ExternalTaskData {
+        SubmissionData {
             content,
             timeout: io_config.default_task_timeout,
         },
     ) {
-        let _ = events_tx.send(Event::TaskSubmitted {
-            task_id: TaskId::External(external_id),
-        });
+        let _ = events_tx.send(Event::TaskSubmitted { submission_id });
     }
 }
 
@@ -884,30 +867,30 @@ impl Drop for PoolStateCleanup {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::super::core::{ExternalTaskId, TaskId};
     use super::*;
     use tempfile::TempDir;
 
-    /// Helper to create external task IDs in tests.
-    fn ext(id: u32) -> TaskId {
-        TaskId::External(ExternalTaskId(id))
+    fn sub(id: u32) -> SubmissionId {
+        SubmissionId(id)
+    }
+
+    fn worker(id: u32) -> WorkerId {
+        WorkerId(id)
     }
 
     #[test]
     fn daemon_config_converts_to_io_config() {
         let daemon_config = DaemonConfig {
-            idle_agent_timeout: Duration::from_secs(120),
+            idle_timeout: Duration::from_secs(120),
             default_task_timeout: Duration::from_secs(600),
-            immediate_heartbeat_enabled: false,
-            periodic_heartbeat_enabled: false,
+            heartbeat_enabled: false,
         };
 
         let io_config: IoConfig = daemon_config.into();
 
-        assert_eq!(io_config.idle_agent_timeout, Duration::from_secs(120));
+        assert_eq!(io_config.idle_timeout, Duration::from_secs(120));
         assert_eq!(io_config.default_task_timeout, Duration::from_secs(600));
-        assert!(!io_config.immediate_heartbeat_enabled);
-        assert!(!io_config.periodic_heartbeat_enabled);
+        assert!(!io_config.heartbeat_enabled);
     }
 
     // =========================================================================
@@ -921,25 +904,21 @@ mod tests {
         fs::create_dir(&agent_path).unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         let event = events_rx.try_recv().unwrap();
-        assert!(
-            matches!(event, Event::AgentRegistered { agent_id, heartbeat_task_id: Some(_) } if agent_id == AgentId(0))
-        );
-        assert!(agent_map.get_id_by_path(&agent_path).is_some());
+        assert!(matches!(event, Event::WorkerReady { worker_id } if worker_id == worker(0)));
+        assert!(worker_map.get_id_by_path(&agent_path).is_some());
     }
 
     #[test]
@@ -949,19 +928,17 @@ mod tests {
         fs::create_dir(&agent_path).unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         // Register once
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
         let _ = events_rx.try_recv().unwrap();
 
@@ -969,10 +946,9 @@ mod tests {
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
         assert!(events_rx.try_recv().is_err());
     }
@@ -984,63 +960,21 @@ mod tests {
         fs::create_dir(&agent_path).unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut kicked_paths = HashSet::new();
         kicked_paths.insert(agent_path.clone());
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         assert!(events_rx.try_recv().is_err());
-        assert!(agent_map.get_id_by_path(&agent_path).is_none());
-    }
-
-    #[test]
-    fn handle_agent_dir_deregisters_deleted_directory() {
-        let tmp = TempDir::new().unwrap();
-        let agent_path = tmp.path().join("agent-1");
-        fs::create_dir(&agent_path).unwrap();
-
-        let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
-        let mut kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
-
-        // Register first
-        handle_agent_dir(
-            &agent_path,
-            &events_tx,
-            &mut agent_map,
-            &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
-        );
-        let _ = events_rx.try_recv().unwrap();
-
-        // Delete and handle again
-        fs::remove_dir(&agent_path).unwrap();
-        handle_agent_dir(
-            &agent_path,
-            &events_tx,
-            &mut agent_map,
-            &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
-        );
-
-        let event = events_rx.try_recv().unwrap();
-        assert!(matches!(event, Event::AgentDeregistered { agent_id } if agent_id == AgentId(0)));
-        // Agent should be removed from agent_map immediately to prevent race conditions
-        assert!(agent_map.get_id_by_path(&agent_path).is_none());
+        assert!(worker_map.get_id_by_path(&agent_path).is_none());
     }
 
     #[test]
@@ -1050,19 +984,17 @@ mod tests {
         // Don't create the directory - simulating deletion
 
         let (events_tx, _events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut kicked_paths = HashSet::new();
         kicked_paths.insert(agent_path.clone());
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         assert!(!kicked_paths.contains(&agent_path));
@@ -1075,18 +1007,16 @@ mod tests {
         fs::write(&agent_path, "not a directory").unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_dir(
             &agent_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         assert!(events_rx.try_recv().is_err());
@@ -1097,7 +1027,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn handle_agent_response_sends_event_for_known_agent() {
+    fn handle_agent_response_sends_event_for_known_worker() {
         let tmp = TempDir::new().unwrap();
         let agent_path = tmp.path().join("agent-1");
         fs::create_dir(&agent_path).unwrap();
@@ -1105,32 +1035,29 @@ mod tests {
         fs::write(&response_path, "{}").unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
-        agent_map
-            .register_directory(agent_path.clone(), ())
-            .unwrap();
+        let mut worker_map = WorkerMap::new();
+        let worker_id = worker(0);
+        worker_map.register(worker_id, agent_path.clone(), ());
+        let mut id_allocator = IdAllocator::new();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         let event = events_rx.try_recv().unwrap();
-        assert!(matches!(event, Event::AgentResponded { agent_id } if agent_id == AgentId(0)));
+        assert!(matches!(event, Event::WorkerResponded { worker_id: id } if id == worker(0)));
     }
 
     #[test]
-    fn handle_agent_response_registers_unknown_agent() {
+    fn handle_agent_response_registers_unknown_worker() {
         let tmp = TempDir::new().unwrap();
         let agent_path = tmp.path().join("agent-1");
         fs::create_dir(&agent_path).unwrap();
@@ -1138,28 +1065,26 @@ mod tests {
         fs::write(&response_path, "{}").unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         // Should get both registration and response events
         let events: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok()).collect();
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], Event::AgentRegistered { .. }));
-        assert!(matches!(events[1], Event::AgentResponded { .. }));
+        assert!(matches!(events[0], Event::WorkerReady { .. }));
+        assert!(matches!(events[1], Event::WorkerResponded { .. }));
     }
 
     #[test]
@@ -1171,35 +1096,31 @@ mod tests {
         fs::write(&response_path, "{}").unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
-        agent_map
-            .register_directory(agent_path.clone(), ())
-            .unwrap();
+        let mut worker_map = WorkerMap::new();
+        let worker_id = worker(0);
+        worker_map.register(worker_id, agent_path.clone(), ());
+        let mut id_allocator = IdAllocator::new();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         // Call twice
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         // Should only get one event
@@ -1207,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_agent_response_ignores_kicked_agent() {
+    fn handle_agent_response_ignores_kicked_worker() {
         let tmp = TempDir::new().unwrap();
         let agent_path = tmp.path().join("agent-1");
         fs::create_dir(&agent_path).unwrap();
@@ -1215,22 +1136,20 @@ mod tests {
         fs::write(&response_path, "{}").unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
+        let mut worker_map = WorkerMap::new();
+        let mut id_allocator = IdAllocator::new();
         let mut pending_responses = HashSet::new();
         let mut kicked_paths = HashSet::new();
         kicked_paths.insert(agent_path.clone());
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         assert!(events_rx.try_recv().is_err());
@@ -1245,24 +1164,21 @@ mod tests {
         // Don't create the file
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut agent_map = AgentMap::new();
-        agent_map
-            .register_directory(agent_path.clone(), ())
-            .unwrap();
+        let mut worker_map = WorkerMap::new();
+        let worker_id = worker(0);
+        worker_map.register(worker_id, agent_path.clone(), ());
+        let mut id_allocator = IdAllocator::new();
         let mut pending_responses = HashSet::new();
         let kicked_paths = HashSet::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
-        let io_config = IoConfig::default();
 
         handle_agent_response(
             &agent_path,
             &response_path,
             &events_tx,
-            &mut agent_map,
+            &mut worker_map,
+            &mut id_allocator,
             &mut pending_responses,
             &kicked_paths,
-            &mut task_id_allocator,
-            &io_config,
         );
 
         assert!(events_rx.try_recv().is_err());
@@ -1284,44 +1200,44 @@ mod tests {
         .unwrap();
 
         let (events_tx, events_rx) = mpsc::channel();
-        let mut external_task_map = ExternalTaskMap::new();
-        let mut task_id_allocator = TaskIdAllocator::new();
+        let mut submission_map = SubmissionMap::new();
+        let mut id_allocator = IdAllocator::new();
         let io_config = IoConfig::default();
 
         register_submission(
             id,
             submissions_dir,
             &events_tx,
-            &mut external_task_map,
-            &mut task_id_allocator,
+            &mut submission_map,
+            &mut id_allocator,
             &io_config,
         );
 
         let event = events_rx.try_recv().unwrap();
-        assert!(matches!(event, Event::TaskSubmitted { task_id } if task_id == ext(0)));
+        assert!(matches!(event, Event::TaskSubmitted { submission_id } if submission_id == sub(0)));
         let request_path = submissions_dir.join(format!("{id}.request.json"));
-        assert!(external_task_map.get_id_by_path(&request_path).is_some());
+        assert!(submission_map.get_id_by_path(&request_path).is_some());
     }
 
     // =========================================================================
     // Event loop tests (events → step → effects)
     // =========================================================================
 
-    use super::super::core::{AgentId, Effect, PoolState, step};
+    use super::super::core::{Effect, PoolState, SubmissionId, TaskId, step};
     use std::thread;
     use tracing::{debug, info};
 
     /// Run the event loop until the events channel closes.
-    fn run_event_loop(
+    fn run_test_event_loop(
         events_rx: mpsc::Receiver<Event>,
         effects_tx: mpsc::Sender<Effect>,
     ) -> PoolState {
-        run_event_loop_with_state(PoolState::new(), events_rx, effects_tx)
+        run_test_event_loop_with_state(PoolState::new(), events_rx, effects_tx)
     }
 
     /// Run the event loop with an initial state.
     #[allow(clippy::needless_pass_by_value)]
-    fn run_event_loop_with_state(
+    fn run_test_event_loop_with_state(
         mut state: PoolState,
         events_rx: mpsc::Receiver<Event>,
         effects_tx: mpsc::Sender<Effect>,
@@ -1342,7 +1258,7 @@ mod tests {
 
         debug!(
             pending = state.pending_count(),
-            agents = state.agent_count(),
+            workers = state.worker_count(),
             "event loop stopped"
         );
 
@@ -1354,32 +1270,33 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel();
         let (effects_tx, effects_rx) = mpsc::channel();
 
-        let handle = thread::spawn(move || run_event_loop(events_rx, effects_tx));
+        let handle = thread::spawn(move || run_test_event_loop(events_rx, effects_tx));
 
         events_tx
-            .send(Event::AgentRegistered {
-                agent_id: AgentId(1),
-                heartbeat_task_id: None,
+            .send(Event::WorkerReady {
+                worker_id: worker(1),
             })
             .unwrap();
 
         let effect = effects_rx.recv().unwrap();
-        assert!(matches!(effect, Effect::AgentIdled { .. }));
+        assert!(matches!(effect, Effect::WorkerWaiting { .. }));
 
         events_tx
-            .send(Event::TaskSubmitted { task_id: ext(42) })
+            .send(Event::TaskSubmitted {
+                submission_id: sub(42),
+            })
             .unwrap();
 
         let effect = effects_rx.recv().unwrap();
         assert!(matches!(
             effect,
-            Effect::TaskAssigned { task_id, .. } if task_id == ext(42)
+            Effect::TaskAssigned { task_id: TaskId::External(sub_id), .. } if sub_id == sub(42)
         ));
 
         drop(events_tx);
 
         let final_state = handle.join().unwrap();
-        assert_eq!(final_state.agent_count(), 1);
+        assert_eq!(final_state.worker_count(), 1);
         assert_eq!(final_state.pending_count(), 0);
     }
 
@@ -1388,21 +1305,20 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel();
         let (effects_tx, effects_rx) = mpsc::channel();
 
-        let handle = thread::spawn(move || run_event_loop(events_rx, effects_tx));
+        let handle = thread::spawn(move || run_test_event_loop(events_rx, effects_tx));
 
         drop(effects_rx);
 
         events_tx
-            .send(Event::AgentRegistered {
-                agent_id: AgentId(1),
-                heartbeat_task_id: None,
+            .send(Event::WorkerReady {
+                worker_id: worker(1),
             })
             .unwrap();
 
         drop(events_tx);
 
         let final_state = handle.join().unwrap();
-        assert_eq!(final_state.agent_count(), 1);
+        assert_eq!(final_state.worker_count(), 1);
     }
 
     #[test]
@@ -1412,13 +1328,13 @@ mod tests {
 
         let initial_state = PoolState::new();
 
-        let handle =
-            thread::spawn(move || run_event_loop_with_state(initial_state, events_rx, effects_tx));
+        let handle = thread::spawn(move || {
+            run_test_event_loop_with_state(initial_state, events_rx, effects_tx)
+        });
 
         events_tx
-            .send(Event::AgentRegistered {
-                agent_id: AgentId(1),
-                heartbeat_task_id: None,
+            .send(Event::WorkerReady {
+                worker_id: worker(1),
             })
             .unwrap();
 
@@ -1426,6 +1342,6 @@ mod tests {
 
         drop(events_tx);
         let final_state = handle.join().unwrap();
-        assert_eq!(final_state.agent_count(), 1);
+        assert_eq!(final_state.worker_count(), 1);
     }
 }

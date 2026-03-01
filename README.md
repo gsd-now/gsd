@@ -1,12 +1,20 @@
 # GSD (Get Sh*** Done)
 
+GSD is a set of tools for defining task queues as type-safe state machines whose tasks are executed by long-lived agents. There are two interfaces provided: the GSD CLI and the underlying Rust libraries.
+
 ## What is this?
 
-GSD is a set of tools for defining task queues as type-safe state machines whose tasks are executed by long-lived agents. There are two interfaces provided and the underlying Rust libraries.
+LLMs are incredibly powerful tools, and they are being asked to perform increasingly complicated, long-lived tasks. Unfortunately, agents quickly hit limits. For example, their context may become too full, causing them to become forgetful and make wrong decisions.
+
+GSD is an attempt to provide structure and solve that problem.
+
+With GSD, you define a state machine via JSON config where individual tasks are performed by long-lived agents running in a worker pool. Transitions between states are validated. This not only makes it easy to reason about the possible states and actions that your agents will be asked to perform, but also allows us to provide just the right context that an agent needs to execute a given task.
+
+See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
+
+## Components
 
 ### 1. GSD (`crates/gsd`)
-
-Define state machines via JSON config with JSON schema validation, and run them from the terminal.
 
 ```bash
 # Run a state machine

@@ -76,22 +76,15 @@ enum Command {
         /// Output pool info as JSON (for scripts)
         #[arg(long)]
         json: bool,
-        /// How long an idle agent can wait before being deregistered (in seconds).
-        /// Agents that are still alive will re-register by calling `get_task` again.
+        /// How long an idle worker can wait before receiving a heartbeat (in seconds).
         #[arg(long, default_value = "180")]
-        idle_agent_timeout_secs: u64,
+        idle_timeout_secs: u64,
         /// Default timeout for tasks in seconds.
         #[arg(long, default_value = "300")]
         task_timeout_secs: u64,
-        /// Disable all heartbeats (both immediate and periodic).
-        #[arg(long, conflicts_with_all = ["no_immediate_heartbeat", "no_periodic_heartbeat"])]
+        /// Disable heartbeats for idle workers.
+        #[arg(long)]
         no_heartbeat: bool,
-        /// Disable immediate heartbeat on agent connect.
-        #[arg(long, conflicts_with_all = ["no_heartbeat", "no_periodic_heartbeat"])]
-        no_immediate_heartbeat: bool,
-        /// Disable periodic heartbeats after idle timeout.
-        #[arg(long, conflicts_with_all = ["no_heartbeat", "no_immediate_heartbeat"])]
-        no_periodic_heartbeat: bool,
         /// Stop existing daemon before starting (if running).
         /// Without this flag, starting fails if a daemon is already running.
         #[arg(long)]
@@ -255,11 +248,9 @@ fn main() -> ExitCode {
             pool,
             log_level,
             json,
-            idle_agent_timeout_secs,
+            idle_timeout_secs,
             task_timeout_secs,
             no_heartbeat,
-            no_immediate_heartbeat,
-            no_periodic_heartbeat,
             stop: stop_flag,
         } => {
             init_tracing(log_level);
@@ -330,10 +321,9 @@ fn main() -> ExitCode {
             }
 
             let config = DaemonConfig {
-                idle_agent_timeout: Duration::from_secs(idle_agent_timeout_secs),
+                idle_timeout: Duration::from_secs(idle_timeout_secs),
                 default_task_timeout: Duration::from_secs(task_timeout_secs),
-                immediate_heartbeat_enabled: !no_heartbeat && !no_immediate_heartbeat,
-                periodic_heartbeat_enabled: !no_heartbeat && !no_periodic_heartbeat,
+                heartbeat_enabled: !no_heartbeat,
             };
 
             // run_with_config() returns Result<Infallible, _>, so Ok case never happens

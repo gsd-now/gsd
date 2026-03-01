@@ -623,24 +623,21 @@ pub fn submit_with_mode(
 /// Configuration for the daemon when starting via CLI.
 #[derive(Debug, Clone, Default)]
 pub struct DaemonConfig {
-    /// How long an idle agent can wait before being deregistered.
-    pub idle_agent_timeout: Duration,
+    /// How long an idle worker can wait before receiving a heartbeat.
+    pub idle_timeout: Duration,
     /// Default timeout for tasks.
     pub default_task_timeout: Duration,
-    /// Whether to send an immediate heartbeat when an agent connects.
-    pub immediate_heartbeat_enabled: bool,
-    /// Whether to send periodic heartbeats after idle timeout.
-    pub periodic_heartbeat_enabled: bool,
+    /// Whether to send periodic heartbeats to idle workers.
+    pub heartbeat_enabled: bool,
 }
 
 impl DaemonConfig {
     /// Create a new config with default values matching the CLI defaults.
     pub fn new() -> Self {
         Self {
-            idle_agent_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             default_task_timeout: Duration::from_secs(300),
-            immediate_heartbeat_enabled: true,
-            periodic_heartbeat_enabled: true,
+            heartbeat_enabled: true,
         }
     }
 }
@@ -648,10 +645,9 @@ impl DaemonConfig {
 impl From<agent_pool::DaemonConfig> for DaemonConfig {
     fn from(config: agent_pool::DaemonConfig) -> Self {
         Self {
-            idle_agent_timeout: config.idle_agent_timeout,
+            idle_timeout: config.idle_timeout,
             default_task_timeout: config.default_task_timeout,
-            immediate_heartbeat_enabled: config.immediate_heartbeat_enabled,
-            periodic_heartbeat_enabled: config.periodic_heartbeat_enabled,
+            heartbeat_enabled: config.heartbeat_enabled,
         }
     }
 }
@@ -691,17 +687,13 @@ impl AgentPoolHandle {
             .arg(pool)
             .arg("--log-level")
             .arg("trace")
-            .arg("--idle-agent-timeout-secs")
-            .arg(config.idle_agent_timeout.as_secs().to_string())
+            .arg("--idle-timeout-secs")
+            .arg(config.idle_timeout.as_secs().to_string())
             .arg("--task-timeout-secs")
             .arg(config.default_task_timeout.as_secs().to_string());
 
-        if !config.immediate_heartbeat_enabled && !config.periodic_heartbeat_enabled {
+        if !config.heartbeat_enabled {
             cmd.arg("--no-heartbeat");
-        } else if !config.immediate_heartbeat_enabled {
-            cmd.arg("--no-immediate-heartbeat");
-        } else if !config.periodic_heartbeat_enabled {
-            cmd.arg("--no-periodic-heartbeat");
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
