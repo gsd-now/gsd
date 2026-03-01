@@ -464,6 +464,10 @@ fn handle_worker_responded(mut state: PoolState, worker_id: WorkerId) -> (PoolSt
 
 This simplifies the state machine - no more "idle after completion" state.
 
+**Methods to remove from `WorkerState`:**
+- `try_become_idle()` - workers don't return to idle, they're removed
+- `try_assign_pending_to_agent()` helper - no longer needed after completion
+
 #### Idle timeout explained
 
 When a worker registers but no task is available:
