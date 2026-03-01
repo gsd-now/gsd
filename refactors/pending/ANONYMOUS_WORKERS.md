@@ -677,9 +677,20 @@ impl Drop for WorkerReady {
     }
 }
 
+impl WorkerAssigned {
+    /// Dummy value for std::mem::replace in state transitions.
+    /// The task_path is empty so Drop is a no-op.
+    fn dummy() -> Self {
+        Self { worker_id: WorkerId(0), task_path: PathBuf::new() }
+    }
+}
+
 impl Drop for WorkerAssigned {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.task_path);
+        // Skip if dummy (empty path)
+        if !self.task_path.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.task_path);
+        }
     }
 }
 
@@ -702,24 +713,29 @@ pub(super) enum IoWorkerState {
 
 ```rust
 fn on_task_assigned(io: &mut IoState, worker_id: WorkerId, task_id: TaskId) {
-    let state = io.workers.remove(&worker_id).expect("TaskAssigned for unknown worker");
-    let IoWorkerState::Ready(ready) = state else {
+    // PANIC: Core guarantees this worker exists and is Ready
+    let state = io.workers.get_mut(&worker_id).expect("TaskAssigned for unknown worker");
+
+    // Take the Ready state, temporarily leaving Assigned with a dummy
+    // (We need ownership of WorkerReady to call assign_task which consumes it)
+    let IoWorkerState::Ready(ready) = std::mem::replace(state, IoWorkerState::Assigned(WorkerAssigned::dummy())) else {
         panic!("TaskAssigned but worker not in Ready state");
     };
 
     let worker_uuid = io.worker_id_to_uuid.get(&worker_id).expect("worker_id not in map");
     let task_content = /* get task content based on task_id */;
     let assigned = ready.assign_task(worker_uuid, &agents_dir, &task_content).expect("write task");
-    io.workers.insert(worker_id, IoWorkerState::Assigned(assigned));
+    *state = IoWorkerState::Assigned(assigned);
 }
 
 fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
+    // PANIC: Core guarantees this worker exists
     io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
     // state drops → task file deleted by RAII
 
-    // Clean up both UUID maps
-    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
-    io.uuid_to_worker_id.remove(&worker_uuid);
+    // PANIC: Both maps must be in sync - if one has the entry, so must the other
+    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in worker_id_to_uuid map");
+    io.uuid_to_worker_id.remove(&worker_uuid).expect("worker_uuid not in uuid_to_worker_id map");
 
     // Delete response file (worker created it, we must clean it up)
     let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
@@ -727,7 +743,9 @@ fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
 }
 
 fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
-    let worker_uuid = io.worker_id_to_uuid.get(&worker_id).expect("worker_id not in map");
+    // PANIC: Both maps must be in sync
+    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in worker_id_to_uuid map");
+    io.uuid_to_worker_id.remove(&worker_uuid).expect("worker_uuid not in uuid_to_worker_id map");
 
     // Write kicked message so worker knows to exit
     let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
@@ -735,10 +753,6 @@ fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
 
     io.workers.remove(&worker_id);
     // state drops → ready/task file cleaned up by RAII
-
-    // Clean up both UUID maps
-    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
-    io.uuid_to_worker_id.remove(&worker_uuid);
 
     // Clean up response file if it exists (worker may have written it before timeout)
     let response_path = agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", worker_uuid.0));
@@ -759,8 +773,6 @@ fn response_path(agents_dir: &Path, uuid: &str) -> PathBuf {
 
 fn ready_path(agents_dir: &Path, uuid: &str) -> PathBuf {
     agents_dir.join(format!("{uuid}{READY_SUFFIX}"))
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_suffix(READY_SUFFIX))
 }
 ```
 
