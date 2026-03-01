@@ -12,6 +12,7 @@ use std::path::Path;
 use notify::event::{CreateKind, EventKind, RemoveKind};
 
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_FILE};
+use crate::fs::is_write_complete;
 
 /// Category of a filesystem path.
 #[derive(Debug, PartialEq, Eq)]
@@ -31,52 +32,6 @@ pub(super) enum PathCategory {
         /// The submission's ID.
         id: String,
     },
-}
-
-/// Check if event kind indicates a file write is complete.
-///
-/// Platform-specific behavior:
-/// - **Linux inotify**: Only `Close(Write)` is accepted. This guarantees the file
-///   handle is closed and all data is flushed. `Create(File)` is NOT accepted
-///   because it fires before content is written.
-/// - **macOS `FSEvents`**: `Create(File)` and `Modify(Data)` are accepted. `FSEvents`
-///   is a higher-level API that batches events, so by the time we receive them,
-///   the file operation is complete.
-///
-/// For atomic writes (write temp file, then rename), we also accept rename events
-/// as "write complete" signals since the rename only happens after the temp file
-/// is fully written.
-#[cfg(target_os = "linux")]
-const fn is_write_complete(kind: EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode, ModifyKind};
-    matches!(
-        kind,
-        EventKind::Access(AccessKind::Close(AccessMode::Write))
-            | EventKind::Modify(ModifyKind::Name(_))
-    )
-}
-
-#[cfg(target_os = "macos")]
-const fn is_write_complete(kind: EventKind) -> bool {
-    use notify::event::ModifyKind;
-    matches!(
-        kind,
-        EventKind::Create(CreateKind::File)
-            | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
-    )
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const fn is_write_complete(kind: EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode, ModifyKind};
-    // Fallback: accept multiple event types for other platforms
-    matches!(
-        kind,
-        EventKind::Access(AccessKind::Close(AccessMode::Write))
-            | EventKind::Create(CreateKind::File)
-            | EventKind::Modify(ModifyKind::Data(_))
-            | EventKind::Modify(ModifyKind::Name(_))
-    )
 }
 
 /// Check if event kind indicates a folder was created.

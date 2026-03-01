@@ -9,47 +9,8 @@ use std::io;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::fs::is_write_complete;
 use crate::{RESPONSE_FILE, TASK_FILE, Transport};
-
-/// Check if an event kind indicates a file write is complete.
-///
-/// Platform-specific:
-/// - Linux inotify: `Close(Write)` guarantees the file handle is closed
-/// - macOS `FSEvents`: `Create(File)` or `Modify(Data)` - by the time we receive
-///   these, the operation is complete
-///
-/// Also handles atomic rename writes (write temp file, then rename).
-#[cfg(target_os = "linux")]
-const fn is_file_write_event(kind: notify::EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode, ModifyKind};
-    matches!(
-        kind,
-        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
-            | notify::EventKind::Modify(ModifyKind::Name(_))
-    )
-}
-
-#[cfg(target_os = "macos")]
-const fn is_file_write_event(kind: notify::EventKind) -> bool {
-    use notify::event::{CreateKind, ModifyKind};
-    matches!(
-        kind,
-        notify::EventKind::Create(CreateKind::File)
-            | notify::EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
-    )
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const fn is_file_write_event(kind: notify::EventKind) -> bool {
-    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
-    matches!(
-        kind,
-        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
-            | notify::EventKind::Create(CreateKind::File)
-            | notify::EventKind::Modify(ModifyKind::Data(_))
-            | notify::EventKind::Modify(ModifyKind::Name(_))
-    )
-}
 
 /// Events the agent cares about.
 #[derive(Debug)]
@@ -80,7 +41,7 @@ pub fn create_watcher(
         move |res: Result<notify::Event, notify::Error>| match res {
             Ok(event) => {
                 tracing::trace!(?event, "watcher event");
-                if is_file_write_event(event.kind) {
+                if is_write_complete(event.kind) {
                     tracing::debug!(?event.kind, "watcher sending FileChanged");
                     let _ = tx.send(AgentEvent::FileChanged);
                 }

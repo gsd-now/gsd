@@ -9,6 +9,49 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+// =============================================================================
+// Platform-specific event detection
+// =============================================================================
+
+/// Check if event kind indicates a file write is complete.
+///
+/// Platform-specific behavior:
+/// - **Linux inotify**: Only `Close(Write)` guarantees data is flushed
+/// - **macOS FSEvents**: `Create(File)` and `Modify(Data)` are accepted
+///
+/// Also handles atomic rename writes (write temp file, then rename).
+#[cfg(target_os = "linux")]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Name(_))
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub const fn is_write_complete(kind: notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+    matches!(
+        kind,
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | notify::EventKind::Create(CreateKind::File)
+            | notify::EventKind::Modify(ModifyKind::Data(_))
+            | notify::EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+
 /// Write content to a file atomically.
 ///
 /// Writes to a temp file in `<pool_root>/scratch/`, then renames to the target path.
