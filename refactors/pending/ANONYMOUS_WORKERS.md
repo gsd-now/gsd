@@ -372,44 +372,49 @@ Because of these guarantees, core can **panic on violations** rather than handli
 #### 3.1: Core Data Structures
 
 ```rust
-type Uuid = String;
+// Newtypes for type safety - both are just u32 internally
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+struct WorkerId(u32);
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+struct SubmissionId(u32);
 
 enum TaskId {
-    External(Uuid),  // submission UUID
-    Heartbeat,       // no ID needed, just discard response
+    External(SubmissionId),
+    Heartbeat,
 }
 
 struct PoolState {
-    pending_tasks: VecDeque<Uuid>,     // submission UUIDs waiting for workers
-    waiting_workers: VecDeque<Uuid>,   // worker UUIDs waiting for tasks
-    busy_workers: HashMap<Uuid, TaskId>, // worker UUID → assigned task
+    pending_tasks: VecDeque<SubmissionId>,
+    waiting_workers: VecDeque<WorkerId>,
+    busy_workers: HashMap<WorkerId, TaskId>,
 }
 ```
 
-Three collections. Two kinds of UUIDs (workers and submissions). That's it.
+Core uses cheap u32 IDs. IO layer maps UUID ↔ ID on the boundary.
 
 #### 3.2: Events and Effects
 
 ```rust
 enum Event {
-    TaskSubmitted { submission_uuid: Uuid },
-    TaskWithdrawn { submission_uuid: Uuid },
-    WorkerReady { worker_uuid: Uuid },
-    WorkerResponded { worker_uuid: Uuid },
-    WorkerTimedOut { worker_uuid: Uuid },
-    AssignHeartbeatIfIdle { worker_uuid: Uuid },
+    TaskSubmitted { id: SubmissionId },
+    TaskWithdrawn { id: SubmissionId },
+    WorkerReady { id: WorkerId },
+    WorkerResponded { id: WorkerId },
+    WorkerTimedOut { id: WorkerId },
+    AssignHeartbeatIfIdle { id: WorkerId },
 }
 
 enum Effect {
-    TaskAssigned { worker_uuid: Uuid, task: TaskId },
-    WorkerWaiting { worker_uuid: Uuid },
-    TaskCompleted { worker_uuid: Uuid, task: TaskId },
-    TaskFailed { submission_uuid: Uuid },
-    WorkerRemoved { worker_uuid: Uuid },
+    TaskAssigned { worker: WorkerId, task: TaskId },
+    WorkerWaiting { worker: WorkerId },
+    TaskCompleted { worker: WorkerId, task: TaskId },
+    TaskFailed { submission: SubmissionId },
+    WorkerRemoved { worker: WorkerId },
 }
 ```
 
-Clear naming: `worker_uuid` vs `submission_uuid`. No ambiguity.
+All u32 IDs. IO layer handles UUID ↔ ID mapping.
 
 #### 3.4: Event Handlers
 
@@ -424,42 +429,41 @@ Clear naming: `worker_uuid` vs `submission_uuid`. No ambiguity.
 **FS events are sequenced** by the IO layer. **Timer events need defensive handling** (worker might be gone or in different state).
 
 ```rust
-fn handle_worker_ready(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+fn handle_worker_ready(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
     assert!(!state.waiting_workers.contains(&worker) && !state.busy_workers.contains_key(&worker));
 
     if let Some(submission) = state.pending_tasks.pop_front() {
-        let task = TaskId::External(submission);
-        state.busy_workers.insert(worker.clone(), task.clone());
-        vec![Effect::TaskAssigned { worker_uuid: worker, task }]
+        state.busy_workers.insert(worker, TaskId::External(submission));
+        vec![Effect::TaskAssigned { worker, task: TaskId::External(submission) }]
     } else {
-        state.waiting_workers.push_back(worker.clone());
-        vec![Effect::WorkerWaiting { worker_uuid: worker }]
+        state.waiting_workers.push_back(worker);
+        vec![Effect::WorkerWaiting { worker }]
     }
 }
 
-fn handle_worker_responded(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+fn handle_worker_responded(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
     let Some(task) = state.busy_workers.remove(&worker) else {
         return vec![];
     };
-    vec![Effect::TaskCompleted { worker_uuid: worker, task }]
+    vec![Effect::TaskCompleted { worker, task }]
 }
 
-fn handle_heartbeat_if_idle(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
-    let Some(pos) = state.waiting_workers.iter().position(|w| w == &worker) else {
+fn handle_heartbeat_if_idle(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
+    let Some(pos) = state.waiting_workers.iter().position(|w| *w == worker) else {
         return vec![];
     };
     state.waiting_workers.remove(pos);
-    state.busy_workers.insert(worker.clone(), TaskId::Heartbeat);
-    vec![Effect::TaskAssigned { worker_uuid: worker, task: TaskId::Heartbeat }]
+    state.busy_workers.insert(worker, TaskId::Heartbeat);
+    vec![Effect::TaskAssigned { worker, task: TaskId::Heartbeat }]
 }
 
-fn handle_worker_timeout(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+fn handle_worker_timeout(state: &mut PoolState, worker: WorkerId) -> Vec<Effect> {
     let Some(task) = state.busy_workers.remove(&worker) else {
         return vec![];
     };
-    let mut effects = vec![Effect::WorkerRemoved { worker_uuid: worker }];
+    let mut effects = vec![Effect::WorkerRemoved { worker }];
     if let TaskId::External(submission) = task {
-        effects.push(Effect::TaskFailed { submission_uuid: submission });
+        effects.push(Effect::TaskFailed { submission });
     }
     effects
 }
@@ -472,11 +476,11 @@ No epochs. Status is implicit in which collection the worker is in.
 #### Idle timeout explained
 
 When a worker registers but no task is available:
-1. Core emits `WorkerWaiting { uuid }` effect
-2. IO layer starts an idle timeout timer for this UUID
-3. If timer fires, IO sends `AssignHeartbeatIfIdle { uuid }`
-4. Core checks if UUID is still in `waiting_workers` - if so, assigns heartbeat
-5. Worker responds, gets removed, re-registers with new UUID
+1. Core emits `WorkerWaiting { worker }` effect
+2. IO layer starts an idle timeout timer for this WorkerId
+3. If timer fires, IO sends `AssignHeartbeatIfIdle { id }`
+4. Core checks if worker is still in `waiting_workers` - if so, assigns heartbeat
+5. Worker responds, gets removed, re-registers with new UUID (gets new WorkerId)
 
 This keeps workers engaged. There's no "idle → removed" path - idle workers get heartbeats.
 
@@ -486,35 +490,50 @@ This keeps workers engaged. There's no "idle → removed" path - idle workers ge
 
 **File:** `crates/agent_pool/src/daemon/io.rs`
 
-The IO layer maps abstract IDs to concrete file paths and performs actual I/O. It maintains a per-UUID state machine that handles duplicate/delayed FS events gracefully.
+The IO layer maps UUIDs to IDs and handles file operations.
+
+#### UUID ↔ ID Mapping
+
+```rust
+struct IoState {
+    // UUID → ID mappings (IO allocates IDs, core uses them)
+    worker_ids: IdMap<WorkerId>,      // worker UUID → WorkerId
+    submission_ids: IdMap<SubmissionId>, // submission UUID → SubmissionId
+
+    // File state
+    workers: HashMap<WorkerId, IoWorkerState>,
+}
+
+struct IdMap<T> {
+    uuid_to_id: HashMap<String, T>,
+    id_to_uuid: HashMap<T, String>,
+    next_id: u32,
+}
+```
 
 #### Handling FS Events
-
-The WorkerMap IS the state. No separate tracking needed.
 
 ```rust
 impl IoState {
     fn handle_ready_created(&mut self, uuid: &str) -> Option<Event> {
-        if self.workers.contains_key(uuid) {
-            return None;  // Duplicate event
+        if self.worker_ids.uuid_to_id.contains_key(uuid) {
+            return None;  // Duplicate
         }
+        let id = self.worker_ids.allocate(uuid);
         let ready = WorkerReady::from_path(...)?;
-        self.workers.insert(uuid.to_string(), IoWorkerState::Ready(ready));
-        Some(Event::WorkerReady { uuid: uuid.to_string() })
+        self.workers.insert(id, IoWorkerState::Ready(ready));
+        Some(Event::WorkerReady { id })
     }
 
     fn handle_response_created(&mut self, uuid: &str) -> Option<Event> {
-        match self.workers.get(uuid) {
-            Some(IoWorkerState::Assigned(_)) => {
-                Some(Event::WorkerResponded { uuid: uuid.to_string() })
-            }
-            _ => None,  // Not assigned, ignore
+        let id = self.worker_ids.uuid_to_id.get(uuid)?;
+        match self.workers.get(id) {
+            Some(IoWorkerState::Assigned(_)) => Some(Event::WorkerResponded { id: *id }),
+            _ => None,
         }
     }
 }
 ```
-
-Simple checks against WorkerMap. No separate state machine.
 
 #### File Ownership (RAII Guards)
 
@@ -759,10 +778,6 @@ Document the new three-file protocol.
 ## Migration
 
 No migration needed - this is a breaking change to the protocol. All existing agents will need to update to the new protocol.
-
-## Follow-up Optimizations
-
-1. **Intern submission UUIDs** - Currently using `String` for submission UUIDs which means cloning. Could intern them (store once, pass references) or map to `u32` IDs. Not blocking for initial implementation.
 
 ## Open Questions
 
