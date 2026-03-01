@@ -703,9 +703,6 @@ pub(super) enum IoWorkerState {
     Ready(WorkerReady),
     Assigned(WorkerAssigned),
 }
-
-/// IO layer just maps UUID → IoWorkerState. No separate ID needed.
-pub(super) type WorkerMap = HashMap<Uuid, IoWorkerState>;
 ```
 
 **Transitions:**
@@ -715,27 +712,42 @@ pub(super) type WorkerMap = HashMap<Uuid, IoWorkerState>;
 #### Effect handlers (IO layer)
 
 ```rust
-fn handle_task_assigned(uuid: &Uuid, task_id: TaskId, worker_map: &mut WorkerMap) {
-    let state = worker_map.remove(uuid).expect("TaskAssigned for unknown worker");
+impl IoWorkerState {
+    fn worker_uuid(&self) -> &WorkerUuid {
+        match self {
+            IoWorkerState::Ready(r) => &r.worker_uuid,
+            IoWorkerState::Assigned(a) => &a.worker_uuid,
+        }
+    }
+}
+
+fn on_task_assigned(io: &mut IoState, worker_id: WorkerId, task_id: TaskId) {
+    let state = io.workers.remove(&worker_id).expect("TaskAssigned for unknown worker");
     let IoWorkerState::Ready(ready) = state else {
         panic!("TaskAssigned but worker not in Ready state");
     };
 
     let task_content = /* get task content based on task_id */;
     let assigned = ready.assign_task(&agents_dir, &task_content).expect("write task");
-    worker_map.insert(uuid.clone(), IoWorkerState::Assigned(assigned));
+    io.workers.insert(worker_id, IoWorkerState::Assigned(assigned));
 }
 
-fn handle_task_completed(uuid: &Uuid, worker_map: &mut WorkerMap) {
-    let state = worker_map.remove(uuid).expect("TaskCompleted for unknown worker");
+fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
+    let state = io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
+    io.worker_uuids.remove(state.worker_uuid());  // Clean up UUID → ID mapping
     // state drops → files cleaned up by RAII
 }
 
-fn handle_worker_removed(uuid: &Uuid, worker_map: &mut WorkerMap) {
-    // Write kicked message, then remove
-    let task_path = agents_dir.join(format!("{uuid}{TASK_SUFFIX}"));
+fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
+    let state = io.workers.remove(&worker_id).expect("WorkerRemoved for unknown worker");
+    let worker_uuid = state.worker_uuid();
+
+    // Write kicked message so worker knows to exit
+    let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
     let _ = fs::write(&task_path, r#"{"kind":"Kicked"}"#);
-    worker_map.remove(uuid);  // state drops → files cleaned up
+
+    io.worker_uuids.remove(worker_uuid);  // Clean up UUID → ID mapping
+    // state drops → files cleaned up by RAII
 }
 ```
 
