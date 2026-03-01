@@ -2,7 +2,7 @@
 
 use super::payload::Payload;
 use crate::constants::{SOCKET_NAME, STATUS_FILE};
-use crate::fs_util::VerifiedWatcher;
+use crate::fs::VerifiedWatcher;
 use crate::response::Response;
 use interprocess::local_socket::{GenericFilePath, Stream, prelude::*};
 use std::fs;

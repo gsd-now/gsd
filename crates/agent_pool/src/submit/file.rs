@@ -17,7 +17,7 @@
 
 use super::payload::Payload;
 use crate::constants::{REQUEST_SUFFIX, RESPONSE_SUFFIX, STATUS_FILE, SUBMISSIONS_DIR};
-use crate::fs_util::{VerifiedWatcher, atomic_write_str};
+use crate::fs::{VerifiedWatcher, atomic_write_str};
 use crate::response::Response;
 use std::fs;
 use std::io;

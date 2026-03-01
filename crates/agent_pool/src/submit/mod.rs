@@ -1,9 +1,9 @@
-//! Client operations for interacting with the agent pool daemon.
+//! Task submission operations for interacting with the agent pool daemon.
 
+mod file;
 mod payload;
+mod socket;
 mod stop;
-mod submit;
-mod submit_file;
 
 use std::fs;
 use std::io;
@@ -13,12 +13,12 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::constants::STATUS_FILE;
-use crate::fs_util::VerifiedWatcher;
+use crate::fs::VerifiedWatcher;
 
+pub use file::{cleanup_submission, submit_file, submit_file_with_timeout};
 pub use payload::Payload;
+pub use socket::submit;
 pub use stop::stop;
-pub use submit::submit;
-pub use submit_file::{cleanup_submission, submit_file, submit_file_with_timeout};
 
 /// Wait for the agent pool daemon to become ready.
 ///

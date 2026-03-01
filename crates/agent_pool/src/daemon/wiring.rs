@@ -20,11 +20,11 @@ use tracing::{debug, info, trace, warn};
 
 use std::collections::HashSet;
 
-use crate::client::Payload;
 use crate::constants::{
     AGENTS_DIR, LOCK_FILE, REQUEST_SUFFIX, SOCKET_NAME, STATUS_FILE, SUBMISSIONS_DIR, TASK_FILE,
 };
 use crate::lock::{LockGuard, acquire_lock};
+use crate::submit::Payload;
 
 use super::core::{AgentId, Effect, Event, TaskId};
 use super::io::{
