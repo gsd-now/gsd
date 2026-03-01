@@ -559,30 +559,34 @@ The IO layer maps UUIDs to IDs and handles file operations.
 
 ```rust
 /// Worker UUID - from ready.json filename. Not interchangeable with SubmissionUuid.
-#[derive(Clone, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 struct WorkerUuid(String);
 
 /// Submission UUID - from request.json filename. Not interchangeable with WorkerUuid.
-#[derive(Clone, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 struct SubmissionUuid(String);
 ```
 
-#### UUID → ID Mapping
+#### UUID ↔ ID Mapping
 
 ```rust
 struct IoState {
-    // UUID → ID mappings (IO allocates IDs, core uses them)
-    worker_uuids: HashMap<WorkerUuid, WorkerId>,
-    submission_uuids: HashMap<SubmissionUuid, SubmissionId>,
+    // Bidirectional UUID ↔ ID mappings
+    uuid_to_worker_id: HashMap<WorkerUuid, WorkerId>,
+    worker_id_to_uuid: HashMap<WorkerId, WorkerUuid>,
+    uuid_to_submission_id: HashMap<SubmissionUuid, SubmissionId>,
+    submission_id_to_uuid: HashMap<SubmissionId, SubmissionUuid>,
     next_worker_id: u32,
     next_submission_id: u32,
 
-    // File state (contains UUID for reverse lookup)
+    // File state
     workers: HashMap<WorkerId, IoWorkerState>,
 }
 ```
 
-No reverse map needed - when handling Effects, we look up `workers[worker_id]` and the `IoWorkerState` contains the UUID.
+Both directions needed:
+- **UUID → ID**: FS events arrive with UUID (from filename), need WorkerId for core
+- **ID → UUID**: Effect handlers have WorkerId, need UUID to construct file paths
 
 #### Handling FS Events
 
@@ -590,22 +594,24 @@ No reverse map needed - when handling Effects, we look up `workers[worker_id]` a
 impl IoState {
     /// A worker wrote `<uuid>.ready.json` to signal availability.
     fn on_ready_file_created(&mut self, worker_uuid: WorkerUuid, ready_path: PathBuf) -> Option<Event> {
-        if self.worker_uuids.contains_key(&worker_uuid) {
+        if self.uuid_to_worker_id.contains_key(&worker_uuid) {
             return None;  // Duplicate event for same file
         }
         let worker_id = WorkerId(self.next_worker_id);
         self.next_worker_id += 1;
 
-        // Clone needed: UUID stored in both the lookup map and the WorkerReady struct
-        let ready = WorkerReady::new(worker_uuid.clone(), ready_path)?;
-        self.worker_uuids.insert(worker_uuid, worker_id);
+        // Insert into both maps (UUID cloned)
+        self.uuid_to_worker_id.insert(worker_uuid.clone(), worker_id);
+        self.worker_id_to_uuid.insert(worker_id, worker_uuid);
+
+        let ready = WorkerReady::new(worker_id, ready_path)?;
         self.workers.insert(worker_id, IoWorkerState::Ready(ready));
         Some(Event::WorkerReady { worker_id })
     }
 
     /// A worker wrote `<uuid>.response.json` after completing a task.
-    fn on_response_file_created(&mut self, worker_uuid: WorkerUuid) -> Option<Event> {
-        let worker_id = self.worker_uuids.get(&worker_uuid)?;
+    fn on_response_file_created(&mut self, worker_uuid: &WorkerUuid) -> Option<Event> {
+        let worker_id = self.uuid_to_worker_id.get(worker_uuid)?;
         match self.workers.get(worker_id) {
             Some(IoWorkerState::Assigned(_)) => Some(Event::WorkerResponded { worker_id: *worker_id }),
             _ => None,
@@ -635,7 +641,7 @@ pub(super) struct WorkerData {
 /// Worker just registered - owns ready file.
 /// Drop deletes the ready file.
 pub(super) struct WorkerReady {
-    pub worker_uuid: WorkerUuid,
+    pub worker_id: WorkerId,
     pub ready_path: PathBuf,
     pub data: WorkerData,
 }
@@ -643,35 +649,25 @@ pub(super) struct WorkerReady {
 /// Worker has task assigned - owns task file.
 /// Drop deletes the task file.
 pub(super) struct WorkerAssigned {
-    pub worker_uuid: WorkerUuid,
+    pub worker_id: WorkerId,
     pub task_path: PathBuf,
 }
 
 impl WorkerReady {
-    /// Create from UUID and path. Parses metadata from file.
-    fn new(worker_uuid: WorkerUuid, ready_path: PathBuf) -> io::Result<Self> {
+    /// Create from WorkerId and path. Parses metadata from file.
+    fn new(worker_id: WorkerId, ready_path: PathBuf) -> io::Result<Self> {
         let content = fs::read_to_string(&ready_path).unwrap_or_default();
         let data: WorkerData = serde_json::from_str(&content).unwrap_or_default();
-        Ok(Self { worker_uuid, ready_path, data })
+        Ok(Self { worker_id, ready_path, data })
     }
 
     /// Assign a task. Deletes ready file, writes task file, returns new guard.
-    fn assign_task(mut self, agents_dir: &Path, content: &str) -> io::Result<WorkerAssigned> {
-        let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", self.worker_uuid.0));
+    /// Caller provides UUID (looked up from worker_id_to_uuid map).
+    fn assign_task(self, worker_uuid: &WorkerUuid, agents_dir: &Path, content: &str) -> io::Result<WorkerAssigned> {
+        let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
         fs::write(&task_path, content)?;
-
-        // Take worker_uuid before dropping self (can't partially move from Drop type)
-        let worker_uuid = std::mem::take(&mut self.worker_uuid);
         // self drops here → ready file deleted
-
-        Ok(WorkerAssigned { worker_uuid, task_path })
-    }
-}
-
-impl WorkerAssigned {
-    /// Get the response file path for this worker.
-    fn response_path(&self, agents_dir: &Path) -> PathBuf {
-        agents_dir.join(format!("{}{WORKER_RESPONSE_SUFFIX}", self.worker_uuid.0))
+        Ok(WorkerAssigned { worker_id: self.worker_id, task_path })
     }
 }
 
@@ -699,48 +695,46 @@ pub(super) enum IoWorkerState {
 ```
 
 **Transitions:**
-- `WorkerReady::assign_task(self, content)` → consumes self (deletes ready file), writes task file, returns `WorkerAssigned`
-- `WorkerAssigned` dropped on completion → deletes task file, we manually delete response file
+- `WorkerReady::assign_task(self, uuid, content)` → consumes self (deletes ready file), writes task file, returns `WorkerAssigned`
+- `WorkerAssigned` dropped on completion → deletes task file, caller deletes response file
 
 #### Effect handlers (IO layer)
 
 ```rust
-impl IoWorkerState {
-    fn worker_uuid(&self) -> &WorkerUuid {
-        match self {
-            IoWorkerState::Ready(r) => &r.worker_uuid,
-            IoWorkerState::Assigned(a) => &a.worker_uuid,
-        }
-    }
-}
-
 fn on_task_assigned(io: &mut IoState, worker_id: WorkerId, task_id: TaskId) {
     let state = io.workers.remove(&worker_id).expect("TaskAssigned for unknown worker");
     let IoWorkerState::Ready(ready) = state else {
         panic!("TaskAssigned but worker not in Ready state");
     };
 
+    let worker_uuid = io.worker_id_to_uuid.get(&worker_id).expect("worker_id not in map");
     let task_content = /* get task content based on task_id */;
-    let assigned = ready.assign_task(&agents_dir, &task_content).expect("write task");
+    let assigned = ready.assign_task(worker_uuid, &agents_dir, &task_content).expect("write task");
     io.workers.insert(worker_id, IoWorkerState::Assigned(assigned));
 }
 
 fn on_task_completed(io: &mut IoState, worker_id: WorkerId) {
-    let state = io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
-    io.worker_uuids.remove(state.worker_uuid());  // Clean up UUID → ID mapping
+    io.workers.remove(&worker_id).expect("TaskCompleted for unknown worker");
     // state drops → files cleaned up by RAII
+
+    // Clean up both UUID maps
+    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
+    io.uuid_to_worker_id.remove(&worker_uuid);
 }
 
 fn on_worker_removed(io: &mut IoState, worker_id: WorkerId) {
-    let state = io.workers.remove(&worker_id).expect("WorkerRemoved for unknown worker");
-    let worker_uuid = state.worker_uuid();
+    let worker_uuid = io.worker_id_to_uuid.get(&worker_id).expect("worker_id not in map");
 
     // Write kicked message so worker knows to exit
     let task_path = agents_dir.join(format!("{}{TASK_SUFFIX}", worker_uuid.0));
     let _ = fs::write(&task_path, r#"{"kind":"Kicked"}"#);
 
-    io.worker_uuids.remove(worker_uuid);  // Clean up UUID → ID mapping
+    io.workers.remove(&worker_id);
     // state drops → files cleaned up by RAII
+
+    // Clean up both UUID maps
+    let worker_uuid = io.worker_id_to_uuid.remove(&worker_id).expect("worker_id not in map");
+    io.uuid_to_worker_id.remove(&worker_uuid);
 }
 ```
 
