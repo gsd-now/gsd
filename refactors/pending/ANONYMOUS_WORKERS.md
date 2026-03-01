@@ -369,103 +369,47 @@ ready.json created → task.json created → response.json created → cleanup
 
 Because of these guarantees, core can **panic on violations** rather than handling them defensively. If core sees an invalid event, it's a bug in IO or core, not external input.
 
-#### 3.1: Complete Core Data Structures
+#### 3.1: Core Data Structures
 
 ```rust
-// =============================================================================
-// ID Types
-// =============================================================================
+type Uuid = String;
 
-/// External task ID - a real submission from a client.
-pub(super) struct ExternalTaskId(pub(super) u32);
-
-/// Heartbeat ID - a synthetic task to validate worker liveness.
-pub(super) struct HeartbeatId(pub(super) u32);
-
-/// Task identifier - either an external submission or a heartbeat.
-pub(super) enum TaskId {
-    External(ExternalTaskId),
-    Heartbeat(HeartbeatId),
+enum TaskId {
+    External(Uuid),  // submission UUID
+    Heartbeat,       // no ID needed, just discard response
 }
 
-/// Worker identity is just the UUID string. No separate ID type needed.
-pub(super) type Uuid = String;
-
-// =============================================================================
-// Pool State
-// =============================================================================
-
-/// The complete state of the worker pool.
-///
-/// Workers are either waiting (no task) or busy (has task).
-pub(super) struct PoolState {
-    pending_tasks: VecDeque<TaskId>,
-    waiting_workers: VecDeque<Uuid>,
-    busy_workers: HashMap<Uuid, TaskId>,
+struct PoolState {
+    pending_tasks: VecDeque<Uuid>,     // submission UUIDs waiting for workers
+    waiting_workers: VecDeque<Uuid>,   // worker UUIDs waiting for tasks
+    busy_workers: HashMap<Uuid, TaskId>, // worker UUID → assigned task
 }
 ```
 
-No epochs, no WorkerId. UUID is the identity. State is implicit in which collection the worker is in.
+Three collections. Two kinds of UUIDs (workers and submissions). That's it.
 
-#### 3.2: Update Events
+#### 3.2: Events and Effects
 
 ```rust
-// Before
-pub(super) enum Event {
-    TaskSubmitted { task_id: TaskId },
-    TaskWithdrawn { task_id: TaskId },
-    AgentRegistered { agent_id: AgentId, heartbeat_task_id: Option<TaskId> },
-    AgentDeregistered { agent_id: AgentId },
-    AgentResponded { agent_id: AgentId },
-    AgentTimedOut { epoch: Epoch },
-    AssignTaskToAgentIfEpochMatches { epoch: Epoch, task_id: TaskId },
+enum Event {
+    TaskSubmitted { submission_uuid: Uuid },
+    TaskWithdrawn { submission_uuid: Uuid },
+    WorkerReady { worker_uuid: Uuid },
+    WorkerResponded { worker_uuid: Uuid },
+    WorkerTimedOut { worker_uuid: Uuid },
+    AssignHeartbeatIfIdle { worker_uuid: Uuid },
 }
 
-// After
-pub(super) enum Event {
-    TaskSubmitted { task_id: TaskId },
-    TaskWithdrawn { task_id: TaskId },
-    WorkerReady { uuid: Uuid },
-    WorkerResponded { uuid: Uuid },
-    WorkerTimedOut { uuid: Uuid },
-    AssignHeartbeatIfIdle { uuid: Uuid },
+enum Effect {
+    TaskAssigned { worker_uuid: Uuid, task: TaskId },
+    WorkerWaiting { worker_uuid: Uuid },
+    TaskCompleted { worker_uuid: Uuid, task: TaskId },
+    TaskFailed { submission_uuid: Uuid },
+    WorkerRemoved { worker_uuid: Uuid },
 }
 ```
 
-**Changes:**
-- Remove `AgentDeregistered` - workers don't deregister
-- `WorkerTimedOut` takes `worker_id`, not epoch - check if worker is busy
-- `AssignTaskToAgentIfEpochMatches` → `AssignHeartbeatIfIdle` - check if worker is idle
-
-#### 3.3: Update Effects
-
-```rust
-// Before
-pub(super) enum Effect {
-    TaskAssigned { task_id: TaskId, epoch: Epoch },
-    AgentIdled { epoch: Epoch },
-    TaskCompleted { agent_id: AgentId, task_id: TaskId },
-    TaskFailed { task_id: TaskId },
-    AgentRemoved { agent_id: AgentId },
-}
-
-// After
-pub(super) enum Effect {
-    TaskAssigned { uuid: Uuid, task_id: TaskId },
-    WorkerWaiting { uuid: Uuid },
-    TaskCompleted { uuid: Uuid, task_id: TaskId },  // implies worker removal
-    TaskFailed { task_id: TaskId },
-    WorkerRemoved { uuid: Uuid },  // only for timeouts/kicks
-}
-```
-
-**Changes:**
-- No epochs anywhere - just worker_id
-- `AgentIdled` → `WorkerWaiting` (waiting for first task)
-- `TaskCompleted` implies worker removal (matching service)
-- `WorkerRemoved` is only for task timeout
-
-Note: There's no "idle timeout → remove" path. When a worker is idle too long, it gets a heartbeat task (becomes Busy). If it fails to respond to the heartbeat, that's a task timeout.
+Clear naming: `worker_uuid` vs `submission_uuid`. No ambiguity.
 
 #### 3.4: Event Handlers
 
@@ -480,44 +424,44 @@ Note: There's no "idle timeout → remove" path. When a worker is idle too long,
 **FS events are sequenced** by the IO layer. **Timer events need defensive handling** (worker might be gone or in different state).
 
 ```rust
-fn handle_worker_registered(mut state: PoolState, uuid: Uuid) -> (PoolState, Vec<Effect>) {
-    assert!(
-        !state.waiting_workers.contains(&uuid) && !state.busy_workers.contains_key(&uuid),
-        "WorkerReady for existing worker {uuid}"
-    );
+fn handle_worker_ready(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+    assert!(!state.waiting_workers.contains(&worker) && !state.busy_workers.contains_key(&worker));
 
-    if let Some(task_id) = state.pending_tasks.pop_front() {
-        state.busy_workers.insert(uuid.clone(), task_id);
-        (state, vec![Effect::TaskAssigned { uuid, task_id }])
+    if let Some(submission) = state.pending_tasks.pop_front() {
+        let task = TaskId::External(submission);
+        state.busy_workers.insert(worker.clone(), task.clone());
+        vec![Effect::TaskAssigned { worker_uuid: worker, task }]
     } else {
-        state.waiting_workers.push_back(uuid.clone());
-        (state, vec![Effect::WorkerWaiting { uuid }])
+        state.waiting_workers.push_back(worker.clone());
+        vec![Effect::WorkerWaiting { worker_uuid: worker }]
     }
 }
 
-fn handle_worker_responded(mut state: PoolState, uuid: Uuid) -> (PoolState, Vec<Effect>) {
-    let Some(task_id) = state.busy_workers.remove(&uuid) else {
-        return (state, vec![]);  // Already removed by timeout
+fn handle_worker_responded(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+    let Some(task) = state.busy_workers.remove(&worker) else {
+        return vec![];
     };
-    (state, vec![Effect::TaskCompleted { uuid, task_id }])
+    vec![Effect::TaskCompleted { worker_uuid: worker, task }]
 }
 
-fn handle_assign_heartbeat_if_idle(mut state: PoolState, uuid: Uuid) -> (PoolState, Vec<Effect>) {
-    let Some(pos) = state.waiting_workers.iter().position(|w| w == &uuid) else {
-        return (state, vec![]);  // Not waiting anymore
+fn handle_heartbeat_if_idle(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+    let Some(pos) = state.waiting_workers.iter().position(|w| w == &worker) else {
+        return vec![];
     };
     state.waiting_workers.remove(pos);
-
-    let task_id = TaskId::Heartbeat(HeartbeatId(/* allocate */));
-    state.busy_workers.insert(uuid.clone(), task_id);
-    (state, vec![Effect::TaskAssigned { uuid, task_id }])
+    state.busy_workers.insert(worker.clone(), TaskId::Heartbeat);
+    vec![Effect::TaskAssigned { worker_uuid: worker, task: TaskId::Heartbeat }]
 }
 
-fn handle_worker_timed_out(mut state: PoolState, uuid: Uuid) -> (PoolState, Vec<Effect>) {
-    let Some(task_id) = state.busy_workers.remove(&uuid) else {
-        return (state, vec![]);  // Already responded
+fn handle_worker_timeout(state: &mut PoolState, worker: Uuid) -> Vec<Effect> {
+    let Some(task) = state.busy_workers.remove(&worker) else {
+        return vec![];
     };
-    (state, vec![Effect::TaskFailed { task_id }, Effect::WorkerRemoved { uuid }])
+    let mut effects = vec![Effect::WorkerRemoved { worker_uuid: worker }];
+    if let TaskId::External(submission) = task {
+        effects.push(Effect::TaskFailed { submission_uuid: submission });
+    }
+    effects
 }
 ```
 
