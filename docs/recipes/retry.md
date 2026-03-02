@@ -12,7 +12,14 @@ Configure how GSD handles failures and retries.
     "retry_on_timeout": true,
     "retry_on_invalid_response": true
   },
-  "steps": [...]
+  "steps": [
+    {
+      "name": "Process",
+      "value_schema": { "type": "object" },
+      "action": { "kind": "Pool", "instructions": "Process the task. Return `[]`." },
+      "next": []
+    }
+  ]
 }
 ```
 

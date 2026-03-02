@@ -40,7 +40,7 @@ gsd run config.json --pool agents --initial '[{"kind": "ListFiles", "value": {}}
 
 ## Command Contract
 
-- **stdin**: Task JSON (`{"kind": "StepName", "value": {...}}`)
+- **stdin**: Task JSON (`{"kind": "StepName", "value": {"key": "value"}}`)
 - **stdout**: Response JSON (array of next tasks)
 - **exit 0**: Success
 - **exit non-zero**: Error, triggers retry
@@ -87,7 +87,7 @@ Commands and agents work together naturally:
           "task": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"...\"}}]`" },
+      "action": { "kind": "Pool", "instructions": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"echo hello\"}}]`" },
       "next": ["Execute"]
     },
     {

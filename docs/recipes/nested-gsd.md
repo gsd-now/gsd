@@ -81,7 +81,7 @@ Outer workflow config (`outer.json`):
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Read all results from the workspace directory and synthesize a summary. The results are in JSON files at the path provided. Return `[{\"kind\": \"Cleanup\", \"value\": {\"summary\": \"...\"}}]`"
+        "instructions": "Read all results from the workspace directory and synthesize a summary. The results are in JSON files at the path provided. Return `[{\"kind\": \"Cleanup\", \"value\": {\"summary\": \"Found 3 issues\"}}]`"
       },
       "next": ["Cleanup"]
     },
@@ -130,7 +130,7 @@ cat > "$WORKSPACE/inner.json" << EOF
     {
       "name": "AnalyzeFile",
       "post": "echo \"\$INPUT\" | jq '.output' > \"$WORKSPACE/results/\$(uuidgen).json\" && cat",
-      "action": {"kind": "Pool", "instructions": "Analyze this file..."},
+      "action": {"kind": "Pool", "instructions": "Analyze this file for issues. Return `[]`."},
       "next": []
     }
   ]
@@ -181,7 +181,7 @@ echo "[{\"kind\": \"Aggregate\", \"value\": {\"workspace\": \"$WORKSPACE\", \"re
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze the task and generate a GSD config for the sub-workflow. Return `[{\"kind\": \"RunSubWorkflow\", \"value\": {\"config\": {...}, \"initial_tasks\": [...]}}]`"
+        "instructions": "Analyze the task and generate a GSD config for the sub-workflow. Return `[{\"kind\": \"RunSubWorkflow\", \"value\": {\"config\": {\"steps\": []}, \"initial_tasks\": []}}]`"
       },
       "next": ["RunSubWorkflow"]
     },

@@ -74,7 +74,7 @@ Agents can also fan out by returning multiple tasks:
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Find all functions that need refactoring. Return one task per function: `[{\"kind\": \"Refactor\", \"value\": {\"function\": \"...\"}}, ...]`"
+        "instructions": "Find all functions that need refactoring. Return one task per function: `[{\"kind\": \"Refactor\", \"value\": {\"function\": \"parse_config\"}}, {\"kind\": \"Refactor\", \"value\": {\"function\": \"validate_input\"}}]`"
       },
       "next": ["Refactor"]
     },

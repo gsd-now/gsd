@@ -71,7 +71,7 @@ Analyze files, collect findings, then categorize and prioritize.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Read all findings and categorize them by type (performance, readability, security, etc.). Return `[{\"kind\": \"Prioritize\", \"value\": {\"categorized\": [...]}}]`"
+        "instructions": "Read all findings and categorize them by type (performance, readability, security, etc.). Return `[{\"kind\": \"Prioritize\", \"value\": {\"categorized\": [{\"type\": \"performance\", \"items\": []}]}}]`"
       },
       "next": ["Prioritize"]
     },

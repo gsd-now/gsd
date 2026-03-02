@@ -101,32 +101,38 @@ Post hooks run after the action completes and can modify the results.
 
 Post hooks receive and can modify:
 
+**Success** - can modify next tasks:
 ```json
-// Success - can modify next tasks
 {
   "kind": "Success",
-  "input": { ... },
-  "output": { ... },
-  "next": [{"kind": "NextStep", "value": {...}}, ...]
+  "input": {"file": "main.rs"},
+  "output": {"result": "ok"},
+  "next": [{"kind": "NextStep", "value": {"data": "example"}}]
 }
+```
 
-// Timeout - runs even on timeout
+**Timeout** - runs even on timeout:
+```json
 {
   "kind": "Timeout",
-  "input": { ... }
+  "input": {"file": "main.rs"}
 }
+```
 
-// Error - runs even on error
+**Error** - runs even on error:
+```json
 {
   "kind": "Error",
-  "input": { ... },
+  "input": {"file": "main.rs"},
   "error": "error message"
 }
+```
 
-// Pre hook failed
+**PreHookError** - pre hook failed:
+```json
 {
   "kind": "PreHookError",
-  "input": { ... },
+  "input": {"file": "main.rs"},
   "error": "pre hook error message"
 }
 ```
@@ -203,7 +209,7 @@ The `finally` hook runs after ALL descendants of a task complete (not just direc
           "files": { "type": "array", "items": { "type": "string" } }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Fan out to analyze each file. Return `[{\"kind\": \"AnalyzeFile\", \"value\": {\"file\": \"...\"}}, ...]`" },
+      "action": { "kind": "Pool", "instructions": "Fan out to analyze each file. Return `[{\"kind\": \"AnalyzeFile\", \"value\": {\"file\": \"src/main.rs\"}}]`" },
       "next": ["AnalyzeFile"],
       "finally": "scripts/aggregate-results.sh"
     },

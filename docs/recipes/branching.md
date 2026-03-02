@@ -18,7 +18,7 @@ Branching allows agents to choose different paths based on their analysis.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Review this PR. If it looks good, return `[{\"kind\": \"Approve\", \"value\": {\"pr_number\": ...}}]`. If changes are needed, return `[{\"kind\": \"RequestChanges\", \"value\": {\"pr_number\": ..., \"comments\": [...]}}]`."
+        "instructions": "Review this PR. If it looks good, return `[{\"kind\": \"Approve\", \"value\": {\"pr_number\": 123}}]`. If changes are needed, return `[{\"kind\": \"RequestChanges\", \"value\": {\"pr_number\": 123, \"comments\": [\"fix typo\"]}}]`."
       },
       "next": ["Approve", "RequestChanges"]
     },

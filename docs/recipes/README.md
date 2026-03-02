@@ -31,12 +31,24 @@ Every GSD config has this structure:
   "steps": [
     {
       "name": "StepName",
-      "value_schema": { ... },
+      "value_schema": { "type": "object" },
       "pre": "optional-pre-hook.sh",
-      "action": { "kind": "Pool", "instructions": "..." },
+      "action": { "kind": "Pool", "instructions": "Do something. Return `[]`." },
       "post": "optional-post-hook.sh",
       "finally": "optional-finally-hook.sh",
       "next": ["NextStep1", "NextStep2"]
+    },
+    {
+      "name": "NextStep1",
+      "value_schema": { "type": "object" },
+      "action": { "kind": "Pool", "instructions": "Continue. Return `[]`." },
+      "next": []
+    },
+    {
+      "name": "NextStep2",
+      "value_schema": { "type": "object" },
+      "action": { "kind": "Pool", "instructions": "Alternative path. Return `[]`." },
+      "next": []
     }
   ]
 }

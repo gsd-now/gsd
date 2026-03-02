@@ -19,7 +19,7 @@ A linear pipeline processes data through a sequence of steps.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze this code for potential issues. Return `[{\"kind\": \"Review\", \"value\": {\"issues\": [...]}}]`"
+        "instructions": "Analyze this code for potential issues. Return `[{\"kind\": \"Review\", \"value\": {\"issues\": [\"unused variable\", \"missing error handling\"]}}]`"
       },
       "next": ["Review"]
     },
@@ -34,7 +34,7 @@ A linear pipeline processes data through a sequence of steps.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Review these issues and suggest fixes. Return `[{\"kind\": \"Implement\", \"value\": {\"fixes\": [...]}}]`"
+        "instructions": "Review these issues and suggest fixes. Return `[{\"kind\": \"Implement\", \"value\": {\"fixes\": [\"remove unused var x\", \"add try-catch\"]}}]`"
       },
       "next": ["Implement"]
     },
@@ -62,7 +62,7 @@ A linear pipeline processes data through a sequence of steps.
 To start the pipeline:
 
 ```bash
-gsd run config.json --pool agents --initial '[{"kind": "Analyze", "value": {"file": "src/main.rs", "contents": "fn main() { ... }"}}]'
+gsd run config.json --pool agents --initial '[{"kind": "Analyze", "value": {"file": "src/main.rs", "contents": "fn main() { println!(\"hello\"); }"}}]'
 ```
 
 ## Flow

@@ -29,7 +29,7 @@ Validate the value payload for each step:
           }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Process this order and prepare for shipping. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"...\"}}]`" },
+      "action": { "kind": "Pool", "instructions": "Process this order and prepare for shipping. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" },
       "next": ["Ship"]
     },
     {
@@ -64,7 +64,7 @@ Reference schemas from files:
     {
       "name": "ProcessOrder",
       "value_schema": "schemas/order.json",
-      "action": { "kind": "Pool", "instructions": "Process the order. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"...\"}}]`" },
+      "action": { "kind": "Pool", "instructions": "Process the order. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" },
       "next": ["Ship"]
     },
     {
