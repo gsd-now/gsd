@@ -40,14 +40,17 @@ See [crates/task_queue/README.md](crates/task_queue/README.md) for API documenta
 A daemon that manages a pool of long-running agents. Tasks are dispatched to available agents via a file-based protocol, enabling persistent workers that don't pay startup costs per task.
 
 ```bash
-# Start the daemon
+# In a terminal, start the daemon
 pnpm dlx @gsd-now/agent-pool start --pool agents
 
-# Submit a task (blocks until complete)
+# From another terminal, submit a task (GSD calls this internally)
 pnpm dlx @gsd-now/agent-pool submit_task --pool agents --data "task input"
 
-# Stop the daemon
-pnpm dlx @gsd-now/agent-pool stop --pool agents
+# An agent calls this to register and receive its first task
+pnpm dlx @gsd-now/agent-pool register --pool agents --name agent1
+
+# An agent calls this to submit a response and receive the next task
+pnpm dlx @gsd-now/agent-pool next_task --pool agents --uuid <UUID> --data "response"
 ```
 
 ## Example Use Cases
