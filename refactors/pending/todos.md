@@ -1,5 +1,13 @@
 # To-Dos and Future Directions
 
+## Most Important
+
+1. **Command Steps** - Support for steps that execute a bash script locally rather than being dispatched to an agent pool. This enables deterministic operations (file manipulation, git commands, API calls) to run without requiring an LLM agent.
+
+2. **Multi-Pool Task Routing** - Allow different steps to be routed to different agent pools. This enables heterogeneous workflows where some tasks require specialized agents (e.g., code review agents vs. implementation agents) or where command execution happens in a separate pool from AI reasoning.
+
+---
+
 ## Command Agent Improvements
 
 ### Reconnect on Timeout
