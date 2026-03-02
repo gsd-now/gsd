@@ -217,42 +217,34 @@ GSD (`gsd_config/runner.rs`) uses these internal APIs:
 ## Action Items (To Prioritize)
 
 ### Commands to Remove
-- [ ] `deregister_agent` - deprecated, workers are anonymous
-- [ ] `register` - pointless alias for `get_task`
-- [ ] `next_task` - not needed (agents can just use `get_task` in a loop?)
-- [ ] `cleanup` - should happen automatically, not be a separate command
+- [x] `deregister_agent` - DONE (removed)
+- [x] `register` - DONE (removed)
+- [x] `next_task` - DONE (removed)
+- [x] `cleanup` - DONE (removed)
 
 ### Commands to Keep
-- [x] `list` - makes sense to keep
+- [x] `list` - kept
 
 ### Heartbeat Options on `start`
-Currently only have `--no-heartbeat`. Should there be three parameters?
-- [ ] `--no-heartbeat` - disable all heartbeats
-- [ ] `--no-periodic-heartbeat` - disable periodic heartbeats to idle workers
-- [ ] `--no-initial-heartbeat` - disable initial heartbeat on registration
+- [x] `--no-heartbeat` - DONE
+- [x] `--no-periodic-heartbeat` - DONE
+- [x] `--no-initial-heartbeat` - DONE
 
 ### Pool ID Validation
-- [ ] `--pool` should NEVER accept a path - validate it's an ID only
-- [ ] Always use `--pool-root` for the base directory
-- [ ] Reject any `--pool` value containing `/` or `\`
+- [x] `--pool` should NEVER accept a path - DONE (validate_pool_id rejects `/` and `\`)
+- [x] Always use `--pool-root` for the base directory - DONE
+- [x] Reject any `--pool` value containing `/` or `\` - DONE
 
 ### Option Changes
-- [ ] `protocol` should take `--name` instead of `--pool`
-- [ ] `--deregister` flag on `next_task` needs renaming (if we keep `next_task`)
+- [x] `protocol` should take `--name` instead of `--pool` - DONE (has both now)
+- N/A `--deregister` flag - N/A (next_task was removed)
 
 ### Documentation
 - [ ] Update base README to not reference UUID (we use simple IDs now?)
 
-### Future Features
-- [ ] TODO: Add task abortion support (does this exist already?)
-
----
-
-## Original Notes (for reference)
-
-### Questions from Initial Review
-- `--json` on `start` - is it used? What does it output?
-- `--stop` on `start` - convenience flag, keep?
-- `--notify` on `submit_task` - implementation detail, hide?
-- `--data` vs `--file` on `submit_task` - both needed?
-- `protocol` command - who uses it?
+### Future Features / Open Questions
+- [ ] `--json` on `start` - is it used? What does it output?
+- [ ] `--stop` on `start` - convenience flag, keep?
+- [ ] `--notify` on `submit_task` - implementation detail, hide?
+- [ ] `--data` vs `--file` on `submit_task` - both needed?
+- [ ] Add task abortion support
