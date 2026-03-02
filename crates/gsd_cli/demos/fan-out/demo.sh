@@ -64,9 +64,10 @@ if [ -n "$EXISTING_POOL" ]; then
     echo "View workflow graph: $SCRIPT_DIR/graph.dot"
 else
     # Create demo pool
-    ROOT=$(mktemp -d)
+    POOL_ROOT=$(mktemp -d)
+    POOL_ID="demo"
     echo "=== Demo: Fan-Out with Multiple Agents ==="
-    echo "Working directory: $ROOT"
+    echo "Working directory: $POOL_ROOT"
     echo ""
     echo "This demo:"
     echo "  1. Starts $NUM_AGENTS agents"
@@ -80,7 +81,7 @@ else
     cleanup() {
         echo ""
         echo "=== Cleaning up ==="
-        $AGENT_POOL stop --pool "$ROOT" 2>/dev/null || true
+        $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
         sleep 0.2
         for pid in $AGENT_PIDS; do
             kill -9 $pid 2>/dev/null || true
@@ -88,21 +89,21 @@ else
         for pid in $AGENT_PIDS; do
             wait $pid 2>/dev/null || true
         done
-        rm -rf "$ROOT"
+        rm -rf "$POOL_ROOT"
         echo "Done."
     }
     trap cleanup EXIT
 
     # Start agent pool
     echo "Starting agent pool..."
-    $AGENT_POOL start --pool "$ROOT" --log-level "${LOG_LEVEL:-warn}" &
+    $AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-warn}" &
     POOL_PID=$!
     sleep 0.5
 
     # Start multiple agents
     echo "Starting $NUM_AGENTS agents..."
     for i in $(seq 1 $NUM_AGENTS); do
-        "$SCRIPT_DIR/../../scripts/fan-out-agent.sh" "$ROOT" "agent-$i" "$NUM_WORKERS" "$WORKER_SLEEP" &
+        "$SCRIPT_DIR/../../scripts/fan-out-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "agent-$i" --workers "$NUM_WORKERS" --sleep "$WORKER_SLEEP" &
         AGENT_PIDS="$AGENT_PIDS $!"
     done
     sleep 0.3
@@ -116,7 +117,7 @@ else
     START_TIME=$(date +%s.%N)
 
     $GSD run "$SCRIPT_DIR/config.jsonc" \
-        --pool "$ROOT" \
+        --pool "$POOL_ROOT/$POOL_ID" \
         --initial '[{"kind": "Distribute", "value": {}}]'
 
     END_TIME=$(date +%s.%N)

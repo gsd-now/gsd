@@ -60,32 +60,33 @@ if [ -n "$EXISTING_POOL" ]; then
     echo "View workflow graph: $SCRIPT_DIR/graph.dot"
 else
     # Create demo pool
-    ROOT=$(mktemp -d)
+    POOL_ROOT=$(mktemp -d)
+    POOL_ID="demo"
     echo "=== Demo: Branching Task Queue ==="
-    echo "Working directory: $ROOT"
+    echo "Working directory: $POOL_ROOT"
     echo ""
 
     cleanup() {
         echo ""
         echo "=== Cleaning up ==="
-        $AGENT_POOL stop --pool "$ROOT" 2>/dev/null || true
+        $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
         sleep 0.2
         kill -9 $AGENT_PID 2>/dev/null || true
         wait $AGENT_PID 2>/dev/null || true
-        rm -rf "$ROOT"
+        rm -rf "$POOL_ROOT"
         echo "Done."
     }
     trap cleanup EXIT
 
     # Start agent pool
     echo "Starting agent pool..."
-    $AGENT_POOL start --pool "$ROOT" --log-level "${LOG_LEVEL:-info}" &
+    $AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-info}" &
     POOL_PID=$!
     sleep 0.5
 
     # Start GSD-aware agent that chooses PathA
     echo "Starting GSD agent (will choose PathA)..."
-    "$SCRIPT_DIR/../../scripts/gsd-agent.sh" "$ROOT" "branching-agent" "Decide:PathA,PathA:Done,Done:" 0.1 &
+    "$SCRIPT_DIR/../../scripts/gsd-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "branching-agent" --transitions "Decide:PathA,PathA:Done,Done:" --sleep 0.1 &
     AGENT_PID=$!
     sleep 0.3
 
@@ -93,7 +94,7 @@ else
     echo ""
     echo "Running GSD with branching config..."
     $GSD run "$SCRIPT_DIR/config.jsonc" \
-        --pool "$ROOT" \
+        --pool "$POOL_ROOT/$POOL_ID" \
         --initial '[{"kind": "Decide", "value": {}}]'
 
     echo ""
