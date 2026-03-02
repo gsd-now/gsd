@@ -114,6 +114,5 @@ A self-healing linter that finds and fixes violations:
 
 ## Documentation
 
-- [Mental Model](docs/mental-model.md) - Architecture overview and key concepts
 - [Recipes](docs/recipes/README.md) - Common patterns and workflows
 - [TODOs and Future Work](refactors/pending/todos.md) - Planned improvements and ideas
