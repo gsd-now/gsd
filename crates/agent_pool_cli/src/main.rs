@@ -5,10 +5,9 @@
 #![expect(clippy::print_stderr)]
 
 use agent_pool::{
-    AGENTS_DIR, DaemonConfig, Payload, STATUS_FILE, TASK_FILE, TaskAssignment, cleanup_stopped,
-    default_pool_root, generate_id, id_to_path, is_daemon_running, list_pools, resolve_pool,
-    response_path, run_with_config, stop, submit, submit_file, submit_file_with_timeout,
-    wait_for_task,
+    AGENTS_DIR, DaemonConfig, Payload, STATUS_FILE, TaskAssignment, default_pool_root, generate_id,
+    id_to_path, is_daemon_running, list_pools, resolve_pool, response_path, run_with_config, stop,
+    submit, submit_file, submit_file_with_timeout, wait_for_task,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -65,7 +64,7 @@ struct Cli {
 enum Command {
     /// Start the agent pool server
     Start {
-        /// Pool ID or path. If omitted, generates a new ID.
+        /// Pool ID. If omitted, generates a new ID.
         /// IDs resolve to `<pool-root>/<id>/` (default: `/tmp/agent_pool/<id>/`)
         #[arg(long)]
         pool: Option<String>,
@@ -81,9 +80,15 @@ enum Command {
         /// Default timeout for tasks in seconds.
         #[arg(long, default_value = "300")]
         task_timeout_secs: u64,
-        /// Disable heartbeats for idle workers.
+        /// Disable all heartbeats for idle workers.
         #[arg(long)]
         no_heartbeat: bool,
+        /// Disable periodic heartbeats (still send initial heartbeat on registration).
+        #[arg(long)]
+        no_periodic_heartbeat: bool,
+        /// Disable initial heartbeat on registration (still send periodic heartbeats).
+        #[arg(long)]
+        no_initial_heartbeat: bool,
         /// Stop existing daemon before starting (if running).
         /// Without this flag, starting fails if a daemon is already running.
         #[arg(long)]
@@ -91,14 +96,14 @@ enum Command {
     },
     /// Stop a running agent pool server
     Stop {
-        /// Pool ID or path
+        /// Pool ID (not a path)
         #[arg(long)]
         pool: String,
     },
     /// Submit a task and wait for the result
     #[command(name = "submit_task")]
     SubmitTask {
-        /// Pool ID or path
+        /// Pool ID (not a path)
         #[arg(long)]
         pool: String,
         /// Task content as inline string
@@ -116,31 +121,22 @@ enum Command {
     },
     /// List all pools
     List,
-    /// Clean up stopped pools
-    Cleanup,
     /// Print the agent protocol documentation
     Protocol {
         /// Pool ID to include in the instructions
         #[arg(long)]
         pool: Option<String>,
+        /// Agent name to include in the instructions
+        #[arg(long)]
+        name: Option<String>,
         /// Show low-level file/socket protocol (for debugging/internals)
         #[arg(long)]
         low_level: bool,
     },
-    /// Deregister an agent from the pool (deprecated: workers are now anonymous)
-    #[command(name = "deregister_agent")]
-    DeregisterAgent {
-        /// Pool ID or path
-        #[arg(long)]
-        pool: String,
-        /// Agent name
-        #[arg(long)]
-        name: String,
-    },
     /// Wait for and return the next task (for agents)
     #[command(name = "get_task")]
     GetTask {
-        /// Pool ID or path
+        /// Pool ID (not a path)
         #[arg(long)]
         pool: String,
         /// Agent name (optional, for debugging)
@@ -149,44 +145,6 @@ enum Command {
         /// Log level
         #[arg(short, long, default_value = "off")]
         log_level: LogLevel,
-    },
-    /// Register as an agent and wait for first task (alias for `get_task`)
-    #[command(name = "register")]
-    Register {
-        /// Pool ID or path
-        #[arg(long)]
-        pool: String,
-        /// Agent name (optional, for debugging)
-        #[arg(long)]
-        name: Option<String>,
-        /// Log level
-        #[arg(short, long, default_value = "off")]
-        log_level: LogLevel,
-    },
-    /// Submit response to current task and wait for next task
-    #[command(name = "next_task")]
-    NextTask {
-        /// Pool ID or path
-        #[arg(long)]
-        pool: String,
-        /// Path to response file (from `get_task` output's `response_file` field)
-        #[arg(long)]
-        response_file: PathBuf,
-        /// Response content as inline string
-        #[arg(long, conflicts_with = "file")]
-        data: Option<String>,
-        /// Path to file containing response content
-        #[arg(long, conflicts_with = "data")]
-        file: Option<PathBuf>,
-        /// Agent name (optional, for debugging)
-        #[arg(long)]
-        name: Option<String>,
-        /// Log level
-        #[arg(short, long, default_value = "off")]
-        log_level: LogLevel,
-        /// Submit response and exit (don't wait for next task)
-        #[arg(long)]
-        deregister: bool,
     },
 }
 
@@ -259,26 +217,27 @@ fn main() -> ExitCode {
             idle_timeout_secs,
             task_timeout_secs,
             no_heartbeat,
+            no_periodic_heartbeat,
+            no_initial_heartbeat,
             stop: stop_flag,
         } => {
+            // Validate pool ID if provided
+            if let Some(ref p) = pool
+                && let Err(e) = validate_pool_id(p)
+            {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+
             init_tracing(log_level);
 
-            // Resolve pool reference or generate new ID
-            let (id, root) = match pool {
-                Some(p) if p.contains('/') => {
-                    // It's a path
-                    (None, PathBuf::from(p))
-                }
-                Some(id) => {
-                    // It's an ID
-                    (Some(id.clone()), id_to_path(&pool_root, &id))
-                }
-                None => {
-                    // Generate new ID
-                    let id = generate_id();
-                    (Some(id.clone()), id_to_path(&pool_root, &id))
-                }
-            };
+            // Resolve pool ID or generate new one
+            let id = pool.unwrap_or_else(generate_id);
+            let root = id_to_path(&pool_root, &id);
+
+            // TODO: Pass periodic/initial heartbeat flags to DaemonConfig when supported
+            // For now, --no-heartbeat disables all; finer-grained control requires DaemonConfig changes
+            let _ = (no_periodic_heartbeat, no_initial_heartbeat); // Silence unused warnings
 
             // Handle existing daemon/directory
             if root.exists() {
@@ -322,10 +281,8 @@ fn main() -> ExitCode {
             if json {
                 let info = serde_json::json!({ "id": id });
                 println!("{}", serde_json::to_string(&info).unwrap_or_default());
-            } else if let Some(id) = &id {
-                eprintln!("Starting pool {id}");
             } else {
-                eprintln!("Starting pool");
+                eprintln!("Starting pool {id}");
             }
 
             let config = DaemonConfig {
@@ -344,6 +301,11 @@ fn main() -> ExitCode {
             }
         }
         Command::Stop { pool } => {
+            if let Err(e) = validate_pool_id(&pool) {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+
             let root = resolve_pool(&pool_root, &pool);
             if let Err(e) = stop(&root) {
                 eprintln!("Failed to stop: {e}");
@@ -358,6 +320,11 @@ fn main() -> ExitCode {
             notify,
             timeout_secs,
         } => {
+            if let Err(e) = validate_pool_id(&pool) {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+
             let root = resolve_pool(&pool_root, &pool);
 
             // Build payload from --data (inline) or --file (file reference)
@@ -413,16 +380,11 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::Cleanup => match cleanup_stopped(&pool_root) {
-            Ok(count) => {
-                eprintln!("Cleaned up {count} stopped pool(s)");
-            }
-            Err(e) => {
-                eprintln!("Cleanup failed: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
-        Command::Protocol { pool, low_level } => {
+        Command::Protocol {
+            pool,
+            name,
+            low_level,
+        } => {
             let mut output = if low_level {
                 LOW_LEVEL_PROTOCOL.to_string()
             } else {
@@ -437,49 +399,24 @@ fn main() -> ExitCode {
                     .replace("/tmp/agent_pool/<POOL_ID>", &path.display().to_string());
             }
 
+            if let Some(n) = &name {
+                output = output
+                    .replace("<AGENT_NAME>", n)
+                    .replace("--name <AGENT_NAME>", &format!("--name {n}"));
+            }
+
             print!("{output}");
-        }
-        Command::DeregisterAgent { pool, name } => {
-            // Deprecated: with anonymous workers, there's nothing to deregister.
-            // For backward compatibility, try to clean up legacy agent directories.
-            let root = resolve_pool(&pool_root, &pool);
-            let agent_dir = root.join(AGENTS_DIR).join(&name);
-
-            if !agent_dir.exists() {
-                eprintln!("Agent '{name}' not found (note: workers are now anonymous)");
-                return ExitCode::SUCCESS;
-            }
-
-            // Write a Kicked message so any waiting CLI exits cleanly
-            let kicked = serde_json::json!({
-                "kind": "Kicked",
-                "reason": "Deregistered"
-            });
-            if let Err(e) = fs::write(agent_dir.join(TASK_FILE), kicked.to_string()) {
-                eprintln!("Warning: failed to write Kicked message: {e}");
-            }
-
-            // Give the CLI a moment to see the Kicked message
-            thread::sleep(Duration::from_millis(50));
-
-            // Remove the agent directory
-            if let Err(e) = fs::remove_dir_all(&agent_dir) {
-                eprintln!("Failed to remove agent directory: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            eprintln!("Deregistered agent '{name}'");
         }
         Command::GetTask {
             pool,
             name,
             log_level,
-        }
-        | Command::Register {
-            pool,
-            name,
-            log_level,
         } => {
+            if let Err(e) = validate_pool_id(&pool) {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+
             init_tracing(log_level);
 
             let root = resolve_pool(&pool_root, &pool);
@@ -503,60 +440,20 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::NextTask {
-            pool,
-            response_file,
-            data,
-            file,
-            name,
-            log_level,
-            deregister,
-        } => {
-            init_tracing(log_level);
-            let root = resolve_pool(&pool_root, &pool);
-
-            // Get response content from --data or --file
-            let response_content = match (data, file) {
-                (Some(d), _) => d,
-                (None, Some(path)) => match fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("Failed to read content file {}: {e}", path.display());
-                        return ExitCode::FAILURE;
-                    }
-                },
-                (None, None) => {
-                    eprintln!("Either --data or --file must be provided");
-                    return ExitCode::FAILURE;
-                }
-            };
-
-            // Write response directly to the response file
-            if let Err(e) = fs::write(&response_file, &response_content) {
-                eprintln!("Failed to write response: {e}");
-                return ExitCode::FAILURE;
-            }
-
-            if deregister {
-                // Just exit after writing response
-                eprintln!("Response submitted");
-            } else {
-                // Wait for next task
-                match wait_for_task(&root, name.as_deref(), None) {
-                    Ok(assignment) => {
-                        let output = format_task_output(&assignment, &root, name.as_deref());
-                        println!("{output}");
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to get next task: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-        }
     }
 
     ExitCode::SUCCESS
+}
+
+/// Validate that a pool ID is not a path.
+/// Pool IDs should be simple identifiers, not paths.
+fn validate_pool_id(pool: &str) -> Result<(), String> {
+    if pool.contains('/') || pool.contains('\\') {
+        return Err(format!(
+            "Pool ID cannot contain path separators. Got: '{pool}'. Use --pool-root to specify the base directory."
+        ));
+    }
+    Ok(())
 }
 
 /// Wait for the status file to appear (daemon ready signal).

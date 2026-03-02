@@ -268,9 +268,11 @@ fn submit_task_returns_not_processed_on_timeout() {
    - Pro: Type sharing, no duplication
    - Con: Still creates crate dependency
 
-3. **Timeout handling** - CLI has `--timeout-secs`. GSD has per-step timeout. How to coordinate?
-   - Pass GSD timeout to CLI?
-   - CLI timeout = GSD timeout + buffer?
+3. **Timeout handling** - GSD should use unlimited timeouts when calling the CLI.
+   - Tasks can be queued waiting for workers that are processing long-lived tasks
+   - The pool might be full, so we can't assume fast dispatch
+   - GSD handles its own per-step timeouts internally; CLI timeout should be unlimited (or omitted)
+   - Resolution: Don't pass `--timeout-secs` to CLI, or pass a very large value
 
 ---
 

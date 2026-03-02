@@ -42,12 +42,10 @@ mod submit;
 pub use constants::{AGENTS_DIR, RESPONSE_FILE, STATUS_FILE, TASK_FILE, response_path};
 pub use daemon::{DaemonConfig, run_with_config};
 pub use lock::is_daemon_running;
-pub use pool::{
-    cleanup_stopped, default_pool_root, generate_id, id_to_path, list_pools, resolve_pool,
-};
+pub use pool::{default_pool_root, generate_id, id_to_path, list_pools, resolve_pool};
 pub use response::Response;
 pub use submit::{
     Payload, stop, submit, submit_file, submit_file_with_timeout, wait_for_pool_ready,
 };
-pub use transport::Transport;
+pub(crate) use transport::Transport;
 pub use worker::{TaskAssignment, wait_for_task, write_response};

@@ -110,14 +110,4 @@ impl Transport {
             Transport::Socket(_) => None,
         }
     }
-
-    /// Get the UUID for flat file transports.
-    ///
-    /// Returns `None` for other transport types.
-    pub fn uuid(&self) -> Option<&str> {
-        match self {
-            Transport::FlatFile { uuid, .. } => Some(uuid),
-            _ => None,
-        }
-    }
 }

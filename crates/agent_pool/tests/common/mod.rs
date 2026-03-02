@@ -156,9 +156,9 @@ pub fn is_ipc_available(_root: &std::path::Path) -> bool {
 
 /// A test agent that uses the CLI to receive tasks from the daemon.
 ///
-/// The agent runs in a background thread, calling `register` and `next_task`
-/// CLI commands to interact with the daemon. This ensures tests exercise
-/// the same code paths as real agents.
+/// The agent runs in a background thread, calling `get_task` CLI commands
+/// to interact with the daemon. This ensures tests exercise the same code
+/// paths as real agents.
 pub struct TestAgent {
     running: Arc<AtomicBool>,
     /// PID of current CLI subprocess (for killing on stop)
@@ -213,8 +213,7 @@ impl TestAgent {
 
         let handle = thread::spawn(move || {
             let mut processed_tasks = Vec::new();
-            let mut last_response: Option<String> = None;
-            let mut response_file_path: Option<String> = None;
+            let mut pending_response: Option<(String, String)> = None; // (response_file, response_data)
             let mut first_iteration = true;
 
             loop {
@@ -222,22 +221,19 @@ impl TestAgent {
                     break;
                 }
 
-                // Build command: register for first call, next_task with response for subsequent
-                let mut cmd = Command::new(&bin);
-                if let Some(response) = last_response.take() {
-                    let rf = response_file_path
-                        .take()
-                        .expect("response_file should be set");
-                    cmd.arg("next_task")
-                        .arg("--pool")
-                        .arg(&pool_owned)
-                        .arg("--response-file")
-                        .arg(&rf)
-                        .arg("--data")
-                        .arg(&response);
-                } else {
-                    cmd.arg("register").arg("--pool").arg(&pool_owned);
+                // If we have a pending response from the previous iteration, write it first
+                if let Some((response_file, response_data)) = pending_response.take()
+                    && let Err(e) = fs::write(&response_file, &response_data)
+                {
+                    eprintln!(
+                        "[{test_name_owned}] [agent {agent_id_owned}] Failed to write response: {e}"
+                    );
+                    break;
                 }
+
+                // Build command: always use get_task
+                let mut cmd = Command::new(&bin);
+                cmd.arg("get_task").arg("--pool").arg(&pool_owned);
                 if !agent_id_owned.is_empty() {
                     cmd.arg("--name").arg(&agent_id_owned);
                 }
@@ -256,12 +252,12 @@ impl TestAgent {
                 // Store PID for potential killing by stop()
                 current_pid_clone.store(child.id(), Ordering::SeqCst);
 
-                // Signal ready on first iteration after spawning register command.
-                // The register command writes the ready file before waiting for tasks.
+                // Signal ready on first iteration after spawning get_task command.
+                // The get_task command writes the ready file before waiting for tasks.
                 // We need to wait for:
                 // 1. CLI to write the ready file
                 // 2. FSEvents to deliver the event
-                // 3. Daemon to process the event and register the worker
+                // 3. Daemon to process the event and add the worker
                 //
                 // We detect a NEW ready file by comparing sets before and after.
                 if first_iteration {
@@ -374,10 +370,11 @@ impl TestAgent {
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
 
-                // Store response_file for next iteration
-                if let Some(rf) = task_json.get("response_file").and_then(|v| v.as_str()) {
-                    response_file_path = Some(rf.to_string());
-                }
+                // Get response_file for this task
+                let response_file = task_json
+                    .get("response_file")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
 
                 // Handle control messages
                 match kind {
@@ -403,7 +400,11 @@ impl TestAgent {
                 let content_str = content.to_string();
                 let response = processor(&content_str, &agent_id_owned);
                 processed_tasks.push(content_str.trim().to_string());
-                last_response = Some(response);
+
+                // Store response to write at the start of the next iteration
+                if let Some(rf) = response_file {
+                    pending_response = Some((rf, response));
+                }
             }
 
             processed_tasks

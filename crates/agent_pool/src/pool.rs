@@ -156,22 +156,3 @@ pub fn resolve_pool(pool_root: &Path, reference: &str) -> PathBuf {
         id_to_path(pool_root, reference)
     }
 }
-
-/// Clean up stopped pools (remove directories for pools that aren't running).
-///
-/// # Errors
-///
-/// Returns an error if cleanup fails.
-pub fn cleanup_stopped(pool_root: &Path) -> io::Result<usize> {
-    let pools = list_pools(pool_root)?;
-    let mut cleaned = 0;
-
-    for pool in pools {
-        if !pool.running {
-            fs::remove_dir_all(&pool.path)?;
-            cleaned += 1;
-        }
-    }
-
-    Ok(cleaned)
-}
