@@ -117,51 +117,37 @@ fn process_pool_response(
 
 ## Proposed Changes
 
-### Change 1: Remove `is_daemon_running` check
+### Change 1: Remove `is_daemon_running` check entirely
 
-**Before (lines 200-208):**
+**Before (lines 192-209):**
 ```rust
-if !agent_pool::is_daemon_running(pool_path) {
-    return Err(io::Error::new(
-        io::ErrorKind::NotConnected,
-        format!(
-            "Pool daemon not running at: {} (directory exists but no daemon)",
-            pool_path.display()
-        ),
-    ));
+// Check if the pool exists and is running (only if config uses Pool actions and has tasks)
+let pool_path = runner_config.agent_pool_root;
+if config.has_pool_actions() && !runner_config.initial_tasks.is_empty() {
+    if !pool_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Pool not found: {}", pool_path.display()),
+        ));
+    }
+    if !agent_pool::is_daemon_running(pool_path) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!(
+                "Pool daemon not running at: {} (directory exists but no daemon)",
+                pool_path.display()
+            ),
+        ));
+    }
 }
 ```
 
 **After:**
 ```rust
-// Check status file exists and contains "ready"
-let status_path = pool_path.join("status");
-if !status_path.exists() {
-    return Err(io::Error::new(
-        io::ErrorKind::NotConnected,
-        format!(
-            "Pool daemon not running at: {} (no status file)",
-            pool_path.display()
-        ),
-    ));
-}
-let status = fs::read_to_string(&status_path).map_err(|e| {
-    io::Error::new(
-        io::ErrorKind::NotConnected,
-        format!("Failed to read pool status: {e}"),
-    )
-})?;
-if status.trim() != "ready" {
-    return Err(io::Error::new(
-        io::ErrorKind::NotConnected,
-        format!(
-            "Pool daemon not ready at: {} (status: {})",
-            pool_path.display(),
-            status.trim()
-        ),
-    ));
-}
+// No check needed - submit_task CLI will fail with clear error if daemon isn't running
 ```
+
+The CLI's `submit_task` already checks if the daemon is running and returns a clear error. We don't need to duplicate this check.
 
 ### Change 2: Replace `agent_pool::submit` with CLI call
 
@@ -265,8 +251,8 @@ These parts **do not change**:
    - GSD handles its own per-step timeouts separately via the task payload
    - **TODO:** Add `--no-timeout` or `--timeout-secs 0` support for truly infinite waits
 
-4. **Pool readiness** - Check status file directly (contains "ready" when daemon is up).
-   - `submit_task` also waits internally, but we check upfront for better error messages
+4. **Pool readiness** - Don't check. Let `submit_task` fail with its own error if daemon isn't running.
+   - Removes duplicate logic and keeps error handling in one place
 
 5. **Error handling** - Non-zero exit code → `io::Error`. Parse stderr for message.
 
@@ -319,11 +305,11 @@ let result =
 let result = submit_via_cli(&root, &payload);
 ```
 
-### Task 3: Replace `is_daemon_running` check
+### Task 3: Remove `is_daemon_running` check
 
 **File:** `gsd_config/src/runner.rs`
 
-**Lines 200-208**, replace the `if !agent_pool::is_daemon_running(pool_path)` block with status file check.
+**Lines 192-209**, delete the entire daemon check block. The CLI handles this.
 
 ### Task 4: Update imports
 
