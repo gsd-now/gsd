@@ -257,20 +257,17 @@ These parts **do not change**:
 
 5. **Error handling** - Non-zero exit code → `io::Error`. Parse stderr for message.
 
-## Open Questions / Concerns
+## Future TODOs (not blocking this refactor)
 
-1. **CLI exit codes** - What exit codes does `submit_task` return?
-   - Need to verify: does it return non-zero on `NotProcessed`? Or only on actual errors?
-   - Current assumption: non-zero = error (connection failed, invalid args, etc.)
-   - Zero + JSON `NotProcessed` = timeout/shutdown (not an error from CLI perspective)
+1. **CLI exit codes** - Verify `submit_task` returns zero for `NotProcessed` (timeout), non-zero only for actual errors.
 
-2. **Binary not found** - What's the user experience when `agent_pool` binary isn't available?
-   - Should we check at startup and give a clear error message?
-   - Or let it fail on first submit with a helpful error?
+2. **Binary not found UX** - Consider checking at startup vs failing on first submit.
 
-3. **Cargo.toml changes** - Do we need to update `gsd_config/Cargo.toml`?
-   - We still depend on `agent_pool` for the `Response` type
-   - But we can remove features or limit the dependency scope
+3. **Cargo.toml cleanup** - After refactor, audit `gsd_config/Cargo.toml` to remove unused `agent_pool` features.
+
+4. **CLI output format** - Verify CLI JSON output exactly matches `agent_pool::Response` struct.
+
+5. **Stderr handling** - Decide if we need to capture/log stderr beyond error messages.
 
 ## Implementation Plan
 
