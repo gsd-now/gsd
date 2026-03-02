@@ -419,7 +419,7 @@ fn handle_fs_event(
     submission_map: &mut SubmissionMap,
     id_allocator: &mut IdAllocator,
     pending_responses: &mut HashSet<WorkerId>,
-    kicked_paths: &mut HashSet<PathBuf>,
+    kicked_paths: &HashSet<PathBuf>,
     agents_dir: &Path,
     submissions_dir: &Path,
     io_config: &IoConfig,
