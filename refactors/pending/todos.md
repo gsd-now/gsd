@@ -12,14 +12,14 @@
 
 ### Reconnect on Timeout
 
-When the command agent is kicked due to heartbeat timeout, it should automatically reconnect instead of exiting. Currently if the agent is slow to respond to a heartbeat (e.g., because it's running a long command), it gets kicked and the agent script exits.
+When the command agent times out (e.g., due to heartbeat failure), it should automatically reconnect instead of exiting. With anonymous workers, this means just calling `get_task` again.
 
 **Current behavior:**
-- Agent receives Kicked message → exits
+- Agent receives Kicked message or times out → exits
 - User must manually restart the agent
 
 **Desired behavior:**
-- Agent receives Kicked message → re-registers with same name
+- On timeout/kick, loop back to `get_task` instead of exiting
 - Seamlessly continues processing tasks
 
 ### Command Timeout
@@ -319,12 +319,12 @@ Global options `retry_on_timeout` and `retry_on_invalid_response` (both default 
 
 ## No-IPC Mode
 
-For sandboxed environments where Unix sockets are blocked, implement file-based task submission:
+**Status: COMPLETE** - File-based submission works via `--notify file` flag.
 
-- Submit writes to a `pending/` folder
-- Daemon polls for new files
+- Submit writes to `submissions/` folder
+- Daemon uses filesystem watcher (not polling)
 - Response written back to same folder
-- Submit blocks until response appears
+- Submit blocks until response appears (via watcher)
 
 ## GSD JSON Runner
 
@@ -436,14 +436,14 @@ This prevents slow/broken agents from clogging the pool indefinitely.
 
 ## Low-Level File Protocol Documentation
 
-Currently the agent protocol documentation only covers the CLI commands (`get_task`, `deregister_agent`). The underlying file protocol (`task.json`, `response.json`) is an implementation detail.
+Currently the agent protocol documentation only covers the CLI command (`get_task`). The underlying file protocol is an implementation detail.
 
 If we need to support agents that can't use the CLI (e.g., non-Rust agents, embedded systems), we should document the raw file protocol:
 
-- Agent creates directory in `agents/`
-- Daemon writes `task.json` when task is assigned
-- Agent writes `response.json` when done
-- Daemon cleans up both files
+- Worker calls `get_task` which creates a worker directory with UUID
+- Daemon writes task to worker's task file when work is available
+- Worker writes response to the response file path provided in the task
+- Worker calls `get_task` again for next task
 
 For now, the CLI abstracts this away. Expose only if there's a concrete use case.
 
@@ -481,10 +481,13 @@ The default step should probably require `value_schema` to either be absent or a
 **Status: COMPLETE** - see `refactors/past/HEALTH_CHECK_PLAN.md`.
 
 Task-based ping-pong health checks (Heartbeat messages). Benefits:
-- Periodic heartbeats to idle agents detect disconnected agents
-- Agents can recover from timeout by simply calling `get_task` again
+- Periodic heartbeats to idle workers detect disconnected workers
+- Workers can recover from timeout by simply calling `get_task` again
 
-Agents see heartbeats and must respond to them. The `get_task` response includes `kind` which can be `Task`, `Heartbeat`, or `Kicked`.
+The `get_task` response includes `kind` which can be:
+- `Task` - real work to do
+- `Heartbeat` - liveness check, respond with any JSON
+- `Kicked` - worker was removed (e.g., timeout), call `get_task` again to reconnect
 
 ## Typestate Pattern for State Transitions
 
@@ -614,11 +617,11 @@ Remove filesystem-based IPC entirely:
 - Pool ID becomes just a PID or similar in-memory identifier
 - All communication via socket (daemon ↔ agents, daemon ↔ submitters)
 - `get_task` blocks on socket until task assigned
-- `complete_task` sends response over socket
+- Response sent over socket instead of writing file
 - No temp files, no directory watching
 - Simpler, faster, easier to reason about
 
-The CLI commands (`register`, `get_task`, `complete_task`) already abstract away the filesystem, so this would be a transparent change for agents using the CLI.
+The CLI commands already abstract away the filesystem, so this would be a transparent change for agents using the CLI.
 
 ---
 
@@ -634,68 +637,15 @@ Add a 5-minute timeout to each step in CI workflows. This prevents hung builds f
 
 ---
 
-## Agent CLI: Respond-and-Deregister / Abort Support
+## ~~Agent CLI: Respond-and-Deregister / Abort Support~~ OBSOLETE
 
-Add cleaner ways to stop agents that are more explicit about intent:
-
-**`deregister_agent --data <response>`**: Allow deregistering while submitting a final response. Currently agents must call `next_task --data <response>` then `deregister_agent` separately.
-
-```bash
-# Current (two commands):
-agent_pool next_task --pool $POOL --name $NAME --data '{"result": "done"}'
-agent_pool deregister_agent --pool $POOL --name $NAME
-
-# Proposed (one command):
-agent_pool deregister_agent --pool $POOL --name $NAME --data '{"result": "done"}'
-```
-
-**`register --abort` / `next_task --abort`**: Allow agents to abort without providing a response. Useful when the agent can't complete the task and wants to let another agent try.
-
-```bash
-# Current: agent must provide some response
-agent_pool next_task --pool $POOL --name $NAME --data '{"error": "abort"}'
-
-# Proposed: explicit abort
-agent_pool next_task --pool $POOL --name $NAME --abort
-```
-
-This also applies to `register` (abort the first task if the agent realizes it can't handle it).
-
-Implementation notes:
-- `--data` and `--abort` are mutually exclusive
-- `--abort` without `--data` signals the daemon to requeue the task (or mark it failed)
-- Need to decide: does abort requeue for another agent, or fail the task?
-
-**Note for anonymous workers:** With the anonymous worker model, the same worker that aborted might immediately get the task reassigned (since it creates a new UUID and re-registers). This is a bit weird but acceptable - the worker is essentially saying "I couldn't do this task in my current state, let me try fresh."
+**Status: OBSOLETE** - With anonymous workers, there's no `deregister_agent` or `next_task`. Agents just write to the response file and call `get_task` again. To stop, simply don't call `get_task`. To abort, write an error response and call `get_task` again.
 
 ---
 
-## Rethink Agent Deregistration
+## ~~Rethink Agent Deregistration~~ OBSOLETE
 
-**Status: NEEDS THOUGHT**
-
-The current `deregister_agent` behavior (write Kicked message, wait 50ms, remove directory) is problematic:
-
-1. **Agents might be mid-task**: An agent CLI might be processing a task (not waiting on `next_task`) when we deregister. The Kicked message goes to `task.json`, but the CLI doesn't read `task.json` until it calls `next_task`. The agent completes its work, tries to respond, and finds its directory is gone.
-
-2. **Race conditions in tests**: TestAgent.stop() calls `deregister_agent`, but the agent thread might be processing a task at that moment. The 50ms sleep is a hack that doesn't guarantee the CLI sees the Kicked message.
-
-3. **No synchronization**: There's no way for `deregister_agent` to wait until the agent has actually stopped. It just removes the directory and hopes for the best.
-
-Questions to answer:
-- Should deregistration be synchronous (block until agent confirms it's stopping)?
-- Should agents have a "stopping" state where they finish current task but don't accept new ones?
-- Should there be a graceful vs forceful deregistration distinction?
-- What happens to in-flight tasks when an agent is deregistered mid-task?
-
-Possible approaches:
-1. **Agent-initiated deregistration only**: Agents call `deregister_agent` on themselves when they want to stop. External deregistration is considered forceful/unsafe.
-
-2. **Two-phase deregistration**: First write Kicked, then wait for agent to acknowledge by removing its own directory or writing a "goodbye" file.
-
-3. **Daemon tracks agent state**: Daemon knows if agent is idle vs busy. Deregistration only succeeds on idle agents; busy agents get queued for deregistration after current task.
-
-This needs careful design before implementing.
+**Status: OBSOLETE** - With anonymous workers, there's no persistent agent identity or deregistration. Workers are ephemeral: they call `get_task`, do work, write response, repeat. To stop, just don't call `get_task` again. The daemon tracks workers by their current task, not by identity.
 
 ---
 
