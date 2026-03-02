@@ -37,7 +37,7 @@ pnpm dlx @gsd-now/agent-pool protocol
 Your name is c1. The pool name is agents.
 ```
 
-You can pass this to multiple Claudes for debugging purposes; make sure they have distinct names. See [AGENT_INSTRUCTIONS.md](crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md) and [AGENT_PROTOCOL.md](crates/agent_pool/protocols/AGENT_PROTOCOL.md) for full details.
+You can pass this to multiple Claudes; make sure they have distinct names for debugging purposes. See [AGENT_INSTRUCTIONS.md](crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md) and [AGENT_PROTOCOL.md](crates/agent_pool/protocols/AGENT_PROTOCOL.md) for full details.
 
 ```bash
 # In another terminal, run the GSD workflow
