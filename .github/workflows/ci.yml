@@ -12,7 +12,58 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Check if we should run CI at all
+  # Skip if on master and no changes to crates/ or libs/ since main
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history to compare with main
+      - name: Check for changes
+        id: check
+        run: |
+          # Always run on main, tags, or PRs
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
+             [[ "${{ github.ref }}" == refs/tags/* ]] || \
+             [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "Running: on main, tag, or PR"
+            exit 0
+          fi
+
+          # On other branches (like master), check if crates/ or libs/ changed since main
+          if git rev-parse origin/main >/dev/null 2>&1; then
+            CHANGES=$(git diff --name-only origin/main...HEAD -- crates/ libs/ Cargo.lock Cargo.toml)
+            if [[ -n "$CHANGES" ]]; then
+              echo "should_run=true" >> $GITHUB_OUTPUT
+              echo "Running: changes detected in crates/ or libs/"
+              echo "$CHANGES"
+            else
+              echo "should_run=false" >> $GITHUB_OUTPUT
+              echo "Skipping: no changes to crates/ or libs/ since main"
+            fi
+          else
+            # Can't find main, run to be safe
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "Running: cannot find origin/main for comparison"
+          fi
+
+  # Gate job - all other jobs depend on this
+  # When skipped, all downstream jobs are also skipped
+  gate:
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "CI gate passed, running all jobs"
+
   fmt:
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -24,6 +75,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -36,9 +88,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    needs: [gate, build-linux-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [build-linux-x64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.1
@@ -57,9 +109,9 @@ jobs:
         run: cargo test --workspace -- --nocapture --test-threads=1
 
   demos:
+    needs: [gate, build-linux-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build-linux-x64]
     steps:
       - uses: actions/checkout@v4
       - name: Download agent_pool binary
@@ -87,6 +139,7 @@ jobs:
         run: ./scripts/run-all-demos.sh
 
   build-macos-x64:
+    needs: gate
     runs-on: macos-latest
     timeout-minutes: 5
     steps:
@@ -118,6 +171,7 @@ jobs:
           path: target/x86_64-apple-darwin/release/gsd
 
   build-macos-arm64:
+    needs: gate
     runs-on: macos-latest
     timeout-minutes: 5
     steps:
@@ -149,6 +203,7 @@ jobs:
           path: target/aarch64-apple-darwin/release/gsd
 
   build-linux-x64:
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -183,6 +238,7 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/gsd
 
   build-linux-arm64:
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -217,6 +273,7 @@ jobs:
           path: target/aarch64-unknown-linux-musl/release/gsd
 
   build-windows-x64:
+    needs: gate
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
