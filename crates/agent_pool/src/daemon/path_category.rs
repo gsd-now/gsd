@@ -11,7 +11,7 @@ use std::path::Path;
 
 use notify::event::EventKind;
 
-use crate::constants::{READY_SUFFIX, REQUEST_SUFFIX, WORKER_RESPONSE_SUFFIX};
+use crate::constants::{READY_SUFFIX, REQUEST_SUFFIX, STATUS_FILE, WORKER_RESPONSE_SUFFIX};
 use crate::fs::is_write_complete;
 
 /// Category of a filesystem path.
@@ -39,6 +39,12 @@ pub(super) enum PathCategory {
         /// The submission's ID.
         id: String,
     },
+
+    // -------------------------------------------------------------------------
+    // Daemon control
+    // -------------------------------------------------------------------------
+    /// Stop signal: status file changed to "stop".
+    Stop,
 }
 
 /// Categorize a filesystem event (path + event kind).
@@ -47,6 +53,7 @@ pub(super) enum PathCategory {
 /// - `WorkerReady`: only on write complete (worker signaling availability)
 /// - `WorkerResponse`: only on write complete (response ready to read)
 /// - `SubmissionRequest`: only on write complete (request ready to read)
+/// - `Stop`: when status file changes to "stop"
 ///
 /// This approach centralizes the "when is this ready?" logic, avoiding race
 /// conditions where we might process events before files are fully written.
@@ -54,11 +61,30 @@ pub(super) enum PathCategory {
 pub(super) fn categorize(
     path: &Path,
     event_kind: EventKind,
+    root: &Path,
     agents_dir: &Path,
     submissions_dir: &Path,
 ) -> Option<PathCategory> {
-    categorize_under_agents(path, event_kind, agents_dir)
+    categorize_root(path, event_kind, root)
+        .or_else(|| categorize_under_agents(path, event_kind, agents_dir))
         .or_else(|| categorize_under_submissions(path, event_kind, submissions_dir))
+}
+
+fn categorize_root(path: &Path, event_kind: EventKind, root: &Path) -> Option<PathCategory> {
+    // Only process when write is complete
+    if !is_write_complete(event_kind) {
+        return None;
+    }
+
+    let status_path = root.join(STATUS_FILE);
+    if path == status_path
+        && let Ok(content) = std::fs::read_to_string(path)
+        && content.trim() == "stop"
+    {
+        return Some(PathCategory::Stop);
+    }
+
+    None
 }
 
 fn categorize_under_agents(
@@ -130,6 +156,10 @@ mod tests {
 
     const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
+    fn root() -> PathBuf {
+        PathBuf::from("/pool")
+    }
+
     fn agents() -> PathBuf {
         PathBuf::from("/pool/agents")
     }
@@ -169,7 +199,7 @@ mod tests {
     fn worker_ready_on_file_written() {
         let path = PathBuf::from(format!("/pool/agents/{TEST_UUID}.ready.json"));
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             Some(PathCategory::WorkerReady {
                 id: TEST_UUID.to_string()
             })
@@ -181,7 +211,7 @@ mod tests {
         // Folder events don't trigger WorkerReady
         let path = PathBuf::from("/pool/agents/abc123.ready.json");
         assert_eq!(
-            categorize(&path, folder_created(), &agents(), &submissions()),
+            categorize(&path, folder_created(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -194,7 +224,7 @@ mod tests {
     fn worker_response_on_file_written() {
         let path = PathBuf::from(format!("/pool/agents/{TEST_UUID}.response.json"));
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             Some(PathCategory::WorkerResponse {
                 id: TEST_UUID.to_string()
             })
@@ -206,7 +236,7 @@ mod tests {
         // Folder events don't trigger WorkerResponse
         let path = PathBuf::from("/pool/agents/abc123.response.json");
         assert_eq!(
-            categorize(&path, folder_created(), &agents(), &submissions()),
+            categorize(&path, folder_created(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -219,7 +249,7 @@ mod tests {
     fn unknown_file_in_agents_not_categorized() {
         let path = PathBuf::from("/pool/agents/abc123.task.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -229,7 +259,7 @@ mod tests {
         // Subdirectories under agents are not categorized (flat structure)
         let path = PathBuf::from("/pool/agents/subdir/abc123.ready.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -242,7 +272,7 @@ mod tests {
     fn submission_request_on_file_written() {
         let path = PathBuf::from("/pool/submissions/abc123.request.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             Some(PathCategory::SubmissionRequest {
                 id: "abc123".to_string()
             })
@@ -254,7 +284,7 @@ mod tests {
         // Folder events should not trigger SubmissionRequest
         let path = PathBuf::from("/pool/submissions/abc123.request.json");
         assert_eq!(
-            categorize(&path, folder_created(), &agents(), &submissions()),
+            categorize(&path, folder_created(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -263,7 +293,7 @@ mod tests {
     fn submission_request_uuid_format() {
         let path = PathBuf::from(format!("/pool/submissions/{TEST_UUID}.request.json"));
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             Some(PathCategory::SubmissionRequest {
                 id: TEST_UUID.to_string()
             })
@@ -279,7 +309,7 @@ mod tests {
         // We don't need to react to our own response files
         let path = PathBuf::from("/pool/submissions/abc123.response.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -288,7 +318,7 @@ mod tests {
     fn submission_other_file_not_categorized() {
         let path = PathBuf::from("/pool/submissions/abc123.metadata.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -298,7 +328,7 @@ mod tests {
         // Subdirectories under submissions are not categorized
         let path = PathBuf::from("/pool/submissions/abc123/task.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -311,7 +341,7 @@ mod tests {
     fn unrelated_path() {
         let path = PathBuf::from("/other/path");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -320,7 +350,7 @@ mod tests {
     fn agents_dir_itself_not_categorized() {
         let path = PathBuf::from("/pool/agents");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -329,7 +359,7 @@ mod tests {
     fn submissions_dir_itself_not_categorized() {
         let path = PathBuf::from("/pool/submissions");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -338,7 +368,7 @@ mod tests {
     fn sibling_of_agents_not_categorized() {
         let path = PathBuf::from("/pool/logs/something");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -351,7 +381,7 @@ mod tests {
     fn relative_path_does_not_match_absolute() {
         let path = PathBuf::from("agents/abc123.ready.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }
@@ -360,7 +390,7 @@ mod tests {
     fn different_root_does_not_match() {
         let path = PathBuf::from("/other/pool/agents/abc123.ready.json");
         assert_eq!(
-            categorize(&path, file_written(), &agents(), &submissions()),
+            categorize(&path, file_written(), &root(), &agents(), &submissions()),
             None
         );
     }

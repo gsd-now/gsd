@@ -1,12 +1,14 @@
 //! Stop a running agent pool daemon.
 
-use crate::constants::LOCK_FILE;
+use crate::constants::{LOCK_FILE, STATUS_FILE};
 use std::path::Path;
-use std::{fs, io};
+use std::time::Duration;
+use std::{fs, io, thread};
 
 /// Stop a running agent pool daemon.
 ///
-/// Reads the PID from the lock file and sends SIGTERM to stop it.
+/// First writes "stop" to the status file to trigger graceful shutdown,
+/// waits briefly for the daemon to exit, then sends SIGTERM as a fallback.
 ///
 /// # Errors
 ///
@@ -15,7 +17,9 @@ use std::{fs, io};
 /// - The lock file contains invalid data
 /// - The process could not be terminated
 pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
-    let lock_path = root.as_ref().join(LOCK_FILE);
+    let root = root.as_ref();
+    let lock_path = root.join(LOCK_FILE);
+    let status_path = root.join(STATUS_FILE);
 
     if !lock_path.exists() {
         return Err(io::Error::new(
@@ -30,7 +34,41 @@ pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
         .parse()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    terminate_process(pid)
+    // Signal graceful shutdown by writing "stop" to status file
+    let _ = fs::write(&status_path, "stop");
+
+    // Give the daemon a moment to shut down gracefully
+    thread::sleep(Duration::from_millis(100));
+
+    // Check if process is still running
+    if is_process_running(pid) {
+        // Send SIGTERM as fallback
+        terminate_process(pid)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_process_running(pid: u32) -> bool {
+    // On Unix, kill with signal 0 checks if process exists without killing it
+    use std::process::Command;
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_process_running(pid: u32) -> bool {
+    // On Windows, use tasklist to check if process exists
+    use std::process::Command;
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]

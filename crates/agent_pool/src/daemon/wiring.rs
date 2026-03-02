@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -27,7 +27,10 @@ use crate::lock::{LockGuard, acquire_lock};
 use crate::submit::Payload;
 
 use super::core::{Effect, Event, WorkerId};
-use super::io::{IdAllocator, IoConfig, SubmissionData, SubmissionMap, WorkerMap, execute_effect};
+use super::io::{
+    IdAllocator, IoConfig, ShutdownNotifier, SubmissionData, SubmissionMap, WorkerMap,
+    execute_effect,
+};
 use super::path_category::{self, PathCategory};
 
 // =============================================================================
@@ -216,6 +219,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
         listener,
         io_rx,
         io_tx,
+        &root,
         &agents_dir,
         &submissions_dir,
         &io_config,
@@ -235,12 +239,16 @@ fn run_daemon(
     listener: Listener,
     io_rx: mpsc::Receiver<IoEvent>,
     io_tx: mpsc::Sender<IoEvent>,
+    root: &Path,
     agents_dir: &Path,
     submissions_dir: &Path,
     io_config: &IoConfig,
 ) -> io::Result<()> {
     // Create channel for core events (from I/O to event loop)
     let (events_tx, events_rx) = mpsc::channel::<Event>();
+
+    // Shutdown notifier - signals timer threads to exit immediately
+    let shutdown = Arc::new(ShutdownNotifier::new());
 
     // Spawn socket accept thread - sends IoEvent::Socket to unified channel
     let socket_io_tx = io_tx.clone();
@@ -268,10 +276,15 @@ fn run_daemon(
         &mut id_allocator,
         &mut pending_responses,
         &mut kicked_paths,
+        root,
         agents_dir,
         submissions_dir,
         io_config,
+        &shutdown,
     );
+
+    // Signal shutdown to wake up all timer threads immediately
+    shutdown.shutdown();
 
     // Wait for event loop to finish (it exits when channel closes)
     let final_state = event_loop_handle
@@ -338,21 +351,23 @@ fn io_loop(
     id_allocator: &mut IdAllocator,
     pending_responses: &mut HashSet<WorkerId>,
     kicked_paths: &mut HashSet<PathBuf>,
+    root: &Path,
     agents_dir: &Path,
     submissions_dir: &Path,
     io_config: &IoConfig,
+    shutdown: &Arc<ShutdownNotifier>,
 ) -> io::Result<()> {
     debug!(
         "io_loop starting, agents_dir={:?}, submissions_dir={:?}",
         agents_dir, submissions_dir
     );
 
-    // Block on recv until channel is closed (process termination)
+    // Block on recv until channel is closed (process termination) or stop signal
     while let Ok(io_event) = io_rx.recv() {
         match io_event {
             IoEvent::Fs(event) => {
                 debug!(kind = ?event.kind, paths = ?event.paths, "io_loop: fs event");
-                handle_fs_event(
+                let should_continue = handle_fs_event(
                     &event,
                     events_tx,
                     worker_map,
@@ -360,10 +375,15 @@ fn io_loop(
                     id_allocator,
                     pending_responses,
                     kicked_paths,
+                    root,
                     agents_dir,
                     submissions_dir,
                     io_config,
                 );
+                if !should_continue {
+                    info!("stop signal received, shutting down");
+                    break;
+                }
             }
             IoEvent::Socket(raw, stream) => {
                 let content = match resolve_payload(&raw) {
@@ -397,6 +417,7 @@ fn io_loop(
                     kicked_paths,
                     events_tx,
                     io_config,
+                    shutdown,
                 )?;
             }
         }
@@ -411,6 +432,8 @@ fn io_loop(
 // =============================================================================
 
 /// Handle a filesystem event, converting it to core events.
+///
+/// Returns `true` to continue processing, `false` to signal shutdown.
 #[allow(clippy::too_many_arguments)]
 fn handle_fs_event(
     event: &notify::Event,
@@ -420,13 +443,14 @@ fn handle_fs_event(
     id_allocator: &mut IdAllocator,
     pending_responses: &mut HashSet<WorkerId>,
     kicked_paths: &HashSet<PathBuf>,
+    root: &Path,
     agents_dir: &Path,
     submissions_dir: &Path,
     io_config: &IoConfig,
-) {
+) -> bool {
     for path in &event.paths {
         let Some(category) =
-            path_category::categorize(path, event.kind, agents_dir, submissions_dir)
+            path_category::categorize(path, event.kind, root, agents_dir, submissions_dir)
         else {
             continue;
         };
@@ -452,12 +476,11 @@ fn handle_fs_event(
                     kicked_paths,
                 );
             }
-            // Submissions
             PathCategory::SubmissionRequest { id } => {
                 // Skip if file doesn't exist (may have been cleaned up already)
                 if !path.exists() {
                     trace!(id = %id, "SubmissionRequest: file doesn't exist, skipping");
-                    return;
+                    continue;
                 }
                 register_submission(
                     &id,
@@ -468,8 +491,13 @@ fn handle_fs_event(
                     io_config,
                 );
             }
+            PathCategory::Stop => {
+                // Stop signal received
+                return false;
+            }
         }
     }
+    true
 }
 
 /// Handle a worker ready file.

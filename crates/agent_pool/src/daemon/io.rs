@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +25,67 @@ use crate::constants::{REQUEST_SUFFIX, RESPONSE_FILE, RESPONSE_SUFFIX, TASK_FILE
 use crate::response::{NotProcessedReason, Response};
 
 use super::core::{Effect, Event, SubmissionId, TaskId, WorkerId};
+
+// =============================================================================
+// Shutdown Notifier
+// =============================================================================
+
+/// Thread-safe shutdown notifier with interruptible wait.
+///
+/// Timer threads use `wait_timeout` to sleep with the ability to wake up
+/// immediately when `shutdown` is called. This prevents timer threads from
+/// continuing to run after the daemon starts shutting down.
+#[derive(Debug, Default)]
+pub(super) struct ShutdownNotifier {
+    /// Flag indicating shutdown is in progress.
+    flag: AtomicBool,
+    /// Mutex for the condvar (condvar requires a mutex guard).
+    mutex: Mutex<()>,
+    /// Condvar to wake up waiting threads.
+    condvar: Condvar,
+}
+
+impl ShutdownNotifier {
+    /// Create a new shutdown notifier.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Wait for the given duration or until shutdown is signaled.
+    ///
+    /// Returns `true` if shutdown was signaled (either before or during the wait).
+    /// Returns `false` if the timeout elapsed without shutdown.
+    #[allow(clippy::significant_drop_tightening)] // Guard must be held for condvar wait
+    pub fn wait_timeout(&self, timeout: Duration) -> bool {
+        // Check if already shutdown
+        if self.flag.load(Ordering::Relaxed) {
+            return true;
+        }
+
+        // Wait with timeout
+        #[allow(clippy::expect_used)] // Mutex poisoning indicates a bug
+        let guard = self.mutex.lock().expect("mutex poisoned");
+        #[allow(clippy::expect_used)] // Condvar wait can't fail if mutex isn't poisoned
+        let (_guard, timeout_result) = self
+            .condvar
+            .wait_timeout(guard, timeout)
+            .expect("condvar wait failed");
+
+        // Check again after waking (might have been notified)
+        if self.flag.load(Ordering::Relaxed) {
+            return true;
+        }
+
+        // Timeout elapsed without shutdown
+        timeout_result.timed_out()
+    }
+
+    /// Signal shutdown and wake all waiting threads.
+    pub fn shutdown(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+        self.condvar.notify_all();
+    }
+}
 
 // =============================================================================
 // Configuration
@@ -345,6 +407,7 @@ pub(super) fn execute_effect(
     kicked_paths: &mut HashSet<PathBuf>,
     events_tx: &mpsc::Sender<Event>,
     config: &IoConfig,
+    shutdown: &Arc<ShutdownNotifier>,
 ) -> io::Result<()> {
     match effect {
         Effect::TaskAssigned { worker_id, task_id } => {
@@ -361,7 +424,12 @@ pub(super) fn execute_effect(
                         .write_to(worker_id, TASK_FILE, &submission_data.content)
                         .expect("TaskAssigned for unknown worker - core bug");
 
-                    start_task_timeout_timer(events_tx.clone(), worker_id, submission_data.timeout);
+                    start_task_timeout_timer(
+                        events_tx.clone(),
+                        worker_id,
+                        submission_data.timeout,
+                        Arc::clone(shutdown),
+                    );
                 }
                 TaskId::Heartbeat => {
                     let heartbeat = serde_json::json!({
@@ -375,13 +443,23 @@ pub(super) fn execute_effect(
                         .write_to(worker_id, TASK_FILE, &heartbeat.to_string())
                         .expect("TaskAssigned for unknown worker - core bug");
 
-                    start_task_timeout_timer(events_tx.clone(), worker_id, config.idle_timeout);
+                    start_task_timeout_timer(
+                        events_tx.clone(),
+                        worker_id,
+                        config.idle_timeout,
+                        Arc::clone(shutdown),
+                    );
                 }
             }
         }
         Effect::WorkerWaiting { worker_id } => {
             if config.heartbeat_enabled {
-                start_idle_timer(events_tx.clone(), worker_id, config.idle_timeout);
+                start_idle_timer(
+                    events_tx.clone(),
+                    worker_id,
+                    config.idle_timeout,
+                    Arc::clone(shutdown),
+                );
             }
         }
         Effect::TaskCompleted { worker_id, task_id } => {
@@ -440,22 +518,52 @@ pub(super) fn execute_effect(
 }
 
 /// Start a task timeout timer that sends `WorkerTimedOut` after the given duration.
+///
+/// The timer uses an interruptible wait. If shutdown is signaled during the wait,
+/// the timer exits immediately without sending an event.
 fn start_task_timeout_timer(
     events_tx: mpsc::Sender<Event>,
     worker_id: WorkerId,
     timeout: Duration,
+    shutdown: Arc<ShutdownNotifier>,
 ) {
     thread::spawn(move || {
-        thread::sleep(timeout);
-        let _ = events_tx.send(Event::WorkerTimedOut { worker_id });
+        // Wait for timeout or shutdown, whichever comes first
+        let shutdown_signaled = shutdown.wait_timeout(timeout);
+        if shutdown_signaled {
+            debug!(
+                worker_id = worker_id.0,
+                "task timeout timer cancelled due to shutdown"
+            );
+        } else {
+            // Timeout elapsed without shutdown - fire the event
+            let _ = events_tx.send(Event::WorkerTimedOut { worker_id });
+        }
     });
 }
 
 /// Start an idle timer that sends `AssignHeartbeatIfIdle` after the given duration.
-fn start_idle_timer(events_tx: mpsc::Sender<Event>, worker_id: WorkerId, timeout: Duration) {
+///
+/// The timer uses an interruptible wait. If shutdown is signaled during the wait,
+/// the timer exits immediately without sending an event.
+fn start_idle_timer(
+    events_tx: mpsc::Sender<Event>,
+    worker_id: WorkerId,
+    timeout: Duration,
+    shutdown: Arc<ShutdownNotifier>,
+) {
     thread::spawn(move || {
-        thread::sleep(timeout);
-        let _ = events_tx.send(Event::AssignHeartbeatIfIdle { worker_id });
+        // Wait for timeout or shutdown, whichever comes first
+        let shutdown_signaled = shutdown.wait_timeout(timeout);
+        if shutdown_signaled {
+            debug!(
+                worker_id = worker_id.0,
+                "idle timer cancelled due to shutdown"
+            );
+        } else {
+            // Timeout elapsed without shutdown - fire the event
+            let _ = events_tx.send(Event::AssignHeartbeatIfIdle { worker_id });
+        }
     });
 }
 

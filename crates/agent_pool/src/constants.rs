@@ -30,6 +30,7 @@ pub const REQUEST_SUFFIX: &str = ".request.json";
 pub const RESPONSE_SUFFIX: &str = ".response.json";
 
 /// Status file written when daemon is ready.
+/// When changed to "stop", triggers graceful daemon shutdown.
 pub const STATUS_FILE: &str = "status";
 
 // =============================================================================
