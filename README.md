@@ -76,11 +76,9 @@ pnpm dlx @gsd-now/agent-pool start --pool agents
 # From another terminal, submit a task (GSD calls this internally)
 pnpm dlx @gsd-now/agent-pool submit_task --pool agents --data "task input"
 
-# An agent calls this to register and receive its first task
-pnpm dlx @gsd-now/agent-pool register --pool agents --name agent1
-
-# An agent calls this to submit a response and receive the next task
-pnpm dlx @gsd-now/agent-pool next_task --pool agents --uuid <UUID> --data "response"
+# An agent calls get_task to wait for work (writes response to returned file)
+pnpm dlx @gsd-now/agent-pool get_task --pool agents --name agent1
+# Returns JSON with response_file path - agent writes response there, then calls get_task again
 ```
 
 ## Example Use Cases
