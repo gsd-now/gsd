@@ -269,6 +269,8 @@ These parts **do not change**:
 
 5. **Stderr handling** - Decide if we need to capture/log stderr beyond error messages.
 
+6. **Reconsider max_concurrency** - Should probably be infinite (no limit). Why throttle?
+
 ## Implementation Plan
 
 ### Task 1: Add `submit_via_cli` helper function

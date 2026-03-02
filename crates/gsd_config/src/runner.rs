@@ -188,25 +188,7 @@ impl<'a> TaskRunner<'a> {
             call_wake_script(script)?;
         }
 
-        // Check if the pool exists and is running (only if config uses Pool actions and has tasks)
-        let pool_path = runner_config.agent_pool_root;
-        if config.has_pool_actions() && !runner_config.initial_tasks.is_empty() {
-            if !pool_path.exists() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Pool not found: {}", pool_path.display()),
-                ));
-            }
-            if !agent_pool::is_daemon_running(pool_path) {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    format!(
-                        "Pool daemon not running at: {} (directory exists but no daemon)",
-                        pool_path.display()
-                    ),
-                ));
-            }
-        }
+        // Pool existence/readiness is checked by submit_via_cli on first task submission
 
         let max_concurrency = config.options.max_concurrency.unwrap_or(usize::MAX);
 
@@ -350,8 +332,7 @@ impl<'a> TaskRunner<'a> {
                         );
                         debug!(payload = %payload, "task payload");
 
-                        let result =
-                            agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
+                        let result = submit_via_cli(&root, &payload);
                         let _ = tx.send(InFlightResult {
                             task,
                             task_id,
@@ -958,6 +939,59 @@ fn build_agent_payload_with_value(
         payload["timeout_seconds"] = serde_json::json!(t);
     }
     serde_json::to_string(&payload).unwrap_or_default()
+}
+
+/// Submit a task via the CLI instead of internal API.
+fn submit_via_cli(pool: &Path, payload: &str) -> io::Result<Response> {
+    let binary = resolve_agent_pool_binary();
+
+    // Use 24-hour timeout. TODO: Add --no-timeout support to CLI.
+    let output = Command::new(&binary)
+        .arg("submit_task")
+        .arg("--pool")
+        .arg(pool)
+        .arg("--notify")
+        .arg("file")
+        .arg("--timeout-secs")
+        .arg("86400")
+        .arg("--data")
+        .arg(payload)
+        .output()
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Failed to run agent_pool binary '{}': {e}",
+                    binary.display()
+                ),
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "agent_pool submit_task failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to parse agent_pool output: {e}"),
+        )
+    })
+}
+
+/// Resolve the `agent_pool` binary path.
+fn resolve_agent_pool_binary() -> std::path::PathBuf {
+    // 1. Environment variable override
+    if let Ok(path) = std::env::var("AGENT_POOL_BINARY") {
+        return std::path::PathBuf::from(path);
+    }
+
+    // 2. Default: assume it's in PATH
+    std::path::PathBuf::from("agent_pool")
 }
 
 #[cfg(test)]
