@@ -21,277 +21,330 @@ This creates tight coupling between the crates. If GSD used the CLI instead, it 
 3. **Simplify the public API** - `agent_pool` could hide more implementation details
 4. **Dogfood our own CLI** - Catch usability issues
 
-## Current State
+## Current State (Exact Code)
 
-### Internal API Usage in `gsd_config/runner.rs`
+### File: `gsd_config/src/runner.rs`
 
+**Line 13 - Import Response type:**
 ```rust
-// Line 13: Import Response type
 use agent_pool::Response;
+```
 
-// Line 96: Resolve pool path
-let pool_path = pool.map_or_else(
-    || { ... },
-    |p| agent_pool::resolve_pool(&agent_pool::default_pool_root(), &p),
-);
-
-// Line 200: Check if daemon is running
-if !agent_pool::is_daemon_running(pool_path) { ... }
-
-// Lines 353-354: Submit task and get response
-let result = agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
-// result: io::Result<Response>
-
-// Lines 672-686: Match on Response enum
-match response {
-    Response::Processed { stdout, .. } => { ... }
-    Response::NotProcessed { reason } => { ... }
+**Lines 169-174 - SubmitResult enum:**
+```rust
+enum SubmitResult {
+    Pool(io::Result<Response>),
+    Command(io::Result<String>),
+    /// Pre hook failed before the action could run.
+    PreHookError(String),
 }
 ```
 
-### What the CLI Provides
-
-The `submit_task` command already does what GSD needs:
-
-```bash
-agent_pool submit_task \
-  --pool /path/to/pool \
-  --data '{"task": ..., "instructions": ...}' \
-  --timeout-secs 60
+**Lines 192-209 - Daemon running check in `TaskRunner::new()`:**
+```rust
+// Check if the pool exists and is running (only if config uses Pool actions and has tasks)
+let pool_path = runner_config.agent_pool_root;
+if config.has_pool_actions() && !runner_config.initial_tasks.is_empty() {
+    if !pool_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Pool not found: {}", pool_path.display()),
+        ));
+    }
+    if !agent_pool::is_daemon_running(pool_path) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!(
+                "Pool daemon not running at: {} (directory exists but no daemon)",
+                pool_path.display()
+            ),
+        ));
+    }
+}
 ```
 
-Output is JSON:
-```json
-{"kind": "Processed", "stdout": "..."}
-// or
-{"kind": "NotProcessed", "reason": "timeout"}
+**Lines 351-364 - Submit task in spawn thread:**
+```rust
+// Build payload with (possibly modified) value
+let payload = build_agent_payload_with_value(
+    &step_name,
+    &effective_value,
+    &docs,
+    timeout,
+);
+debug!(payload = %payload, "task payload");
+
+let result =
+    agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
+let _ = tx.send(InFlightResult {
+    task,
+    task_id,
+    origin_id,
+    step_name,
+    effective_value,
+    result: SubmitResult::Pool(result),
+    post_hook,
+    finally_hook,
+});
+```
+
+**Lines 664-686 - Process pool response:**
+```rust
+fn process_pool_response(
+    response: Response,
+    task: &Task,
+    effective_value: &serde_json::Value,
+    step: &Step,
+    schemas: &CompiledSchemas,
+    effective: &EffectiveOptions,
+) -> (TaskResult, Vec<Task>, PostHookInput) {
+    match response {
+        Response::Processed { stdout, .. } => {
+            debug!(stdout = %stdout, "agent response");
+            process_stdout(&stdout, task, effective_value, step, schemas, effective)
+        }
+        Response::NotProcessed { reason } => {
+            warn!(step = %task.step, ?reason, "task outcome unknown");
+            let (result, tasks) = process_retry(task, effective, FailureKind::Timeout);
+            let post_input = PostHookInput::Timeout {
+                input: effective_value.clone(),
+            };
+            (result, tasks, post_input)
+        }
+    }
+}
 ```
 
 ## Proposed Changes
 
-### Before (Internal API)
+### Change 1: Remove `is_daemon_running` check
 
+**Before (lines 200-208):**
 ```rust
-// runner.rs
-
-use agent_pool::Response;
-
-// In TaskRunner::new()
 if !agent_pool::is_daemon_running(pool_path) {
-    return Err(...);
-}
-
-// In spawn thread
-let result = agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
-let _ = tx.send(InFlightResult {
-    result: SubmitResult::Pool(result),
-    ...
-});
-
-// In process_result()
-match result {
-    SubmitResult::Pool(Ok(response)) => process_pool_response(response, ...),
-    SubmitResult::Pool(Err(e)) => { ... }
+    return Err(io::Error::new(
+        io::ErrorKind::NotConnected,
+        format!(
+            "Pool daemon not running at: {} (directory exists but no daemon)",
+            pool_path.display()
+        ),
+    ));
 }
 ```
 
-### After (CLI)
-
+**After:**
 ```rust
-// runner.rs
-
-use std::process::Command;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-#[serde(tag = "kind")]
-enum CliResponse {
-    Processed { stdout: String },
-    NotProcessed { reason: String },
-}
-
-// In TaskRunner::new()
-// Check daemon by checking status file exists and contains "ready"
+// Check status file exists and contains "ready"
 let status_path = pool_path.join("status");
-if !status_path.exists() || fs::read_to_string(&status_path)?.trim() != "ready" {
-    return Err(...);
+if !status_path.exists() {
+    return Err(io::Error::new(
+        io::ErrorKind::NotConnected,
+        format!(
+            "Pool daemon not running at: {} (no status file)",
+            pool_path.display()
+        ),
+    ));
 }
-
-// In spawn thread
-let output = Command::new("agent_pool")
-    .args(["submit_task", "--pool", &root.display().to_string()])
-    .arg("--data")
-    .arg(&payload)
-    .arg("--timeout-secs")
-    .arg(&timeout.to_string())
-    .output()?;
-
-let response: CliResponse = serde_json::from_slice(&output.stdout)?;
-
-let _ = tx.send(InFlightResult {
-    result: SubmitResult::Pool(response),
-    ...
-});
+let status = fs::read_to_string(&status_path).map_err(|e| {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        format!("Failed to read pool status: {e}"),
+    )
+})?;
+if status.trim() != "ready" {
+    return Err(io::Error::new(
+        io::ErrorKind::NotConnected,
+        format!(
+            "Pool daemon not ready at: {} (status: {})",
+            pool_path.display(),
+            status.trim()
+        ),
+    ));
+}
 ```
 
-## Architectural Implications
+### Change 2: Replace `agent_pool::submit` with CLI call
 
-### Pros
-
-1. **Decoupling** - `gsd_config` no longer depends on `agent_pool` internals
-2. **CLI validation** - We discover CLI gaps before users do
-3. **Consistent interface** - Same interface for Rust and non-Rust users
-4. **Easier testing** - Can mock CLI responses with fake binaries
-
-### Cons
-
-1. **Process overhead** - Spawning processes instead of function calls
-2. **Binary dependency** - Need `agent_pool` binary in PATH or specified
-3. **Error handling** - Must parse CLI output/errors instead of Rust types
-4. **Timeout handling** - CLI has its own timeout; need to coordinate
-
-### Performance Impact
-
-Each task submission spawns a process. For GSD's use case (agent tasks that take seconds to minutes), the ~10ms process spawn overhead is negligible.
-
-## Complexity Analysis
-
-**This is a moderate change.** The core logic stays the same; we're just changing the transport layer.
-
-### Changes Required
-
-1. **Remove `agent_pool` dependency from `gsd_config/Cargo.toml`**
-   - Or keep it but only for types (Response enum)
-
-2. **Update `runner.rs`**
-   - Replace `agent_pool::submit()` with `Command::new("agent_pool")`
-   - Replace `agent_pool::is_daemon_running()` with status file check
-   - Parse JSON output instead of using Rust types directly
-
-3. **Binary resolution**
-   - Add config option for `agent_pool` binary path
-   - Or require it in PATH
-   - Or embed path from build time
-
-4. **Error handling**
-   - Parse stderr for error messages
-   - Handle non-zero exit codes
-
-### Lines of Code
-
-- `runner.rs`: ~50 lines changed (transport code)
-- New: ~20 lines for CLI response parsing
-- Remove: `use agent_pool::*` imports
-
-## Missing Tests
-
-Before this refactor, we should ensure test coverage for:
-
-### GSD Tests (`gsd_config/tests/`)
-
-| Test File | What it Tests | Uses Internal API? |
-|-----------|--------------|-------------------|
-| `simple_termination.rs` | Basic task completion | Yes, via `run()` |
-| `linear_transitions.rs` | A -> B -> C flow | Yes |
-| `branching_transitions.rs` | A -> [B, C] fan-out | Yes |
-| `concurrency.rs` | Parallel task execution | Yes |
-| `retry_behavior.rs` | Retry on timeout/error | Yes |
-| `schema_validation.rs` | Input/output schemas | Yes |
-| `invalid_transitions.rs` | Invalid step references | Yes |
-| `edge_cases.rs` | Edge cases | Yes |
-
-**All tests use internal APIs via `TaskRunner::new()` and `run()`.**
-
-### What's Missing
-
-1. **CLI integration tests** - No tests that invoke `gsd run` as a subprocess
-2. **Error path tests** - What happens when CLI fails?
-3. **Timeout coordination tests** - CLI timeout vs GSD timeout
-
-### Tests to Add Before Refactor
-
+**Before (lines 353-354):**
 ```rust
-// gsd_config/tests/cli_integration.rs
+let result =
+    agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
+```
 
-#[test]
-fn gsd_run_via_cli() {
-    // Start agent pool
-    // Start agent
-    // Run `gsd run config.json --initial '[...]' --pool /path`
-    // Verify output
+**After:**
+```rust
+let result = submit_via_cli(&root, &payload);
+```
+
+**New helper function (add near bottom of file):**
+```rust
+/// Submit a task via the CLI instead of internal API.
+fn submit_via_cli(pool: &Path, payload: &str) -> io::Result<Response> {
+    let binary = resolve_agent_pool_binary();
+
+    // Use 24-hour timeout. TODO: Add --no-timeout support to CLI.
+    let output = Command::new(&binary)
+        .arg("submit_task")
+        .arg("--pool")
+        .arg(pool)
+        .arg("--notify")
+        .arg("file")
+        .arg("--timeout-secs")
+        .arg("86400")
+        .arg("--data")
+        .arg(payload)
+        .output()
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to run agent_pool binary '{}': {e}", binary.display()),
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("agent_pool submit_task failed: {}", stderr.trim()),
+        ));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to parse agent_pool output: {e}"),
+        )
+    })
 }
 
-#[test]
-fn submit_task_returns_processed() {
-    // Start pool + agent
-    // Run `agent_pool submit_task --pool ... --data '...'`
-    // Parse JSON output, verify structure
-}
+/// Resolve the agent_pool binary path.
+fn resolve_agent_pool_binary() -> PathBuf {
+    // 1. Environment variable override
+    if let Ok(path) = std::env::var("AGENT_POOL_BINARY") {
+        return PathBuf::from(path);
+    }
 
-#[test]
-fn submit_task_returns_not_processed_on_timeout() {
-    // Start pool (no agent)
-    // Run `agent_pool submit_task --timeout-secs 1 ...`
-    // Verify NotProcessed response
+    // 2. Default: assume it's in PATH
+    PathBuf::from("agent_pool")
 }
 ```
 
-## Implementation Plan
+### Change 3: Update imports
 
-### Phase 1: Add Missing Tests (First)
+**Before (line 13):**
+```rust
+use agent_pool::Response;
+```
 
-1. Add CLI integration test for `agent_pool submit_task`
-2. Add CLI integration test for `gsd run`
-3. Verify all existing tests pass
+**After:**
+```rust
+use agent_pool::Response;  // Keep - we still use this type for parsing CLI output
+```
 
-### Phase 2: Refactor
+**No change needed** - we keep the type dependency since `Response` is used to parse the CLI's JSON output.
 
-1. Define `CliResponse` enum in `runner.rs`
-2. Add helper function `submit_via_cli(pool: &Path, payload: &str, timeout: u64) -> io::Result<CliResponse>`
-3. Replace `agent_pool::submit()` call with `submit_via_cli()`
-4. Replace `agent_pool::is_daemon_running()` with status file check
-5. Update `gsd_config/Cargo.toml` to remove internal API dependency (keep types if needed)
+## What Stays The Same
 
-### Phase 3: Cleanup
+These parts **do not change**:
 
-1. Remove unused `agent_pool` public exports
-2. Update documentation
+1. **`SubmitResult` enum** (lines 169-174) - Still wraps `io::Result<Response>`
+2. **`process_pool_response`** (lines 664-686) - Still matches on `Response` variants
+3. **All error handling logic** - Same retry behavior, same error propagation
+4. **All hook handling** - Pre/post/finally hooks unchanged
 
 ## Resolved Questions
 
 1. **Binary path resolution** - Resolution order:
    1. `AGENT_POOL_BINARY` environment variable (explicit override)
-   2. `pnpm dlx agent_pool` (package manager approach, good enough for v1)
-   - Future versions will make this less awkward
+   2. Assume `agent_pool` is in PATH (simplest default)
 
-2. **Keep types dependency?** - No, define `CliResponse` enum locally in `runner.rs`. Full decoupling.
+2. **Keep types dependency?** - **Yes.** Keep using `agent_pool::Response` to parse CLI output. This avoids duplicating the type definition and ensures compatibility.
 
-3. **Timeout handling** - GSD uses **unlimited timeout** when calling CLI.
-   - `agent_pool submit_task` already waits for pool internally, no external wait needed
-   - Don't pass `--timeout-secs` at all (or pass a very large value if required)
-   - GSD handles its own per-step timeouts separately
+3. **Timeout handling** - GSD passes a very large `--timeout-secs` (e.g., 86400 = 24 hours).
+   - The CLI's `submit_task` defaults to 5 minutes if not specified, which isn't enough
+   - GSD handles its own per-step timeouts separately via the task payload
+   - **TODO:** Add `--no-timeout` or `--timeout-secs 0` support for truly infinite waits
 
-4. **Pool readiness** - Don't wait externally. `submit_task` handles this internally.
+4. **Pool readiness** - Check status file directly (contains "ready" when daemon is up).
+   - `submit_task` also waits internally, but we check upfront for better error messages
 
-5. **Error handling** - If any `submit_task` call fails, unwind and propagate error.
-   - GSD is a thin wrapper: get results → process → call submit_task repeatedly
+5. **Error handling** - Non-zero exit code → `io::Error`. Parse stderr for message.
 
----
+## Open Questions / Concerns
 
-## README Updates Required
+1. **CLI exit codes** - What exit codes does `submit_task` return?
+   - Need to verify: does it return non-zero on `NotProcessed`? Or only on actual errors?
+   - Current assumption: non-zero = error (connection failed, invalid args, etc.)
+   - Zero + JSON `NotProcessed` = timeout/shutdown (not an error from CLI perspective)
 
-Document that GSD uses `pnpm dlx agent_pool` under the hood. If pnpm is not available:
-- Set `AGENT_POOL_BINARY` environment variable to the path of the agent_pool binary
-- Note: future versions will make binary resolution less awkward
+2. **Binary not found** - What's the user experience when `agent_pool` binary isn't available?
+   - Should we check at startup and give a clear error message?
+   - Or let it fail on first submit with a helpful error?
 
----
+3. **Cargo.toml changes** - Do we need to update `gsd_config/Cargo.toml`?
+   - We still depend on `agent_pool` for the `Response` type
+   - But we can remove features or limit the dependency scope
+
+## Implementation Plan
+
+### Task 1: Add `submit_via_cli` helper function
+
+**File:** `gsd_config/src/runner.rs`
+
+Add after line 960 (after `build_agent_payload_with_value`):
+
+```rust
+/// Submit a task via the CLI instead of internal API.
+fn submit_via_cli(pool: &Path, payload: &str) -> io::Result<Response> {
+    // ... implementation from above
+}
+
+/// Resolve the agent_pool binary path.
+fn resolve_agent_pool_binary() -> PathBuf {
+    // ... implementation from above
+}
+```
+
+### Task 2: Replace `agent_pool::submit` call
+
+**File:** `gsd_config/src/runner.rs`
+
+**Lines 353-354**, change:
+```rust
+// Before
+let result =
+    agent_pool::submit(&root, &agent_pool::Payload::inline(&payload));
+
+// After
+let result = submit_via_cli(&root, &payload);
+```
+
+### Task 3: Replace `is_daemon_running` check
+
+**File:** `gsd_config/src/runner.rs`
+
+**Lines 200-208**, replace the `if !agent_pool::is_daemon_running(pool_path)` block with status file check.
+
+### Task 4: Update imports
+
+**File:** `gsd_config/src/runner.rs`
+
+**Line 13** - Keep `use agent_pool::Response;` but we can remove other unused imports if any.
+
+### Task 5: Verify tests pass
+
+Run:
+```bash
+cargo test -p gsd_config
+SKIP_IPC_TESTS=1 cargo test -p gsd_cli
+```
 
 ## Summary
 
 | Aspect | Assessment |
 |--------|-----------|
-| **Complexity** | Moderate - transport change, not logic change |
-| **Risk** | Low - existing tests cover behavior |
-| **Blockers** | Need CLI integration tests first |
-| **LOC Changed** | ~70 lines in runner.rs |
-| **Breaking** | No external API changes | 
+| **Complexity** | Low-moderate - only 2 call sites change |
+| **Risk** | Low - same behavior, different transport |
+| **Type dependency** | Keep `agent_pool::Response` |
+| **LOC Changed** | ~40 lines in runner.rs |
+| **Breaking** | No external API changes |
