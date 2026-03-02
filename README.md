@@ -21,7 +21,7 @@ See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
 pnpm dlx @gsd-now/agent-pool start --pool agents
 ```
 
-In another terminal, pass this information to Claude:
+Pass this information to a Claude instance:
 
 ```
 You are an AI agent in a task pool. You will be given a pool name, an agent name, and an optional pool root. Your tasks are part of a larger coordinated refactor or codebase change—an orchestrator is managing the overall effort and assigning work to multiple agents.
@@ -37,7 +37,7 @@ pnpm dlx @gsd-now/agent-pool protocol
 Your name is c1. The pool name is agents.
 ```
 
-(See [AGENT_INSTRUCTIONS.md](crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md) and [AGENT_PROTOCOL.md](crates/agent_pool/protocols/AGENT_PROTOCOL.md) for full details.)
+You can pass this to multiple Claudes for debugging purposes; make sure they have distinct names. See [AGENT_INSTRUCTIONS.md](crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md) and [AGENT_PROTOCOL.md](crates/agent_pool/protocols/AGENT_PROTOCOL.md) for full details.
 
 ```bash
 # In another terminal, run the GSD workflow
