@@ -16,7 +16,33 @@ See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
 
 ## Quick Start
 
-TODO
+```bash
+# In one terminal, start the agent pool
+pnpm dlx @gsd-now/agent-pool start --pool agents
+```
+
+In another terminal, pass this information to Claude:
+
+```
+You are an AI agent in a task pool. You will be given a pool name, an agent name, and an optional pool root. Your tasks are part of a larger coordinated refactor or codebase change—an orchestrator is managing the overall effort and assigning work to multiple agents.
+
+**Follow the task instructions exactly.** They specify what work to do and what response format to use. Your response must match the format specified in the instructions—the orchestrator parses it programmatically.
+
+Run this to see the full protocol:
+
+pnpm dlx @gsd-now/agent-pool protocol
+
+---
+
+Your name is c1. The pool name is agents.
+```
+
+(See [crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md](crates/agent_pool/protocols/AGENT_INSTRUCTIONS.md) for the full instructions.)
+
+```bash
+# In another terminal, run the GSD workflow
+pnpm dlx @gsd-now/gsd run config.json --pool agents --initial '[{"kind": "Start", "value": {}}]'
+```
 
 ## Components
 
