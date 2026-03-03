@@ -1,6 +1,6 @@
 # Fix Concurrent File-Based Submissions Race Condition
 
-## Status: DESIGN
+## Status: IMPLEMENTED
 
 ## Problem
 
@@ -38,128 +38,49 @@ The `VerifiedWatcher` has a design flaw when multiple watchers observe the same 
 3. When `wait_for(status)` receives an event for ANOTHER submission's file:
    - Sets `canary = None` (deletes its own canary)
    - Checks if event matches status path - NO
-   - Checks if `status.exists()` - should be YES but continues looping
+   - Original code didn't check if `status.exists()` immediately after receiving any event
 4. High inotify event throughput may cause queue issues or event delivery delays
 
-The canary verification mechanism proves the watcher is operational, but doesn't guarantee it will see specific future events reliably under concurrent load.
+## Implemented Fix
 
-## Proposed Fix
+Modified `VerifiedWatcher::wait_for` in `crates/agent_pool/src/fs.rs`:
 
-### Option A: Skip canary verification when status file exists (Recommended)
+1. **Added retry loop for fast path**: Check `target.exists()` multiple times with small delays (100µs each) to handle filesystem sync delays when multiple watchers are active.
 
-The canary verification is designed to ensure the watcher is active before waiting for events. But if the target file already exists, we don't need the watcher at all - we can return immediately.
-
-**Change in `wait_for`:**
+2. **Prioritize target existence check in event handler**: After receiving ANY event, immediately check if the target file exists before processing the event path. This ensures we don't miss the target appearing concurrently with other events.
 
 ```rust
 pub fn wait_for(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
-    // Fast path: file already exists - no watcher verification needed
-    if target.exists() {
-        return Ok(());
-    }
-
-    // Only verify watcher if we actually need to wait for events
-    self.ensure_verified()?;  // New method that blocks until canary event received
-
-    // ... rest of implementation
-}
-```
-
-**New `ensure_verified` method:**
-
-```rust
-fn ensure_verified(&mut self) -> io::Result<()> {
-    let WatcherState::Connected { rx, canary } = &mut self.state else {
-        panic!("ensure_verified called on disconnected watcher");
-    };
-
-    if canary.is_none() {
-        return Ok(());  // Already verified
-    }
-
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_secs(5) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "watcher verification timed out"
-            ));
+    // Fast path: file already exists - check multiple times to handle filesystem sync
+    for _ in 0..3 {
+        if target.exists() {
+            return Ok(());
         }
+        std::thread::sleep(Duration::from_micros(100));
+    }
 
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(_) => {
-                *canary = None;
+    // ... event loop ...
+    match rx.recv_timeout(Duration::from_millis(100)) {
+        Ok(path) => {
+            // First check if target exists before doing anything else
+            if target.exists() {
+                // Clean up canary if still present
+                if canary.is_some() {
+                    *canary = None;
+                }
                 return Ok(());
             }
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some(c) = canary {
-                    c.retry()?;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                self.state = WatcherState::Disconnected;
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "watcher disconnected"
-                ));
-            }
+            // ... rest of handling
         }
+        // ...
     }
 }
 ```
 
-**Key insight:** For `wait_for(status)`, the status file already exists (daemon writes it before accepting submissions). The fast path should always trigger, avoiding the event loop entirely.
+## Test Results
 
-For `wait_for(response)`, the event loop is needed, but by then the canary should already be verified from a previous wait_for call (or we can verify it explicitly).
+- CI run 22611422550: `agent_joins_mid_processing::case_4` now **PASSES** (was failing before)
 
-### Option B: Unique canary directory per submission
+## Additional Discovery
 
-Create a per-submission directory for the canary to avoid event interference:
-
-```rust
-// Instead of:
-let canary_path = root.join(format!("{submission_id}.canary"));
-
-// Use:
-let canary_dir = root.join("canary").join(&submission_id);
-fs::create_dir_all(&canary_dir)?;
-let canary_path = canary_dir.join(".canary");
-```
-
-**Downside:** Adds complexity and more filesystem operations.
-
-### Option C: Remove canary verification entirely
-
-Trust that `notify` crate's watcher is operational immediately after `watch()` returns:
-
-```rust
-pub fn new(watch_dir: &Path) -> io::Result<Self> {
-    let (tx, rx) = mpsc::channel();
-    let mut watcher = RecommendedWatcher::new(...)?;
-    watcher.watch(watch_dir, RecursiveMode::Recursive)?;
-
-    Ok(Self {
-        _watcher: watcher,
-        rx,
-    })
-}
-```
-
-**Downside:** May miss events on Linux if `watch()` returns before inotify is fully registered. This was the original problem that canary verification solved.
-
-## Recommendation
-
-**Option A** is the cleanest fix. The key insight is that `wait_for(status)` should almost always take the fast path because the daemon creates the status file before it's ready to accept submissions. The canary mechanism is only needed when the target file doesn't exist yet.
-
-## Testing
-
-After implementing the fix:
-
-1. Run `agent_joins_mid_processing::case_4` multiple times locally
-2. Submit to CI and verify the test passes
-3. Consider adding a stress test that spawns 20+ concurrent submissions
-
-## Files to Change
-
-- `crates/agent_pool/src/fs.rs` - `VerifiedWatcher::wait_for` and new `ensure_verified`
-- Possibly `crates/agent_pool/src/submit/file.rs` - if flow changes needed
+During this investigation, discovered that the gsd_cli cli_integration tests were **not running in CI** before. These tests are now running and exposing a separate issue where `FileWriterAgent` hangs when `stop()` is called before any task is assigned. This was fixed by adding a timeout to `wait_for_task` so the agent thread periodically checks its `running` flag.
