@@ -343,6 +343,14 @@ Replace the inline canary logic with `VerifiedWatcher`. However, this is tricky 
 
 **Option B: Update inline logic to match**
 
+We only need to verify the **leaf directories** where the daemon expects to receive events:
+- `agents/` - for `.ready.json`, `.response.json` (agent registration and responses)
+- `submissions/` - for task submission files
+
+We do NOT need to verify:
+- `root/` - the daemon writes to root (`daemon.sock`, `status`) but doesn't watch for external files there
+- `scratch/` - only used for atomic write temp files
+
 ```rust
 // Before (wiring.rs:814-828)
 let canary_path = root.join("daemon.canary");
@@ -361,9 +369,8 @@ fs::create_dir_all(submissions_dir)?;
 fs::create_dir_all(agents_dir)?;
 fs::create_dir_all(scratch_dir)?;
 
-// Write canary files to ALL directories we need to watch
+// Write canary files to leaf directories we need to watch for external events
 let canary_paths = [
-    root.join("daemon.canary"),
     agents_dir.join("daemon.canary"),
     submissions_dir.join("daemon.canary"),
 ];
@@ -397,9 +404,8 @@ Ok(IoEvent::Fs(event)) => {
         }
     }
 
-    // Only proceed when ALL directories are verified
-    if verified_dirs.contains(root)
-        && verified_dirs.contains(agents_dir)
+    // Only proceed when both leaf directories are verified
+    if verified_dirs.contains(agents_dir)
         && verified_dirs.contains(submissions_dir)
     {
         debug!(
@@ -433,4 +439,4 @@ The fix should make `greeting_casual_and_formal::case_1` (and similar tests) rel
 
 1. Run `cargo test -p agent_pool --test greeting -- --test-threads=1` multiple times
 2. All cases should pass consistently
-3. The daemon logs should show "verified all 3 directories" instead of "received event"
+3. The daemon logs should show "verified all 2 directories" instead of "received event"
