@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::constants::STATUS_FILE;
-use crate::fs::VerifiedWatcher;
+use crate::verified_watcher::VerifiedWatcher;
 
 pub use file::{submit_file, submit_file_with_timeout};
 pub use payload::Payload;

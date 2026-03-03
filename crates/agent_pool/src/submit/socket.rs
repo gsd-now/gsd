@@ -2,8 +2,8 @@
 
 use super::payload::Payload;
 use crate::constants::{SOCKET_NAME, STATUS_FILE};
-use crate::fs::VerifiedWatcher;
 use crate::response::Response;
+use crate::verified_watcher::VerifiedWatcher;
 use interprocess::local_socket::{GenericFilePath, Stream, prelude::*};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};

@@ -12,7 +12,7 @@ use std::path::Path;
 use notify::event::EventKind;
 
 use crate::constants::{READY_SUFFIX, REQUEST_SUFFIX, STATUS_FILE, WORKER_RESPONSE_SUFFIX};
-use crate::fs::is_write_complete;
+use crate::verified_watcher::is_write_complete;
 
 /// Category of a filesystem path.
 #[derive(Debug, PartialEq, Eq)]

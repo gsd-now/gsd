@@ -16,7 +16,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::constants::{AGENTS_DIR, canary_path, ready_path, response_path, task_path};
-use crate::fs::VerifiedWatcher;
+use crate::verified_watcher::VerifiedWatcher;
 
 /// Result of waiting for a task.
 #[derive(Debug)]

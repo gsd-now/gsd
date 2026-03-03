@@ -28,11 +28,11 @@
 
 // Shared modules
 mod constants;
-mod fs;
 mod lock;
 mod pool;
 mod response;
 mod transport;
+mod verified_watcher;
 mod worker;
 
 // Grouped modules

@@ -200,13 +200,9 @@ impl VerifiedWatcher {
     ///
     /// Panics if called when watcher is disconnected.
     pub fn wait_for(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
-        // Fast path: file already exists - check multiple times to handle filesystem sync
-        // This is important when multiple watchers are active concurrently
-        for _ in 0..3 {
-            if target.exists() {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_micros(100));
+        // Fast path: file already exists
+        if target.exists() {
+            return Ok(());
         }
 
         let WatcherState::Connected { rx, canary } = &mut self.state else {
@@ -219,10 +215,6 @@ impl VerifiedWatcher {
             if let Some(t) = timeout
                 && start.elapsed() > t
             {
-                // Final exists check before returning error
-                if target.exists() {
-                    return Ok(());
-                }
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("timed out waiting for {}", target.display()),
@@ -231,24 +223,15 @@ impl VerifiedWatcher {
 
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(path) => {
-                    // First check if target exists before doing anything else
-                    // This handles the case where we receive events for other files
-                    // while the target was created concurrently
-                    if target.exists() {
-                        // Clean up canary if still present
-                        if canary.is_some() {
-                            *canary = None;
-                        }
-                        return Ok(());
-                    }
-
-                    // Any event proves watcher works - clean up canary
+                    // Any event proves watcher works
                     if canary.is_some() {
                         *canary = None;
                     }
 
-                    // Check if this specific event is for our target
                     if path == target {
+                        return Ok(());
+                    }
+                    if target.exists() {
                         return Ok(());
                     }
                 }
