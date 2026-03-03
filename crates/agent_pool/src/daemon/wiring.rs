@@ -196,8 +196,9 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     // Clean up pool state on exit (SIGTERM or panic)
     let _pool_cleanup = PoolStateCleanup(root.clone());
 
-    // Use VerifiedWatcher with canary verification
-    let verified_watcher = VerifiedWatcher::new(&root, root.clone())?;
+    // Use VerifiedWatcher with canary verification for agents/ and submissions/
+    let verified_watcher =
+        VerifiedWatcher::new(&root, &[agents_dir.clone(), submissions_dir.clone()])?;
     let (_fs_watcher, fs_rx) = verified_watcher.into_receiver(Duration::from_secs(5))?;
 
     // Create unified event channel

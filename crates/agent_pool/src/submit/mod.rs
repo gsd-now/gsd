@@ -49,6 +49,6 @@ pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Res
     let status_path = root.join(STATUS_FILE);
 
     // Use VerifiedWatcher with lazy verification
-    let mut watcher = VerifiedWatcher::new(&root, root.clone())?;
+    let mut watcher = VerifiedWatcher::new(&root, std::slice::from_ref(&root))?;
     watcher.wait_for(&status_path, Some(timeout))
 }

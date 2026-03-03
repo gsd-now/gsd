@@ -151,14 +151,15 @@ pub struct VerifiedWatcher {
 impl VerifiedWatcher {
     /// Create a watcher and start canary verification (non-blocking).
     ///
-    /// Writes a canary file to `canary_dir` to verify the watcher is working.
-    /// Verification happens lazily during [`wait_for`] calls.
+    /// Writes canary files to each directory in `canary_dirs` to verify the
+    /// watcher sees events from all of them. Verification happens lazily during
+    /// [`wait_for`] or [`into_receiver`] calls.
     ///
     /// # Errors
     ///
-    /// Returns an error if the watcher cannot be created or the canary file
+    /// Returns an error if the watcher cannot be created or any canary file
     /// cannot be written.
-    pub fn new(watch_dir: &Path, canary_dir: PathBuf) -> io::Result<Self> {
+    pub fn new(watch_dir: &Path, canary_dirs: &[PathBuf]) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel();
 
         let mut watcher = RecommendedWatcher::new(
@@ -175,13 +176,16 @@ impl VerifiedWatcher {
             .watch(watch_dir, RecursiveMode::Recursive)
             .map_err(io::Error::other)?;
 
-        let canary = CanaryGuard::new(canary_dir)?;
+        let remaining_canaries = canary_dirs
+            .iter()
+            .map(|dir| CanaryGuard::new(dir.clone()))
+            .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Self {
             watcher,
             state: WatcherState {
                 rx,
-                remaining_canaries: vec![canary],
+                remaining_canaries,
             },
         })
     }

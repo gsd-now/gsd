@@ -30,7 +30,7 @@ pub fn submit(root: impl AsRef<Path>, payload: &Payload) -> io::Result<Response>
 
     // Wait for daemon to be ready using filesystem watcher
     let status_path = root.join(STATUS_FILE);
-    let mut watcher = VerifiedWatcher::new(&root, root.clone())?;
+    let mut watcher = VerifiedWatcher::new(&root, std::slice::from_ref(&root))?;
     watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
 
     let socket_path = root.join(SOCKET_NAME);

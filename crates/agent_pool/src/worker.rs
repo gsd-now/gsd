@@ -59,7 +59,7 @@ pub fn wait_for_task(
     fs::write(&ready, &metadata)?;
 
     // Wait for task file using VerifiedWatcher
-    let mut watcher = VerifiedWatcher::new(&agents_dir, agents_dir.clone())?;
+    let mut watcher = VerifiedWatcher::new(&agents_dir, std::slice::from_ref(&agents_dir))?;
     watcher.wait_for(&task, timeout)?;
 
     let content = fs::read_to_string(&task)?;

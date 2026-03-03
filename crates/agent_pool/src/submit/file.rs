@@ -82,7 +82,7 @@ pub fn submit_file_with_timeout(
     let status_path = root.join(STATUS_FILE);
 
     // Create watcher on pool root (watches recursively to see both status and response)
-    let mut watcher = VerifiedWatcher::new(&root, root.clone())?;
+    let mut watcher = VerifiedWatcher::new(&root, std::slice::from_ref(&root))?;
 
     // Wait for pool to become ready (returns immediately if status file exists)
     watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
