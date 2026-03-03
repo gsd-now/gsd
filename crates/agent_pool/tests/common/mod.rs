@@ -407,11 +407,33 @@ impl TestAgent {
     pub fn stop(mut self) -> Vec<String> {
         self.running.store(false, Ordering::SeqCst);
 
-        // Kill any running CLI subprocess
-        let pid = self.current_pid.load(Ordering::SeqCst);
-        if pid != 0 {
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
-        }
+        // Kill CLI subprocess repeatedly until thread exits.
+        // There's a race where the thread can spawn a new process after we kill the old one,
+        // so we keep killing until the thread notices running=false and exits.
+        let current_pid = self.current_pid.clone();
+        let handle = self.handle.take().expect("Agent already stopped");
+        let stop_killer = Arc::new(AtomicBool::new(false));
+        let stop_killer_clone = stop_killer.clone();
+
+        // Spawn a killer thread that keeps killing any subprocess until the main thread exits
+        let killer_handle = thread::spawn(move || {
+            let mut last_killed_pid = 0u32;
+            while !stop_killer_clone.load(Ordering::SeqCst) {
+                let pid = current_pid.load(Ordering::SeqCst);
+                if pid != 0 && pid != last_killed_pid {
+                    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+                    last_killed_pid = pid;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        // Wait for the agent thread to exit
+        let result = handle.join().expect("Agent thread panicked");
+
+        // Stop the killer thread
+        stop_killer.store(true, Ordering::SeqCst);
+        let _ = killer_handle.join();
 
         // Clean up anonymous worker files so daemon removes the worker
         if let Ok(guard) = self.ready_file.lock()
@@ -428,11 +450,7 @@ impl TestAgent {
             let _ = fs::remove_file(agents_dir.join(format!("{uuid}.response.json")));
         }
 
-        self.handle
-            .take()
-            .expect("Agent already stopped")
-            .join()
-            .expect("Agent thread panicked")
+        result
     }
 }
 

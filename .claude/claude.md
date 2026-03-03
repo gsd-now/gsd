@@ -65,6 +65,10 @@ Your singular mission is creating S-tier libraries where:
 
 See your claude.local.md.
 
+## CI interpretation
+
+When GitHub CI runs show as "cancelled", that means they **timed out** - not that someone manually cancelled them. Treat cancelled runs as failures that need investigation.
+
 ## Commit incrementally
 
 **Commit your changes as you go.** Don't wait until the end of a task to commit. After completing a logical unit of work, commit it. This applies to documentation changes, code changes, refactor documents - everything.
