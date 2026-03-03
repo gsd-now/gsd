@@ -123,11 +123,13 @@ impl FileWriterAgent {
         let agent_id = agent_id.to_string();
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::SeqCst) {
-                // Wait for task with short timeout, checking running flag between iterations
+                // Wait for task with timeout, checking running flag between iterations.
+                // Use 5s timeout - long enough that tasks arrive before timeout,
+                // short enough that stop() doesn't block too long.
                 let assignment = match wait_for_task(
                     &pool_root,
                     Some(&agent_id),
-                    Some(Duration::from_millis(100)),
+                    Some(Duration::from_secs(5)),
                 ) {
                     Ok(a) => a,
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,

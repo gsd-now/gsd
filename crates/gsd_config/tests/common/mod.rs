@@ -141,16 +141,18 @@ impl GsdTestAgent {
             let mut processed_tasks = Vec::new();
 
             while running_clone.load(Ordering::SeqCst) {
-                // Wait for task with short timeout, checking running flag between iterations
-                let assignment =
-                    match wait_for_task(&pool_root, None, Some(Duration::from_millis(100))) {
-                        Ok(a) => a,
-                        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                        Err(e) => {
-                            eprintln!("[test-agent] wait_for_task error: {e}");
-                            break;
-                        }
-                    };
+                // Wait for task with timeout, checking running flag between iterations.
+                // Use 5s timeout - long enough that tasks arrive before timeout,
+                // short enough that stop() doesn't block too long.
+                let assignment = match wait_for_task(&pool_root, None, Some(Duration::from_secs(5)))
+                {
+                    Ok(a) => a,
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(e) => {
+                        eprintln!("[test-agent] wait_for_task error: {e}");
+                        break;
+                    }
+                };
 
                 let TaskAssignment { uuid, content } = assignment;
                 let envelope = extract_task_envelope(&content);
