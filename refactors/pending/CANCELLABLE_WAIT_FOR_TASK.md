@@ -1,8 +1,10 @@
 # Universal Cancellation Channel
 
+**Depends on:** `CROSSBEAM_CHANNELS.md` (must be completed first)
+
 ## Motivation
 
-Multiple blocking operations in `agent_pool` need cancellation support:
+Multiple blocking operations need cancellation support:
 - Workers waiting for tasks
 - Submitters waiting for responses
 - Tests that need clean shutdown
@@ -11,131 +13,45 @@ Currently these use timeout-based polling, which is error-prone (we've broken it
 
 ## Goal
 
-Introduce a universal cancellation pattern using `crossbeam::channel` + `select!` for all blocking operations.
+Add a `CancelRx` parameter to all blocking operations. When a message arrives on the cancel channel, return `Err(Interrupted)` immediately.
+
+## Prerequisite
+
+This refactor assumes `CROSSBEAM_CHANNELS.md` is complete:
+- `crossbeam` dependency added
+- `VerifiedWatcher` uses `crossbeam::channel` internally
+- Daemon uses `crossbeam::select!` instead of forwarder threads
 
 ## Blocking Operations That Need Cancellation
 
-### 1. `VerifiedWatcher::wait_for` (core primitive)
+| Function | Location | Currently |
+|----------|----------|-----------|
+| `VerifiedWatcher::wait_for` | verified_watcher.rs | recv_timeout loop |
+| `VerifiedWatcher::into_receiver` | verified_watcher.rs | recv_timeout loop |
+| `wait_for_task` | worker.rs | Uses wait_for |
+| `submit_file` | submit/file.rs | Uses wait_for |
+| `submit` | submit/socket.rs | Uses wait_for + blocking socket |
+| `wait_for_pool_ready` | submit/mod.rs | sleep loop |
 
-**Location:** `verified_watcher.rs:205-261`
+## API
 
-The foundation. All file-waiting operations use this. Making it cancellable gives cancellation to everything built on top.
-
-```rust
-// Current: timeout-based
-watcher.wait_for(&path, Some(Duration::from_secs(5)))?;
-
-// Proposed: cancellation channel
-watcher.wait_for(&path, Some(&cancel_rx))?;
-```
-
-### 2. `wait_for_task` (workers)
-
-**Location:** `worker.rs:46-67`
-
-Workers waiting for task assignments from the daemon.
+### Type Alias
 
 ```rust
-// Current: callers poll with timeout
-while running.load(Ordering::SeqCst) {
-    let Ok(task) = wait_for_task(&pool, None, Some(Duration::from_millis(500))) else {
-        continue;
-    };
-}
-
-// Proposed: pass cancellation channel
-let task = wait_for_task(&pool, None, Some(&cancel_rx))?;
-```
-
-### 3. `submit_file_with_timeout` (file-based submission)
-
-**Location:** `submit/file.rs:68-109`
-
-Submitters waiting for task responses via filesystem.
-
-```rust
-// Current: uses VerifiedWatcher with timeout
-watcher.wait_for(&response_path, Some(timeout))?;
-
-// Proposed: cancellation channel
-let response = submit_file(&pool, &payload, Some(&cancel_rx))?;
-```
-
-### 4. `submit` (socket-based submission)
-
-**Location:** `submit/socket.rs:28-67`
-
-Socket submission has two blocking phases:
-1. Wait for pool ready (uses `VerifiedWatcher`)
-2. Socket read (blocking I/O)
-
-Phase 1 gets cancellation for free via `VerifiedWatcher`. Phase 2 (socket read) is trickier - would need non-blocking socket with select, or accept that socket submissions can't be cancelled mid-read.
-
-```rust
-// Current
-watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
-// ... blocking socket read ...
-
-// Proposed: at least cancel the wait_for part
-watcher.wait_for(&status_path, Some(&cancel_rx))?;
-// Socket read still blocks (acceptable for now)
-```
-
-### 5. `wait_for_pool_ready` (pool startup)
-
-**Location:** `submit/mod.rs:27-46`
-
-Polls for status file with 10ms sleep. Special case: can't use watcher because daemon clears pool directory on startup (races with watcher setup).
-
-```rust
-// Current: polls with sleep
-while !status_path.exists() {
-    thread::sleep(Duration::from_millis(10));
-}
-
-// Options:
-// A) Keep polling but check cancellation channel with try_recv()
-// B) Use watcher anyway, handle the race differently
-// C) Leave as-is (short timeout, rarely needs cancellation)
-```
-
-### 6. `VerifiedWatcher::into_receiver` (canary verification)
-
-**Location:** `verified_watcher.rs:272-314`
-
-Waits for all canary directories to be verified. Usually quick, but could theoretically hang.
-
-```rust
-// Current: timeout-based
-let (watcher, rx) = verified_watcher.into_receiver(Duration::from_secs(5))?;
-
-// Proposed: cancellation channel
-let (watcher, rx) = verified_watcher.into_receiver(Some(&cancel_rx))?;
-```
-
-## Proposed API
-
-### Core Type
-
-```rust
-use crossbeam::channel::Receiver;
-
-/// A channel that signals cancellation when a message is received.
-pub type CancelRx = Receiver<()>;
+// constants.rs or lib.rs
+pub type CancelRx = crossbeam::channel::Receiver<()>;
 ```
 
 ### VerifiedWatcher
 
 ```rust
 impl VerifiedWatcher {
-    /// Wait for a file to appear, with optional cancellation.
     pub fn wait_for(
         &mut self,
         target: &Path,
         cancel: Option<&CancelRx>,
     ) -> io::Result<()>;
 
-    /// Consume watcher after verification, with optional cancellation.
     pub fn into_receiver(
         self,
         cancel: Option<&CancelRx>,
@@ -143,10 +59,9 @@ impl VerifiedWatcher {
 }
 ```
 
-### Worker API
+### Worker
 
 ```rust
-/// Wait for a task assignment, with optional cancellation.
 pub fn wait_for_task(
     pool_root: &Path,
     name: Option<&str>,
@@ -154,50 +69,36 @@ pub fn wait_for_task(
 ) -> io::Result<TaskAssignment>;
 ```
 
-### Submission API
+### Submission
 
 ```rust
-/// Submit via file protocol, with optional cancellation.
 pub fn submit_file(
     root: impl AsRef<Path>,
     payload: &Payload,
     cancel: Option<&CancelRx>,
 ) -> io::Result<Response>;
 
-/// Submit via socket, with optional cancellation (only for wait_for phase).
 pub fn submit(
     root: impl AsRef<Path>,
     payload: &Payload,
     cancel: Option<&CancelRx>,
 ) -> io::Result<Response>;
+
+pub fn wait_for_pool_ready(
+    root: impl AsRef<Path>,
+    timeout: Duration,
+    cancel: Option<&CancelRx>,
+) -> io::Result<()>;
 ```
 
 ## Implementation
 
-### 1. Add crossbeam dependency
-
-```toml
-# crates/agent_pool/Cargo.toml
-[dependencies]
-crossbeam = "0.8"
-```
-
-### 2. Update VerifiedWatcher internals
-
-Change from `std::sync::mpsc` to `crossbeam::channel`:
+### VerifiedWatcher::wait_for
 
 ```rust
-use crossbeam::channel::{self, Receiver, Sender};
+use crossbeam::channel::{self, Receiver};
+use crossbeam::select;
 
-struct WatcherState {
-    rx: Receiver<notify::Event>,  // Changed from mpsc::Receiver
-    remaining_canaries: Vec<CanaryGuard>,
-}
-```
-
-### 3. Implement wait_for with select
-
-```rust
 pub fn wait_for(
     &mut self,
     target: &Path,
@@ -211,17 +112,11 @@ pub fn wait_for(
     let cancel = cancel.unwrap_or(&never);
 
     loop {
-        crossbeam::select! {
+        select! {
             recv(self.state.rx) -> event => {
                 match event {
                     Ok(e) => {
-                        for path in &e.paths {
-                            if path == target {
-                                return Ok(());
-                            }
-                        }
-                        // Also check exists() for edge cases
-                        if target.exists() {
+                        if e.paths.iter().any(|p| p == target) || target.exists() {
                             return Ok(());
                         }
                     }
@@ -239,8 +134,8 @@ pub fn wait_for(
                     "cancelled",
                 ));
             }
-            // Canary retry on timeout
             default(Duration::from_millis(100)) => {
+                // Check file exists (edge case) and retry canaries
                 if target.exists() {
                     return Ok(());
                 }
@@ -253,52 +148,155 @@ pub fn wait_for(
 }
 ```
 
-### 4. Update all callers
-
-Each caller creates a channel and passes the receiver:
+### wait_for_task
 
 ```rust
-// Test agent example
-let (cancel_tx, cancel_rx) = crossbeam::channel::bounded(1);
+pub fn wait_for_task(
+    pool_root: &Path,
+    name: Option<&str>,
+    cancel: Option<&CancelRx>,
+) -> io::Result<TaskAssignment> {
+    let agents_dir = pool_root.join(AGENTS_DIR);
+    let uuid = Uuid::new_v4().to_string();
 
-let handle = thread::spawn(move || {
-    loop {
-        match wait_for_task(&pool, None, Some(&cancel_rx)) {
-            Ok(task) => process(task),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
-            Err(e) => { eprintln!("error: {e}"); break; }
-        }
-    }
-});
+    let ready = ready_path(&agents_dir, &uuid);
+    let task = task_path(&agents_dir, &uuid);
 
-// To stop
-let _ = cancel_tx.send(());
+    let metadata = name.map_or_else(|| "{}".to_string(), |n| format!(r#"{{"name":"{n}"}}"#));
+    fs::write(&ready, &metadata)?;
+
+    let mut watcher = VerifiedWatcher::new(&agents_dir, std::slice::from_ref(&agents_dir))?;
+    watcher.wait_for(&task, cancel)?;  // Pass through cancel
+
+    let content = fs::read_to_string(&task)?;
+    Ok(TaskAssignment { uuid, content })
+}
 ```
 
-## Migration Strategy
+### wait_for_pool_ready
 
-1. **Phase 1:** Add `crossbeam` dependency, change `VerifiedWatcher` internals
-2. **Phase 2:** Add `cancel` parameter to `wait_for` (default `None` for backwards compat)
-3. **Phase 3:** Update `wait_for_task` to accept and pass through cancellation
-4. **Phase 4:** Update submission functions
-5. **Phase 5:** Update test agents to use channels instead of AtomicBool + timeout
-6. **Phase 6:** Remove timeout parameter from functions (or keep for actual timeouts separate from cancellation)
+```rust
+pub fn wait_for_pool_ready(
+    root: impl AsRef<Path>,
+    timeout: Duration,
+    cancel: Option<&CancelRx>,
+) -> io::Result<()> {
+    let root = root.as_ref();
+    let status_path = root.join(STATUS_FILE);
+    let start = Instant::now();
+
+    let never = channel::never();
+    let cancel = cancel.unwrap_or(&never);
+
+    while !status_path.exists() {
+        if start.elapsed() > timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("pool did not become ready: {}", root.display()),
+            ));
+        }
+
+        // Check cancel with short timeout
+        select! {
+            recv(cancel) -> _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cancelled",
+                ));
+            }
+            default(Duration::from_millis(10)) => {}
+        }
+    }
+
+    Ok(())
+}
+```
+
+## Usage Example
+
+### Test Agent
+
+```rust
+pub struct GsdTestAgent {
+    cancel_tx: crossbeam::channel::Sender<()>,
+    handle: Option<thread::JoinHandle<Vec<String>>>,
+    pool_root: PathBuf,
+}
+
+impl GsdTestAgent {
+    pub fn start<F>(root: &Path, processor: F) -> Self
+    where
+        F: Fn(&str) -> String + Send + 'static,
+    {
+        let (cancel_tx, cancel_rx) = crossbeam::channel::bounded(1);
+        let pool_root = root.to_path_buf();
+
+        let handle = thread::spawn(move || {
+            let mut processed = Vec::new();
+
+            loop {
+                match wait_for_task(&pool_root, None, Some(&cancel_rx)) {
+                    Ok(assignment) => {
+                        let response = processor(&assignment.content);
+                        processed.push(assignment.content);
+                        let _ = write_response(&pool_root, &assignment.uuid, &response);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+                    Err(e) => {
+                        eprintln!("[test-agent] error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            processed
+        });
+
+        Self { cancel_tx, handle: Some(handle), pool_root }
+    }
+
+    pub fn stop(mut self) -> Vec<String> {
+        // Signal cancellation
+        let _ = self.cancel_tx.send(());
+
+        // Also stop daemon
+        let _ = stop(&self.pool_root);
+
+        self.handle.take().unwrap().join().unwrap()
+    }
+}
+```
+
+## Migration Steps
+
+1. Add `CancelRx` type alias
+2. Update `VerifiedWatcher::wait_for` signature and implementation
+3. Update `VerifiedWatcher::into_receiver` signature and implementation
+4. Update `wait_for_task` to accept and pass through cancel
+5. Update `submit_file` to accept and pass through cancel
+6. Update `submit` to accept cancel (for wait_for phase)
+7. Update `wait_for_pool_ready` to accept cancel
+8. Update test agents to use cancel channel instead of AtomicBool + timeout
+9. Remove timeout parameter from functions where it was only used for cancellation polling
 
 ## Open Questions
 
-1. **Timeout vs cancellation:** Should we keep timeout as a separate concept? A timeout is "give up after N seconds", while cancellation is "stop immediately when signaled". Could have both:
+1. **Timeout vs cancel:** Keep timeout as separate parameter for actual deadlines?
    ```rust
    fn wait_for(&mut self, target: &Path, timeout: Option<Duration>, cancel: Option<&CancelRx>)
    ```
 
-2. **Socket read cancellation:** The socket-based `submit()` blocks on socket read after connecting. Full cancellation would require non-blocking sockets + select. Worth it?
+2. **Socket read:** The `submit()` function blocks on socket read after connecting. This can't be cancelled with channels. Options:
+   - Accept limitation (socket reads are typically fast)
+   - Use non-blocking socket with `select!` (complex)
+   - Set socket timeout
 
-3. **Error types:** Use `io::ErrorKind::Interrupted` for cancellation, or define a custom error type?
+3. **Cleanup on cancel:** When cancelled mid-wait, should we clean up the ready file in `wait_for_task`? Currently we don't, which could leave orphaned files.
 
 ## Testing
 
-- Unit: `wait_for` returns `Interrupted` when cancel signal sent
-- Unit: `wait_for` continues working after spurious wakeups
-- Integration: Test agent stops within 100ms of `stop()` call (not 500ms timeout)
-- Integration: File submission can be cancelled mid-wait
-- Negative: Ensure cancellation doesn't leave dangling files/resources
+- `wait_for` returns `Interrupted` when cancel signal sent before call
+- `wait_for` returns `Interrupted` when cancel signal sent during wait
+- Test agent stops within 100ms of `stop()` call (not 500ms timeout)
+- File submission can be cancelled mid-wait
+- Cancellation doesn't leave orphaned files
