@@ -942,14 +942,33 @@ fn build_agent_payload_with_value(
 }
 
 /// Submit a task via the CLI instead of internal API.
-fn submit_via_cli(pool: &Path, payload: &str) -> io::Result<Response> {
+fn submit_via_cli(pool_path: &Path, payload: &str) -> io::Result<Response> {
     let binary = resolve_agent_pool_binary();
+
+    // Extract pool_root (parent) and pool_id (basename) from full path
+    let pool_root = pool_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid pool path (no parent): {}", pool_path.display()),
+        )
+    })?;
+    let pool_id = pool_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid pool path (no basename): {}", pool_path.display()),
+            )
+        })?;
 
     // Use 24-hour timeout. TODO: Add --no-timeout support to CLI.
     let output = Command::new(&binary)
         .arg("submit_task")
+        .arg("--pool-root")
+        .arg(pool_root)
         .arg("--pool")
-        .arg(pool)
+        .arg(pool_id)
         .arg("--notify")
         .arg("file")
         .arg("--timeout-secs")
