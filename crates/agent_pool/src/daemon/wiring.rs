@@ -449,9 +449,10 @@ fn handle_fs_event(
     io_config: &IoConfig,
 ) -> bool {
     for path in &event.paths {
-        let Some(category) =
-            path_category::categorize(path, event.kind, root, agents_dir, submissions_dir)
-        else {
+        let category =
+            path_category::categorize(path, event.kind, root, agents_dir, submissions_dir);
+        trace!(?path, ?category, kind = ?event.kind, "categorize result");
+        let Some(category) = category else {
             continue;
         };
 
@@ -597,6 +598,7 @@ fn register_submission(
     id_allocator: &mut IdAllocator,
     io_config: &IoConfig,
 ) {
+    debug!(id = %id, "register_submission: called");
     let request_path = submissions_dir.join(format!("{id}{REQUEST_SUFFIX}"));
 
     // Read and resolve payload
