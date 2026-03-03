@@ -1,106 +1,178 @@
-# Cancellable wait_for_task
+# Universal Cancellation Channel
 
 ## Motivation
 
-`wait_for_task` blocks indefinitely (or until timeout) with no way to cancel from outside. This forces callers to poll with short timeouts to enable clean shutdown:
+Multiple blocking operations in `agent_pool` need cancellation support:
+- Workers waiting for tasks
+- Submitters waiting for responses
+- Tests that need clean shutdown
 
-```rust
-while running.load(Ordering::SeqCst) {
-    let Ok(task) = wait_for_task(&pool, None, Some(Duration::from_millis(500))) else {
-        continue;  // Timeout - check running flag
-    };
-    // ...
-}
-```
-
-This pattern is error-prone. Commit `54549e3` accidentally removed the timeout, assuming CLI stop would make the watcher fail. It didn't, causing 20-second test hangs. We've now fixed this twice (`5894f96`, `f6404cd`).
+Currently these use timeout-based polling, which is error-prone (we've broken it twice).
 
 ## Goal
 
-`wait_for_task` should accept a cancellation channel and use `select!` to wait on either:
-1. A task file appearing (return `Ok(TaskAssignment)`)
-2. A cancellation signal (return `Err(Cancelled)`)
+Introduce a universal cancellation pattern using `crossbeam::channel` + `select!` for all blocking operations.
 
-No timeouts, no polling, no AtomicBool checks.
+## Blocking Operations That Need Cancellation
 
-## Proposed Design: Channel + Select
+### 1. `VerifiedWatcher::wait_for` (core primitive)
 
-Use `crossbeam::select!` to wait on multiple channels simultaneously:
+**Location:** `verified_watcher.rs:205-261`
+
+The foundation. All file-waiting operations use this. Making it cancellable gives cancellation to everything built on top.
 
 ```rust
-use crossbeam::channel::{self, Receiver};
+// Current: timeout-based
+watcher.wait_for(&path, Some(Duration::from_secs(5)))?;
 
+// Proposed: cancellation channel
+watcher.wait_for(&path, Some(&cancel_rx))?;
+```
+
+### 2. `wait_for_task` (workers)
+
+**Location:** `worker.rs:46-67`
+
+Workers waiting for task assignments from the daemon.
+
+```rust
+// Current: callers poll with timeout
+while running.load(Ordering::SeqCst) {
+    let Ok(task) = wait_for_task(&pool, None, Some(Duration::from_millis(500))) else {
+        continue;
+    };
+}
+
+// Proposed: pass cancellation channel
+let task = wait_for_task(&pool, None, Some(&cancel_rx))?;
+```
+
+### 3. `submit_file_with_timeout` (file-based submission)
+
+**Location:** `submit/file.rs:68-109`
+
+Submitters waiting for task responses via filesystem.
+
+```rust
+// Current: uses VerifiedWatcher with timeout
+watcher.wait_for(&response_path, Some(timeout))?;
+
+// Proposed: cancellation channel
+let response = submit_file(&pool, &payload, Some(&cancel_rx))?;
+```
+
+### 4. `submit` (socket-based submission)
+
+**Location:** `submit/socket.rs:28-67`
+
+Socket submission has two blocking phases:
+1. Wait for pool ready (uses `VerifiedWatcher`)
+2. Socket read (blocking I/O)
+
+Phase 1 gets cancellation for free via `VerifiedWatcher`. Phase 2 (socket read) is trickier - would need non-blocking socket with select, or accept that socket submissions can't be cancelled mid-read.
+
+```rust
+// Current
+watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
+// ... blocking socket read ...
+
+// Proposed: at least cancel the wait_for part
+watcher.wait_for(&status_path, Some(&cancel_rx))?;
+// Socket read still blocks (acceptable for now)
+```
+
+### 5. `wait_for_pool_ready` (pool startup)
+
+**Location:** `submit/mod.rs:27-46`
+
+Polls for status file with 10ms sleep. Special case: can't use watcher because daemon clears pool directory on startup (races with watcher setup).
+
+```rust
+// Current: polls with sleep
+while !status_path.exists() {
+    thread::sleep(Duration::from_millis(10));
+}
+
+// Options:
+// A) Keep polling but check cancellation channel with try_recv()
+// B) Use watcher anyway, handle the race differently
+// C) Leave as-is (short timeout, rarely needs cancellation)
+```
+
+### 6. `VerifiedWatcher::into_receiver` (canary verification)
+
+**Location:** `verified_watcher.rs:272-314`
+
+Waits for all canary directories to be verified. Usually quick, but could theoretically hang.
+
+```rust
+// Current: timeout-based
+let (watcher, rx) = verified_watcher.into_receiver(Duration::from_secs(5))?;
+
+// Proposed: cancellation channel
+let (watcher, rx) = verified_watcher.into_receiver(Some(&cancel_rx))?;
+```
+
+## Proposed API
+
+### Core Type
+
+```rust
+use crossbeam::channel::Receiver;
+
+/// A channel that signals cancellation when a message is received.
+pub type CancelRx = Receiver<()>;
+```
+
+### VerifiedWatcher
+
+```rust
+impl VerifiedWatcher {
+    /// Wait for a file to appear, with optional cancellation.
+    pub fn wait_for(
+        &mut self,
+        target: &Path,
+        cancel: Option<&CancelRx>,
+    ) -> io::Result<()>;
+
+    /// Consume watcher after verification, with optional cancellation.
+    pub fn into_receiver(
+        self,
+        cancel: Option<&CancelRx>,
+    ) -> io::Result<(RecommendedWatcher, Receiver<notify::Event>)>;
+}
+```
+
+### Worker API
+
+```rust
+/// Wait for a task assignment, with optional cancellation.
 pub fn wait_for_task(
     pool_root: &Path,
     name: Option<&str>,
-    cancel_rx: Option<Receiver<()>>,
-) -> io::Result<TaskAssignment> {
-    // ... setup ...
-
-    let mut watcher = VerifiedWatcher::new(&agents_dir, ...)?;
-    watcher.wait_for(&task, cancel_rx)?;
-
-    // ... read task ...
-}
+    cancel: Option<&CancelRx>,
+) -> io::Result<TaskAssignment>;
 ```
 
-Inside `VerifiedWatcher::wait_for`:
+### Submission API
 
 ```rust
-pub fn wait_for(
-    &mut self,
-    target: &Path,
-    cancel_rx: Option<Receiver<()>>,
-) -> io::Result<()> {
-    if target.exists() {
-        return Ok(());
-    }
+/// Submit via file protocol, with optional cancellation.
+pub fn submit_file(
+    root: impl AsRef<Path>,
+    payload: &Payload,
+    cancel: Option<&CancelRx>,
+) -> io::Result<Response>;
 
-    loop {
-        crossbeam::select! {
-            recv(self.rx) -> event => {
-                // Handle watcher event
-                if let Ok(event) = event {
-                    if event.paths.contains(target) || target.exists() {
-                        return Ok(());
-                    }
-                }
-            }
-            recv(cancel_rx.unwrap_or_else(channel::never)) -> _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
-            }
-        }
-    }
-}
+/// Submit via socket, with optional cancellation (only for wait_for phase).
+pub fn submit(
+    root: impl AsRef<Path>,
+    payload: &Payload,
+    cancel: Option<&CancelRx>,
+) -> io::Result<Response>;
 ```
 
-Caller creates a channel and sends to cancel:
-```rust
-let (cancel_tx, cancel_rx) = crossbeam::channel::bounded(1);
-
-// Spawn worker
-let handle = thread::spawn(move || {
-    wait_for_task(&pool, None, Some(cancel_rx))
-});
-
-// To cancel
-let _ = cancel_tx.send(());
-handle.join();
-```
-
-## Why crossbeam?
-
-`std::mpsc` doesn't have a `select!` macro. Options:
-1. **crossbeam** - Mature, widely used, has `select!` macro
-2. **async/tokio** - Overkill for this use case, adds async complexity
-3. **polling with timeout** - What we do now, error-prone
-
-crossbeam is the right choice.
-
-## Changes Required
+## Implementation
 
 ### 1. Add crossbeam dependency
 
@@ -110,160 +182,123 @@ crossbeam is the right choice.
 crossbeam = "0.8"
 ```
 
-### 2. Update VerifiedWatcher
+### 2. Update VerifiedWatcher internals
 
-Change internal `mpsc::Receiver` to `crossbeam::channel::Receiver` and add select:
+Change from `std::sync::mpsc` to `crossbeam::channel`:
 
 ```rust
 use crossbeam::channel::{self, Receiver, Sender};
 
-pub struct VerifiedWatcher {
-    watcher: RecommendedWatcher,
-    rx: Receiver<notify::Event>,
-    // ...
+struct WatcherState {
+    rx: Receiver<notify::Event>,  // Changed from mpsc::Receiver
+    remaining_canaries: Vec<CanaryGuard>,
 }
+```
 
-impl VerifiedWatcher {
-    pub fn wait_for(
-        &mut self,
-        target: &Path,
-        cancel_rx: Option<&Receiver<()>>,
-    ) -> io::Result<()> {
-        if target.exists() {
-            return Ok(());
-        }
+### 3. Implement wait_for with select
 
-        let never = channel::never();
-        let cancel = cancel_rx.unwrap_or(&never);
+```rust
+pub fn wait_for(
+    &mut self,
+    target: &Path,
+    cancel: Option<&CancelRx>,
+) -> io::Result<()> {
+    if target.exists() {
+        return Ok(());
+    }
 
-        loop {
-            crossbeam::select! {
-                recv(self.rx) -> event => {
-                    match event {
-                        Ok(e) => {
-                            // Check if target appeared
-                            for path in &e.paths {
-                                if path == target {
-                                    return Ok(());
-                                }
-                            }
-                            if target.exists() {
+    let never = channel::never();
+    let cancel = cancel.unwrap_or(&never);
+
+    loop {
+        crossbeam::select! {
+            recv(self.state.rx) -> event => {
+                match event {
+                    Ok(e) => {
+                        for path in &e.paths {
+                            if path == target {
                                 return Ok(());
                             }
                         }
-                        Err(_) => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::BrokenPipe,
-                                "watcher disconnected",
-                            ));
+                        // Also check exists() for edge cases
+                        if target.exists() {
+                            return Ok(());
                         }
                     }
-                }
-                recv(cancel) -> _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "cancelled",
-                    ));
-                }
-            }
-        }
-    }
-}
-```
-
-### 3. Update wait_for_task
-
-```rust
-use crossbeam::channel::Receiver;
-
-pub fn wait_for_task(
-    pool_root: &Path,
-    name: Option<&str>,
-    cancel_rx: Option<&Receiver<()>>,
-) -> io::Result<TaskAssignment> {
-    // ... setup ...
-
-    let mut watcher = VerifiedWatcher::new(&agents_dir, ...)?;
-    watcher.wait_for(&task, cancel_rx)?;
-
-    let content = fs::read_to_string(&task)?;
-    Ok(TaskAssignment { uuid, content })
-}
-```
-
-### 4. Update test agents
-
-```rust
-use crossbeam::channel;
-
-pub struct GsdTestAgent {
-    cancel_tx: channel::Sender<()>,
-    handle: Option<thread::JoinHandle<Vec<String>>>,
-    pool_root: PathBuf,
-}
-
-impl GsdTestAgent {
-    pub fn start<F>(...) -> Self {
-        let (cancel_tx, cancel_rx) = channel::bounded(1);
-
-        let handle = thread::spawn(move || {
-            loop {
-                match wait_for_task(&pool_root, None, Some(&cancel_rx)) {
-                    Ok(assignment) => { /* process */ }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
-                    Err(e) => {
-                        eprintln!("[test-agent] error: {e}");
-                        break;
+                    Err(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "watcher disconnected",
+                        ));
                     }
                 }
             }
-            processed_tasks
-        });
-
-        Self { cancel_tx, handle: Some(handle), pool_root }
-    }
-
-    pub fn stop(mut self) -> Vec<String> {
-        // Send cancellation signal
-        let _ = self.cancel_tx.send(());
-
-        // Also stop daemon
-        let bin = find_agent_pool_binary();
-        let _ = Command::new(&bin).arg("stop").arg("--pool").arg(&self.pool_root).output();
-
-        self.handle.take().unwrap().join().unwrap()
-    }
-}
-```
-
-## Canary Handling
-
-The current code retries canary writes on timeout. With select, we need to handle this differently:
-
-Option 1: Use `select_timeout!` with short timeout, retry canaries on timeout
-Option 2: Spawn a background thread that periodically retries canaries
-Option 3: Remove canary retries (if verification completes quickly enough)
-
-Option 1 is simplest:
-
-```rust
-loop {
-    crossbeam::select! {
-        recv(self.rx) -> event => { /* handle */ }
-        recv(cancel) -> _ => { return Err(Interrupted); }
-        default(Duration::from_millis(100)) => {
-            // Retry canaries
-            for canary in &mut self.remaining_canaries {
-                canary.retry()?;
+            recv(cancel) -> _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cancelled",
+                ));
+            }
+            // Canary retry on timeout
+            default(Duration::from_millis(100)) => {
+                if target.exists() {
+                    return Ok(());
+                }
+                for canary in &mut self.state.remaining_canaries {
+                    canary.retry()?;
+                }
             }
         }
     }
 }
 ```
+
+### 4. Update all callers
+
+Each caller creates a channel and passes the receiver:
+
+```rust
+// Test agent example
+let (cancel_tx, cancel_rx) = crossbeam::channel::bounded(1);
+
+let handle = thread::spawn(move || {
+    loop {
+        match wait_for_task(&pool, None, Some(&cancel_rx)) {
+            Ok(task) => process(task),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+            Err(e) => { eprintln!("error: {e}"); break; }
+        }
+    }
+});
+
+// To stop
+let _ = cancel_tx.send(());
+```
+
+## Migration Strategy
+
+1. **Phase 1:** Add `crossbeam` dependency, change `VerifiedWatcher` internals
+2. **Phase 2:** Add `cancel` parameter to `wait_for` (default `None` for backwards compat)
+3. **Phase 3:** Update `wait_for_task` to accept and pass through cancellation
+4. **Phase 4:** Update submission functions
+5. **Phase 5:** Update test agents to use channels instead of AtomicBool + timeout
+6. **Phase 6:** Remove timeout parameter from functions (or keep for actual timeouts separate from cancellation)
+
+## Open Questions
+
+1. **Timeout vs cancellation:** Should we keep timeout as a separate concept? A timeout is "give up after N seconds", while cancellation is "stop immediately when signaled". Could have both:
+   ```rust
+   fn wait_for(&mut self, target: &Path, timeout: Option<Duration>, cancel: Option<&CancelRx>)
+   ```
+
+2. **Socket read cancellation:** The socket-based `submit()` blocks on socket read after connecting. Full cancellation would require non-blocking sockets + select. Worth it?
+
+3. **Error types:** Use `io::ErrorKind::Interrupted` for cancellation, or define a custom error type?
 
 ## Testing
 
-- Unit test: `wait_for_task` returns `Interrupted` when cancel signal sent before call
-- Unit test: `wait_for_task` returns `Interrupted` when cancel signal sent during wait
-- Integration test: Test agent stops cleanly when `stop()` is called
-- Integration test: Verify no timeout-based polling (no 100ms/500ms sleeps in agent code)
+- Unit: `wait_for` returns `Interrupted` when cancel signal sent
+- Unit: `wait_for` continues working after spurious wakeups
+- Integration: Test agent stops within 100ms of `stop()` call (not 500ms timeout)
+- Integration: File submission can be cancelled mid-wait
+- Negative: Ensure cancellation doesn't leave dangling files/resources
