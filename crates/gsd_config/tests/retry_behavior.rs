@@ -40,16 +40,11 @@ fn retry_on_invalid_response_false_drops_task() {
     let count_clone = call_count.clone();
 
     // Agent that always returns invalid response
-    let _agent = GsdTestAgent::start(
-        &root,
-        "invalid-agent",
-        Duration::from_millis(10),
-        move |_| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            // Invalid: returns a step not in `next`
-            r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        // Invalid: returns a step not in `next`
+        r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -116,15 +111,10 @@ fn retry_on_invalid_response_true_retries() {
     let count_clone = call_count.clone();
 
     // Agent that always returns invalid response
-    let _agent = GsdTestAgent::start(
-        &root,
-        "invalid-agent",
-        Duration::from_millis(10),
-        move |_| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -191,15 +181,10 @@ fn malformed_json_triggers_retry() {
     let count_clone = call_count.clone();
 
     // Agent that returns invalid JSON
-    let _agent = GsdTestAgent::start(
-        &root,
-        "malformed-agent",
-        Duration::from_millis(10),
-        move |_| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            "not valid json {{{".to_string()
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        "not valid json {{{".to_string()
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -261,15 +246,10 @@ fn per_step_options_override_global() {
     let count_clone = call_count.clone();
 
     // Agent that always returns invalid response
-    let _agent = GsdTestAgent::start(
-        &root,
-        "override-agent",
-        Duration::from_millis(10),
-        move |_| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -341,21 +321,16 @@ fn recovery_on_nth_attempt() {
     let count_clone = call_count.clone();
 
     // Agent that fails twice, then succeeds
-    let _agent = GsdTestAgent::start(
-        &root,
-        "recovery-agent",
-        Duration::from_millis(10),
-        move |_| {
-            let count = count_clone.fetch_add(1, Ordering::SeqCst);
-            if count < 2 {
-                // First two attempts: invalid
-                r#"[{"kind": "Invalid", "value": {}}]"#.to_string()
-            } else {
-                // Third attempt: valid
-                "[]".to_string()
-            }
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        let count = count_clone.fetch_add(1, Ordering::SeqCst);
+        if count < 2 {
+            // First two attempts: invalid
+            r#"[{"kind": "Invalid", "value": {}}]"#.to_string()
+        } else {
+            // Third attempt: valid
+            "[]".to_string()
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -414,15 +389,10 @@ fn max_retries_zero_no_retries() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
 
-    let _agent = GsdTestAgent::start(
-        &root,
-        "no-retry-agent",
-        Duration::from_millis(10),
-        move |_| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            r#"[{"kind": "Invalid", "value": {}}]"#.to_string()
-        },
-    );
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        r#"[{"kind": "Invalid", "value": {}}]"#.to_string()
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

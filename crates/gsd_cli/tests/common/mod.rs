@@ -98,6 +98,7 @@ fn extract_task_envelope(raw: &str) -> (String, String) {
 pub struct FileWriterAgent {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    pool_root: PathBuf,
 }
 
 impl FileWriterAgent {
@@ -108,32 +109,19 @@ impl FileWriterAgent {
     /// 2. Waits for `<uuid>.task.json` using verified file watcher (no polling)
     /// 3. Processes task and writes marker file
     /// 4. Writes `<uuid>.response.json` with transition
-    pub fn start(
-        pool_root: &Path,
-        agent_id: &str,
-        output_dir: &Path,
-        transitions: Vec<(String, String)>,
-    ) -> Self {
+    pub fn start(pool_root: &Path, output_dir: &Path, transitions: Vec<(String, String)>) -> Self {
         fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
         let output_dir = output_dir.to_path_buf();
         let pool_root = pool_root.to_path_buf();
-        let agent_id = agent_id.to_string();
+        let pool_root_for_stop = pool_root.clone();
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::SeqCst) {
-                // Wait for task with timeout, checking running flag between iterations.
-                // Use 5s timeout - long enough that tasks arrive before timeout,
-                // short enough that stop() doesn't block too long.
-                let assignment = match wait_for_task(
-                    &pool_root,
-                    Some(&agent_id),
-                    Some(Duration::from_secs(5)),
-                ) {
-                    Ok(a) => a,
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                    Err(_) => break, // Watcher error or pool shutdown
+                // Wait for task - stop() triggers exit when daemon is stopped
+                let Ok(assignment) = wait_for_task(&pool_root, None, None) else {
+                    break; // Watcher error or pool shutdown
                 };
 
                 let TaskAssignment { uuid, content } = assignment;
@@ -182,12 +170,27 @@ impl FileWriterAgent {
         Self {
             running,
             handle: Some(handle),
+            pool_root: pool_root_for_stop,
         }
     }
 
     /// Stop the agent.
+    ///
+    /// Stops the daemon via CLI, which:
+    /// 1. Cleans up the agents directory
+    /// 2. Causes `wait_for_task` to fail with a watcher error
+    /// 3. Agent threads exit
     pub fn stop(mut self) {
         self.running.store(false, Ordering::SeqCst);
+        // Stop the daemon via CLI - this kicks all agents as part of cleanup
+        let bin = find_agent_pool_binary();
+        let _ = Command::new(&bin)
+            .arg("stop")
+            .arg("--pool-root")
+            .arg(self.pool_root.parent().unwrap_or(&self.pool_root))
+            .arg("--pool")
+            .arg(self.pool_root.file_name().unwrap_or_default())
+            .output();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }

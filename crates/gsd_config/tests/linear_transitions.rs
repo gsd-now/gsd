@@ -56,7 +56,6 @@ fn three_step_linear_machine() {
     let _pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
-        "linear-agent",
         Duration::from_millis(10),
         vec![("Start", "Middle"), ("Middle", "End"), ("End", "")],
     );
@@ -103,7 +102,7 @@ fn instructions_included_in_payload() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, "checker-agent", Duration::from_millis(10));
+    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

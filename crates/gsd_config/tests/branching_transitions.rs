@@ -63,7 +63,6 @@ fn branch_to_path_a() {
     let _pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
-        "path-a-agent",
         Duration::from_millis(10),
         vec![("Decide", "PathA"), ("PathA", "Done"), ("Done", "")],
     );
@@ -110,7 +109,6 @@ fn branch_to_path_b() {
     let _pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
-        "path-b-agent",
         Duration::from_millis(10),
         vec![("Decide", "PathB"), ("PathB", "Done"), ("Done", "")],
     );
@@ -160,26 +158,20 @@ fn fan_out_multiple_tasks() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let call_count_clone = call_count.clone();
 
-    let agent = GsdTestAgent::start(
-        &root,
-        "fan-out-agent",
-        Duration::from_millis(10),
-        move |payload| {
-            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-            let kind = v["task"]["kind"].as_str().unwrap_or("");
-            call_count_clone.fetch_add(1, Ordering::SeqCst);
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |payload| {
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
+        call_count_clone.fetch_add(1, Ordering::SeqCst);
 
-            match kind {
-                "Decide" => {
-                    // Fan out to both paths
-                    r#"[{"kind": "PathA", "value": {}}, {"kind": "PathB", "value": {}}]"#
-                        .to_string()
-                }
-                "PathA" | "PathB" => r#"[{"kind": "Done", "value": {}}]"#.to_string(),
-                _ => "[]".to_string(),
+        match kind {
+            "Decide" => {
+                // Fan out to both paths
+                r#"[{"kind": "PathA", "value": {}}, {"kind": "PathB", "value": {}}]"#.to_string()
             }
-        },
-    );
+            "PathA" | "PathB" => r#"[{"kind": "Done", "value": {}}]"#.to_string(),
+            _ => "[]".to_string(),
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

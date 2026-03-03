@@ -118,6 +118,7 @@ fn extract_task_envelope(raw: &str) -> TaskEnvelope {
 pub struct GsdTestAgent {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<Vec<String>>>,
+    pool_root: PathBuf,
 }
 
 impl GsdTestAgent {
@@ -129,7 +130,7 @@ impl GsdTestAgent {
     /// 3. Processes task and writes `<uuid>.response.json`
     ///
     /// The processor receives the full payload JSON and returns the response JSON.
-    pub fn start<F>(root: &Path, _agent_id: &str, processing_delay: Duration, processor: F) -> Self
+    pub fn start<F>(root: &Path, processing_delay: Duration, processor: F) -> Self
     where
         F: Fn(&str) -> String + Send + 'static,
     {
@@ -141,13 +142,9 @@ impl GsdTestAgent {
             let mut processed_tasks = Vec::new();
 
             while running_clone.load(Ordering::SeqCst) {
-                // Wait for task with timeout, checking running flag between iterations.
-                // Use 5s timeout - long enough that tasks arrive before timeout,
-                // short enough that stop() doesn't block too long.
-                let assignment = match wait_for_task(&pool_root, None, Some(Duration::from_secs(5)))
-                {
+                // Wait for task - no timeout, stop() triggers exit by deleting agents dir
+                let assignment = match wait_for_task(&pool_root, None, None) {
                     Ok(a) => a,
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
                     Err(e) => {
                         eprintln!("[test-agent] wait_for_task error: {e}");
                         break;
@@ -178,23 +175,19 @@ impl GsdTestAgent {
         Self {
             running,
             handle: Some(handle),
+            pool_root: root.to_path_buf(),
         }
     }
 
     /// Start an agent that always transitions to Done.
-    pub fn terminator(root: &Path, agent_id: &str, processing_delay: Duration) -> Self {
-        Self::start(root, agent_id, processing_delay, |_| "[]".to_string())
+    pub fn terminator(root: &Path, processing_delay: Duration) -> Self {
+        Self::start(root, processing_delay, |_| "[]".to_string())
     }
 
     /// Start an agent that transitions to a fixed next step.
-    pub fn transition_to(
-        root: &Path,
-        agent_id: &str,
-        processing_delay: Duration,
-        next_kind: &str,
-    ) -> Self {
+    pub fn transition_to(root: &Path, processing_delay: Duration, next_kind: &str) -> Self {
         let next_kind = next_kind.to_string();
-        Self::start(root, agent_id, processing_delay, move |_| {
+        Self::start(root, processing_delay, move |_| {
             format!(r#"[{{"kind": "{next_kind}", "value": {{}}}}]"#)
         })
     }
@@ -202,7 +195,6 @@ impl GsdTestAgent {
     /// Start a custom agent that maps task kinds to responses.
     pub fn with_transitions(
         root: &Path,
-        agent_id: &str,
         processing_delay: Duration,
         transitions: Vec<(&str, &str)>,
     ) -> Self {
@@ -211,7 +203,7 @@ impl GsdTestAgent {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        Self::start(root, agent_id, processing_delay, move |payload| {
+        Self::start(root, processing_delay, move |payload| {
             // Parse the kind from the payload
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload)
                 && let Some(kind) = parsed
@@ -234,8 +226,22 @@ impl GsdTestAgent {
     }
 
     /// Stop the agent and return the list of payloads it processed.
+    ///
+    /// Stops the daemon via CLI, which:
+    /// 1. Cleans up the agents directory
+    /// 2. Causes `wait_for_task` to fail with a watcher error
+    /// 3. Agent threads exit and return their processed tasks
     pub fn stop(mut self) -> Vec<String> {
         self.running.store(false, Ordering::SeqCst);
+        // Stop the daemon via CLI - this kicks all agents as part of cleanup
+        let bin = find_agent_pool_binary();
+        let _ = Command::new(&bin)
+            .arg("stop")
+            .arg("--pool-root")
+            .arg(self.pool_root.parent().unwrap_or(&self.pool_root))
+            .arg("--pool")
+            .arg(self.pool_root.file_name().unwrap_or_default())
+            .output();
         self.handle
             .take()
             .expect("Agent already stopped")

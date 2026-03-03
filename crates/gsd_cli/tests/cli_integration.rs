@@ -41,7 +41,6 @@ fn single_step_terminates() {
     let _pool = AgentPoolHandle::start(&pool_root);
     let agent = FileWriterAgent::start(
         &pool_root,
-        "test-agent",
         &output_dir,
         vec![("Start".to_string(), String::new())], // Terminate
     );
@@ -89,7 +88,6 @@ fn multi_stage_linear() {
     let _pool = AgentPoolHandle::start(&pool_root);
     let agent = FileWriterAgent::start(
         &pool_root,
-        "test-agent",
         &output_dir,
         vec![
             ("Start".to_string(), "Middle".to_string()),
@@ -274,7 +272,6 @@ fn config_from_file() {
     let _pool = AgentPoolHandle::start(&pool_root);
     let agent = FileWriterAgent::start(
         &pool_root,
-        "test-agent",
         &output_dir,
         vec![("FileStep".to_string(), String::new())],
     );

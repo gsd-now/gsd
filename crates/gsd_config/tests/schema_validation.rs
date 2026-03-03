@@ -65,19 +65,14 @@ fn valid_schema_passes() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent returns valid Output schema for Input, empty for Output
-    let agent = GsdTestAgent::start(
-        &root,
-        "schema-agent",
-        Duration::from_millis(10),
-        |payload| {
-            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-            let kind = v["task"]["kind"].as_str().unwrap_or("");
-            match kind {
-                "Input" => r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string(),
-                _ => "[]".to_string(),
-            }
-        },
-    );
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |payload| {
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
+        match kind {
+            "Input" => r#"[{"kind": "Output", "value": {"result": "success"}}]"#.to_string(),
+            _ => "[]".to_string(),
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -112,7 +107,7 @@ fn invalid_initial_task_skipped() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, "skip-agent", Duration::from_millis(10));
+    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -150,7 +145,7 @@ fn invalid_response_causes_retry() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent returns invalid Output schema (missing "result")
-    let agent = GsdTestAgent::start(&root, "bad-agent", Duration::from_millis(50), |_| {
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(50), |_| {
         r#"[{"kind": "Output", "value": {}}]"#.to_string()
     });
 

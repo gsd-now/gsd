@@ -59,9 +59,9 @@ fn tasks_execute_in_parallel() {
 
     // Start 3 agents with 100ms processing delay
     let processing_delay = Duration::from_millis(100);
-    let _agent1 = GsdTestAgent::terminator(&root, "agent-1", processing_delay);
-    let _agent2 = GsdTestAgent::terminator(&root, "agent-2", processing_delay);
-    let _agent3 = GsdTestAgent::terminator(&root, "agent-3", processing_delay);
+    let _agent1 = GsdTestAgent::terminator(&root, processing_delay);
+    let _agent2 = GsdTestAgent::terminator(&root, processing_delay);
+    let _agent3 = GsdTestAgent::terminator(&root, processing_delay);
 
     let config = worker_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
@@ -121,15 +121,15 @@ fn work_distributed_across_agents() {
     // Use longer delay to ensure multiple agents get work
     let delay = Duration::from_millis(50);
 
-    let _agent1 = GsdTestAgent::start(&root, "agent-1", delay, move |_| {
+    let _agent1 = GsdTestAgent::start(&root, delay, move |_| {
         count1.fetch_add(1, Ordering::SeqCst);
         "[]".to_string()
     });
-    let _agent2 = GsdTestAgent::start(&root, "agent-2", delay, move |_| {
+    let _agent2 = GsdTestAgent::start(&root, delay, move |_| {
         count2.fetch_add(1, Ordering::SeqCst);
         "[]".to_string()
     });
-    let _agent3 = GsdTestAgent::start(&root, "agent-3", delay, move |_| {
+    let _agent3 = GsdTestAgent::start(&root, delay, move |_| {
         count3.fetch_add(1, Ordering::SeqCst);
         "[]".to_string()
     });
@@ -194,7 +194,7 @@ fn max_concurrency_limits_parallel_tasks() {
     let delay = Duration::from_millis(50);
 
     // Single agent that tracks concurrency
-    let _agent = GsdTestAgent::start(&root, "tracker", delay, move |_| {
+    let _agent = GsdTestAgent::start(&root, delay, move |_| {
         let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Update max if higher
@@ -273,7 +273,7 @@ fn task_runner_yields_results_incrementally() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, "agent", Duration::from_millis(10));
+    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -318,7 +318,7 @@ fn task_runner_is_empty_status() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, "agent", Duration::from_millis(10));
+    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -362,30 +362,23 @@ fn nested_fan_out() {
     let processed_kinds = Arc::new(std::sync::Mutex::new(Vec::new()));
     let kinds_clone = processed_kinds.clone();
 
-    let _agent = GsdTestAgent::start(
-        &root,
-        "nested-agent",
-        Duration::from_millis(10),
-        move |payload| {
-            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-            let kind = v["task"]["kind"].as_str().unwrap_or("");
-            kinds_clone.lock().unwrap().push(kind.to_string());
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |payload| {
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
+        kinds_clone.lock().unwrap().push(kind.to_string());
 
-            match kind {
-                "Root" => r#"[{"kind": "Branch1", "value": {}}, {"kind": "Branch2", "value": {}}]"#
-                    .to_string(),
-                "Branch1" => {
-                    r#"[{"kind": "Leaf1A", "value": {}}, {"kind": "Leaf1B", "value": {}}]"#
-                        .to_string()
-                }
-                "Branch2" => {
-                    r#"[{"kind": "Leaf2A", "value": {}}, {"kind": "Leaf2B", "value": {}}]"#
-                        .to_string()
-                }
-                _ => "[]".to_string(),
+        match kind {
+            "Root" => r#"[{"kind": "Branch1", "value": {}}, {"kind": "Branch2", "value": {}}]"#
+                .to_string(),
+            "Branch1" => {
+                r#"[{"kind": "Leaf1A", "value": {}}, {"kind": "Leaf1B", "value": {}}]"#.to_string()
             }
-        },
-    );
+            "Branch2" => {
+                r#"[{"kind": "Leaf2A", "value": {}}, {"kind": "Leaf2B", "value": {}}]"#.to_string()
+            }
+            _ => "[]".to_string(),
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

@@ -61,7 +61,7 @@ fn invalid_transition_causes_retry() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent tries to skip from Start directly to End (invalid)
-    let agent = GsdTestAgent::start(&root, "bad-transition", Duration::from_millis(10), |_| {
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |_| {
         r#"[{"kind": "End", "value": {}}]"#.to_string()
     });
 
@@ -102,7 +102,7 @@ fn unknown_step_causes_retry() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent returns a step that doesn't exist
-    let agent = GsdTestAgent::start(&root, "unknown-step", Duration::from_millis(10), |_| {
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |_| {
         r#"[{"kind": "NonExistent", "value": {}}]"#.to_string()
     });
 
@@ -146,30 +146,25 @@ fn recovery_after_invalid_then_valid() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let call_count_clone = call_count.clone();
 
-    let agent = GsdTestAgent::start(
-        &root,
-        "recovering-agent",
-        Duration::from_millis(10),
-        move |payload| {
-            let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
-            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-            let kind = v["task"]["kind"].as_str().unwrap_or("");
+    let agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |payload| {
+        let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
 
-            match kind {
-                "Start" => {
-                    if count == 0 {
-                        // First attempt: invalid transition
-                        r#"[{"kind": "End", "value": {}}]"#.to_string()
-                    } else {
-                        // Second attempt: valid transition
-                        r#"[{"kind": "Middle", "value": {}}]"#.to_string()
-                    }
+        match kind {
+            "Start" => {
+                if count == 0 {
+                    // First attempt: invalid transition
+                    r#"[{"kind": "End", "value": {}}]"#.to_string()
+                } else {
+                    // Second attempt: valid transition
+                    r#"[{"kind": "Middle", "value": {}}]"#.to_string()
                 }
-                "Middle" => r#"[{"kind": "End", "value": {}}]"#.to_string(),
-                _ => "[]".to_string(),
             }
-        },
-    );
+            "Middle" => r#"[{"kind": "End", "value": {}}]"#.to_string(),
+            _ => "[]".to_string(),
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

@@ -43,7 +43,7 @@ fn single_step_terminates() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, "test-agent", Duration::from_millis(10));
+    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 

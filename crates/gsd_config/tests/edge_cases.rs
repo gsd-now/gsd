@@ -112,7 +112,7 @@ fn unknown_initial_step_skipped() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let _agent = GsdTestAgent::terminator(&root, "agent", Duration::from_millis(10));
+    let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -160,7 +160,7 @@ fn invalid_value_schema_skipped() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
 
-    let _agent = GsdTestAgent::start(&root, "agent", Duration::from_millis(10), move |_| {
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), move |_| {
         count_clone.fetch_add(1, Ordering::SeqCst);
         "[]".to_string()
     });
@@ -227,27 +227,22 @@ fn large_fan_out() {
     let task_count = Arc::new(AtomicUsize::new(0));
     let count_clone = task_count.clone();
 
-    let _agent = GsdTestAgent::start(
-        &root,
-        "fanout-agent",
-        Duration::from_millis(5),
-        move |payload| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(5), move |payload| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
 
-            let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
-            let kind = v["task"]["kind"].as_str().unwrap_or("");
+        let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = v["task"]["kind"].as_str().unwrap_or("");
 
-            if kind == "Distribute" {
-                // Fan out to 20 workers
-                let workers: Vec<String> = (0..20)
-                    .map(|i| format!(r#"{{"kind": "Worker", "value": {{"id": {i}}}}}"#))
-                    .collect();
-                format!("[{}]", workers.join(", "))
-            } else {
-                "[]".to_string()
-            }
-        },
-    );
+        if kind == "Distribute" {
+            // Fan out to 20 workers
+            let workers: Vec<String> = (0..20)
+                .map(|i| format!(r#"{{"kind": "Worker", "value": {{"id": {i}}}}}"#))
+                .collect();
+            format!("[{}]", workers.join(", "))
+        } else {
+            "[]".to_string()
+        }
+    });
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -337,7 +332,7 @@ fn rapid_task_completion() {
     let _pool = AgentPoolHandle::start(&root);
 
     // Agent with minimal delay (zero can cause races)
-    let _agent = GsdTestAgent::terminator(&root, "fast-agent", Duration::from_millis(1));
+    let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(1));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
@@ -383,7 +378,7 @@ fn pending_count_accurate() {
     }
 
     let _pool = AgentPoolHandle::start(&root);
-    let _agent = GsdTestAgent::terminator(&root, "agent", Duration::from_millis(50));
+    let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(50));
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
