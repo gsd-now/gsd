@@ -12,7 +12,9 @@ use std::path::Path;
 use notify::event::EventKind;
 use tracing::warn;
 
-use crate::constants::{READY_SUFFIX, REQUEST_SUFFIX, STATUS_FILE, WORKER_RESPONSE_SUFFIX};
+use crate::constants::{
+    READY_SUFFIX, REQUEST_SUFFIX, STATUS_FILE, STATUS_STOP, WORKER_RESPONSE_SUFFIX,
+};
 use crate::verified_watcher::is_write_complete;
 
 /// Category of a filesystem path.
@@ -83,7 +85,7 @@ fn categorize_root(path: &Path, event_kind: EventKind, root: &Path) -> Option<Pa
     {
         let trimmed = content.trim();
         // Check for "stop" or "stop|..." marker (for debugging who wrote it)
-        if trimmed == "stop" || trimmed.starts_with("stop|") {
+        if trimmed == STATUS_STOP || trimmed.starts_with(&format!("{STATUS_STOP}|")) {
             warn!(
                 path = %path.display(),
                 content = %trimmed,

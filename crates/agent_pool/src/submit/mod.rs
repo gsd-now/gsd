@@ -3,7 +3,6 @@
 mod file;
 mod payload;
 mod socket;
-mod stop;
 
 use std::io;
 use std::path::Path;
@@ -15,7 +14,6 @@ use crate::constants::STATUS_FILE;
 pub use file::{submit_file, submit_file_with_timeout};
 pub use payload::Payload;
 pub use socket::submit;
-pub use stop::stop;
 
 /// Wait for the agent pool daemon to become ready.
 ///

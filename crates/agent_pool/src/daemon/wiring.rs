@@ -20,7 +20,8 @@ use tracing::{debug, info, trace, warn};
 use std::collections::HashSet;
 
 use crate::constants::{
-    AGENTS_DIR, LOCK_FILE, REQUEST_SUFFIX, SCRATCH_DIR, SOCKET_NAME, STATUS_FILE, SUBMISSIONS_DIR,
+    AGENTS_DIR, LOCK_FILE, REQUEST_SUFFIX, SCRATCH_DIR, SOCKET_NAME, STATUS_FILE, STATUS_READY,
+    SUBMISSIONS_DIR,
 };
 use crate::lock::{LockGuard, acquire_lock};
 use crate::submit::Payload;
@@ -220,7 +221,7 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     let _cleanup = SocketCleanup(socket_path.clone());
 
     // Write status file to signal daemon is ready
-    fs::write(root.join(STATUS_FILE), "ready")?;
+    fs::write(root.join(STATUS_FILE), STATUS_READY)?;
 
     info!(socket = %socket_path.display(), "daemon listening");
 

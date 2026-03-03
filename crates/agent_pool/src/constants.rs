@@ -33,6 +33,13 @@ pub const RESPONSE_SUFFIX: &str = ".response.json";
 /// When changed to "stop", triggers graceful daemon shutdown.
 pub const STATUS_FILE: &str = "status";
 
+/// Status file content when daemon is ready and accepting tasks.
+pub const STATUS_READY: &str = "ready";
+
+/// Status file content prefix to trigger graceful daemon shutdown.
+/// May be followed by debug info: "stop|pid:123|pool:/tmp/foo"
+pub const STATUS_STOP: &str = "stop";
+
 // =============================================================================
 // Anonymous worker file suffixes (flat files in agents/)
 // =============================================================================

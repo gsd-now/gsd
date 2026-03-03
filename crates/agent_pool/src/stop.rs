@@ -1,17 +1,14 @@
 //! Stop a running agent pool daemon.
 
-// TEMPORARY: Allow panic for debugging
-#![allow(clippy::panic, clippy::missing_panics_doc, unreachable_code)]
-
-use crate::constants::{LOCK_FILE, STATUS_FILE};
+use crate::constants::{LOCK_FILE, STATUS_FILE, STATUS_STOP};
 use std::path::Path;
 use std::time::Duration;
 use std::{fs, io, thread};
-use tracing::warn;
+use tracing::debug;
 
 /// Stop a running agent pool daemon.
 ///
-/// First writes "stop" to the status file to trigger graceful shutdown,
+/// Writes the stop signal to the status file to trigger graceful shutdown,
 /// waits briefly for the daemon to exit, then sends SIGTERM as a fallback.
 ///
 /// # Errors
@@ -38,23 +35,13 @@ pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
         .parse()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    // Signal graceful shutdown by writing "stop" to status file
-    warn!(
+    // Signal graceful shutdown
+    debug!(
         pool = %root.display(),
         target_pid = pid,
-        our_pid = std::process::id(),
-        "STOP: writing 'stop' to status file"
+        "sending stop signal"
     );
-
-    // TEMPORARY: Capture backtrace and write to status file
-    let bt = std::backtrace::Backtrace::force_capture();
-    let marker = format!(
-        "stop|pid:{}|pool:{}|BACKTRACE:\n{}",
-        std::process::id(),
-        root.display(),
-        bt
-    );
-    let _ = fs::write(&status_path, &marker);
+    fs::write(&status_path, STATUS_STOP)?;
 
     // Give the daemon a moment to shut down gracefully
     thread::sleep(Duration::from_millis(100));

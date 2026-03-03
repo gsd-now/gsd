@@ -146,11 +146,11 @@ fn is_pool_running(_pool_path: &std::path::Path) -> bool {
 
 /// Resolve a pool reference (ID or path) to a full path.
 ///
-/// If the input looks like a path (contains `/`), returns it as-is.
+/// If the reference looks like a path (contains `/` or `\`), returns it as-is.
 /// Otherwise, treats it as an ID and converts to `<pool_root>/<id>`.
 #[must_use]
 pub fn resolve_pool(pool_root: &Path, reference: &str) -> PathBuf {
-    if reference.contains('/') {
+    if reference.contains('/') || reference.contains('\\') {
         PathBuf::from(reference)
     } else {
         id_to_path(pool_root, reference)
