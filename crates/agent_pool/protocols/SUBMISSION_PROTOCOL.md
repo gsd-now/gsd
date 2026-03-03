@@ -22,21 +22,10 @@ Submissions use the same format as tasks sent to agents:
 
 ## Usage
 
-**From a file (works in sandboxed environments):**
-```bash
-agent_pool submit_task --pool <POOL_ID> --file /path/to/task.json
-```
-
-**Inline JSON (faster, requires socket access):**
 ```bash
 agent_pool submit_task --pool <POOL_ID> --data '{"kind":"Task","task":{"instructions":"...","data":{...}}}'
 ```
 
-Both methods block until the task completes (default timeout: 5 minutes).
+This blocks until the task completes (default timeout: 5 minutes). JSON response on stdout, errors on stderr.
 
-## When to use which
-
-- Use `--file` in sandboxed environments where Unix sockets are blocked
-- Use `--data` for quick submissions when you have full system access
-
-The output is the same either way: JSON response on stdout, errors on stderr.
+In sandboxed environments, add `--notify file` to use file-based notifications instead of sockets.

@@ -351,6 +351,7 @@ impl<'a> TaskRunner<'a> {
                     let tx = self.tx.clone();
                     let original_value = task.value.clone();
                     let task_step = task.step.clone();
+                    let working_dir = self.config_base_path.to_path_buf();
 
                     info!(step = %task.step, script = %script, "executing command");
 
@@ -380,7 +381,7 @@ impl<'a> TaskRunner<'a> {
                         }))
                         .unwrap_or_default();
 
-                        let result = run_command_action(&script, &task_json);
+                        let result = run_command_action(&script, &task_json, &working_dir);
                         let _ = tx.send(InFlightResult {
                             task,
                             task_id,
@@ -788,10 +789,11 @@ fn call_wake_script(script: &str) -> io::Result<()> {
     }
 }
 
-fn run_command_action(script: &str, task_json: &str) -> io::Result<String> {
+fn run_command_action(script: &str, task_json: &str, working_dir: &Path) -> io::Result<String> {
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(script)
+        .current_dir(working_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
