@@ -119,9 +119,12 @@ impl FileWriterAgent {
         let pool_root_for_stop = pool_root.clone();
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::SeqCst) {
-                // Wait for task - stop() triggers exit when daemon is stopped
-                let Ok(assignment) = wait_for_task(&pool_root, None, None) else {
-                    break; // Watcher error or pool shutdown
+                // Wait for task with timeout - allows checking running flag periodically
+                let Ok(assignment) =
+                    wait_for_task(&pool_root, None, Some(Duration::from_millis(500)))
+                else {
+                    // Timeout or error - check running flag and retry
+                    continue;
                 };
 
                 let TaskAssignment { uuid, content } = assignment;
