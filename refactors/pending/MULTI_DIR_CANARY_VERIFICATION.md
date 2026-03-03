@@ -1,6 +1,9 @@
 # Multi-Directory Canary Verification
 
-## Status: PENDING APPROVAL
+## Status: PHASE 1 COMPLETE
+
+Phase 1 (Changes 1a-1d) has been implemented and merged. CI is running.
+Phase 2 remains pending.
 
 ## Problem
 
@@ -43,12 +46,12 @@ This is **incorrect** for recursive watching on Linux. The root watch may work w
 
 Phase 1 is broken into independently shippable changes:
 
-| Change | Description | Dependencies |
-|--------|-------------|--------------|
-| 1a | Update `CanaryGuard` API | None |
-| 1b | Update `WatcherState` to use `Vec<CanaryGuard>` | 1a |
-| 1c | Restore `into_receiver` method | 1b |
-| 1d | Refactor daemon to use `VerifiedWatcher` | 1c |
+| Change | Description | Dependencies | Status |
+|--------|-------------|--------------|--------|
+| 1a | Update `CanaryGuard` API | None | ✅ Done |
+| 1b | Update `WatcherState` to use `Vec<CanaryGuard>` | 1a | ✅ Done |
+| 1c | Restore `into_receiver` method | 1b | ✅ Done |
+| 1d | Refactor daemon to use `VerifiedWatcher` | 1c | ✅ Done |
 
 ---
 
