@@ -3,7 +3,8 @@
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
 
-use agent_pool::{TaskAssignment, wait_for_pool_ready, wait_for_task, write_response};
+use agent_pool::{AGENTS_DIR, TaskAssignment, wait_for_pool_ready, wait_for_task, write_response};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -70,6 +72,90 @@ pub fn is_ipc_available(_test_dir: &Path) -> bool {
 }
 
 // =============================================================================
+// Agent Registration Helper
+// =============================================================================
+
+/// Wait for a new agent to register with the pool.
+///
+/// Watches the agents directory for a new `.ready.json` file to appear.
+/// Returns the path to the ready file when one appears.
+///
+/// # Panics
+///
+/// Panics if waiting times out (5 seconds).
+fn wait_for_agent_ready(pool_root: &Path, test_name: &str) -> PathBuf {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let agents_dir = pool_root.join(AGENTS_DIR);
+
+    // Ensure agents directory exists
+    let _ = fs::create_dir_all(&agents_dir);
+
+    // Record existing ready files
+    let existing: BTreeSet<PathBuf> = fs::read_dir(&agents_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains(".ready.json"))
+        .collect();
+
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                for path in event.paths {
+                    let _ = tx.send(path);
+                }
+            }
+        },
+        Config::default(),
+    )
+    .expect("failed to create watcher");
+
+    watcher
+        .watch(&agents_dir, RecursiveMode::NonRecursive)
+        .expect("failed to watch agents dir");
+
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(5);
+
+    loop {
+        // Check for new ready files (fast path - file might already exist)
+        if let Ok(entries) = fs::read_dir(&agents_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.to_string_lossy().contains(".ready.json") && !existing.contains(&path) {
+                    eprintln!("[{test_name}] Agent registered: {}", path.display());
+                    return path;
+                }
+            }
+        }
+
+        // Wait for events
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(path) => {
+                if path.to_string_lossy().contains(".ready.json") && !existing.contains(&path) {
+                    eprintln!("[{test_name}] Agent registered: {}", path.display());
+                    return path;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                unreachable!("watcher channel disconnected");
+            }
+        }
+
+        assert!(
+            start.elapsed() <= timeout,
+            "[{test_name}] Timeout waiting for agent to register in {}",
+            agents_dir.display()
+        );
+    }
+}
+
+// =============================================================================
 // File Writer Agent
 // =============================================================================
 
@@ -109,7 +195,15 @@ impl FileWriterAgent {
     /// 2. Waits for `<uuid>.task.json` using verified file watcher (no polling)
     /// 3. Processes task and writes marker file
     /// 4. Writes `<uuid>.response.json` with transition
-    pub fn start(pool_root: &Path, output_dir: &Path, transitions: Vec<(String, String)>) -> Self {
+    ///
+    /// This function blocks until the agent has registered with the daemon,
+    /// ensuring that tasks can be submitted immediately after this returns.
+    pub fn start(
+        pool_root: &Path,
+        output_dir: &Path,
+        transitions: Vec<(String, String)>,
+        test_name: &str,
+    ) -> Self {
         fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
         let running = Arc::new(AtomicBool::new(true));
@@ -117,6 +211,8 @@ impl FileWriterAgent {
         let output_dir = output_dir.to_path_buf();
         let pool_root = pool_root.to_path_buf();
         let pool_root_for_stop = pool_root.clone();
+        let pool_root_for_wait = pool_root.clone();
+        let test_name_owned = test_name.to_string();
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::SeqCst) {
                 // Wait for task with timeout - allows checking running flag periodically
@@ -169,6 +265,10 @@ impl FileWriterAgent {
                 let _ = write_response(&pool_root, &uuid, "[]");
             }
         });
+
+        // Wait for the agent to actually register with the daemon before returning.
+        // This ensures that when start() returns, the agent is ready to receive tasks.
+        let _ = wait_for_agent_ready(&pool_root_for_wait, &test_name_owned);
 
         Self {
             running,

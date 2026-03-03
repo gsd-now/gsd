@@ -8,7 +8,7 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{Response, default_pool_root, id_to_path, wait_for_pool_ready};
+use agent_pool::{AGENTS_DIR, Response, default_pool_root, id_to_path, wait_for_pool_ready};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
@@ -147,6 +148,86 @@ impl SubmissionsSnapshot {
 /// If running in a restricted environment, set `SKIP_IPC_TESTS=1`.
 pub fn is_ipc_available(_root: &std::path::Path) -> bool {
     std::env::var("SKIP_IPC_TESTS").is_err()
+}
+
+/// Wait for a new agent to register with the pool.
+///
+/// Watches the agents directory for a new `.ready.json` file to appear.
+/// Returns the path to the ready file when one appears.
+///
+/// # Panics
+///
+/// Panics if waiting times out (5 seconds).
+fn wait_for_agent_ready(pool: &str, test_name: &str) -> PathBuf {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let agents_dir = pool_path(pool).join(AGENTS_DIR);
+
+    // Record existing ready files
+    let existing: BTreeSet<PathBuf> = fs::read_dir(&agents_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext == "json" && p.to_string_lossy().contains(".ready."))
+        })
+        .collect();
+
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                for path in event.paths {
+                    let _ = tx.send(path);
+                }
+            }
+        },
+        Config::default(),
+    )
+    .expect("failed to create watcher");
+
+    watcher
+        .watch(&agents_dir, RecursiveMode::NonRecursive)
+        .expect("failed to watch agents dir");
+
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(5);
+
+    loop {
+        // Check for new ready files (fast path - file might already exist)
+        if let Ok(entries) = fs::read_dir(&agents_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.to_string_lossy().contains(".ready.json") && !existing.contains(&path) {
+                    eprintln!("[{test_name}] Agent registered: {}", path.display());
+                    return path;
+                }
+            }
+        }
+
+        // Wait for events
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(path) => {
+                if path.to_string_lossy().contains(".ready.json") && !existing.contains(&path) {
+                    eprintln!("[{test_name}] Agent registered: {}", path.display());
+                    return path;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                unreachable!("watcher channel disconnected");
+            }
+        }
+
+        assert!(
+            start.elapsed() <= timeout,
+            "[{test_name}] Timeout waiting for agent to register in {}",
+            agents_dir.display()
+        );
+    }
 }
 
 // =============================================================================
@@ -346,6 +427,15 @@ impl TestAgent {
 
             processed_tasks
         });
+
+        // Wait for the agent to actually register with the daemon before returning.
+        // This ensures that when start() returns, the agent is ready to receive tasks.
+        let ready_path = wait_for_agent_ready(pool, test_name);
+
+        // Store the ready file path for cleanup
+        if let Ok(mut guard) = ready_file.lock() {
+            *guard = Some(ready_path);
+        }
 
         Self {
             running,
