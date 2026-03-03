@@ -504,6 +504,11 @@ fn handle_fs_event(
             }
             PathCategory::Stop => {
                 // Stop signal received
+                warn!(
+                    path = %path.display(),
+                    event_kind = ?event.kind,
+                    "DAEMON: received Stop signal via status file"
+                );
                 return false;
             }
         }

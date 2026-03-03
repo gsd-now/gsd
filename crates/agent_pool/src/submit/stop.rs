@@ -4,6 +4,7 @@ use crate::constants::{LOCK_FILE, STATUS_FILE};
 use std::path::Path;
 use std::time::Duration;
 use std::{fs, io, thread};
+use tracing::warn;
 
 /// Stop a running agent pool daemon.
 ///
@@ -35,6 +36,11 @@ pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     // Signal graceful shutdown by writing "stop" to status file
+    warn!(
+        pool = %root.display(),
+        pid = pid,
+        "STOP: writing 'stop' to status file"
+    );
     let _ = fs::write(&status_path, "stop");
 
     // Give the daemon a moment to shut down gracefully
