@@ -496,7 +496,6 @@ dependencies = [
  "gsd_config",
  "interprocess",
  "json5",
- "notify",
  "rstest",
  "serde_json",
  "tracing-subscriber",

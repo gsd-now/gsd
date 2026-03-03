@@ -43,7 +43,6 @@ fn single_step_terminates() {
         &pool_root,
         &output_dir,
         vec![("Start".to_string(), String::new())], // Terminate
-        &test_name,
     );
 
     let config = r#"{
@@ -100,7 +99,6 @@ fn multi_stage_linear() {
             ("Middle".to_string(), "End".to_string()),
             ("End".to_string(), String::new()),
         ],
-        &test_name,
     );
 
     let config = r#"{
@@ -286,7 +284,6 @@ fn config_from_file() {
         &pool_root,
         &output_dir,
         vec![("FileStep".to_string(), String::new())],
-        &test_name,
     );
 
     let gsd = GsdRunner::new();
