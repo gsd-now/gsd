@@ -1,9 +1,8 @@
 # Multi-Directory Canary Verification
 
-## Status: PHASE 1 COMPLETE
+## Status: COMPLETE
 
-Phase 1 (Changes 1a-1d) has been implemented and merged. CI is running.
-Phase 2 remains pending.
+Both Phase 1 (Changes 1a-1d) and Phase 2 have been implemented and merged.
 
 ## Problem
 
