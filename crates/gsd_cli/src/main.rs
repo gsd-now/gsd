@@ -20,6 +20,11 @@ const VERSION: &str = env!("GSD_VERSION");
 #[command(name = "gsd")]
 #[command(about = "Get Sh*** Done - JSON-based task orchestrator")]
 struct Cli {
+    /// Base directory for pools. Pool IDs resolve to `<pool-root>/<id>/`.
+    /// Defaults to `/tmp/agent_pool` on Unix.
+    #[arg(long, global = true)]
+    pool_root: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -77,6 +82,9 @@ enum Command {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
+    // Extract pool_root for commands that need it
+    let pool_root = cli.pool_root.unwrap_or_else(agent_pool::default_pool_root);
+
     match cli.command {
         Command::Run {
             config,
@@ -84,46 +92,14 @@ fn main() -> io::Result<()> {
             pool,
             wake,
             log_file,
-        } => {
-            // Initialize tracing with optional log file
-            init_tracing(log_file.as_ref())?;
-
-            // Detect how to invoke the agent_pool CLI (returns helpful error if not found)
-            let invoker = Invoker::<AgentPoolCli>::detect()?;
-
-            let (cfg, config_dir) = parse_config(&config)?;
-            cfg.validate().map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("[E051] config validation failed: {e}"),
-                )
-            })?;
-
-            let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
-
-            // Parse initial tasks
-            let initial_tasks = parse_initial_tasks(&initial)?;
-
-            // Resolve pool ID or path
-            let pool_path = pool.map_or_else(
-                || {
-                    let temp = std::env::temp_dir().join("gsd-pool");
-                    std::fs::create_dir_all(&temp).ok();
-                    temp
-                },
-                |p| agent_pool::resolve_pool(&agent_pool::default_pool_root(), &p),
-            );
-
-            let runner_config = RunnerConfig {
-                agent_pool_root: &pool_path,
-                config_base_path: &config_dir,
-                wake_script: wake.as_deref(),
-                initial_tasks,
-                invoker: &invoker,
-            };
-
-            run(&cfg, &schemas, runner_config)?;
-        }
+        } => run_command(
+            &config,
+            &initial,
+            pool.as_deref(),
+            wake.as_deref(),
+            log_file.as_ref(),
+            &pool_root,
+        )?,
 
         Command::Docs { config } => {
             let (cfg, config_dir) = parse_config(&config)?;
@@ -181,6 +157,78 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn run_command(
+    config: &str,
+    initial: &str,
+    pool: Option<&str>,
+    wake: Option<&str>,
+    log_file: Option<&PathBuf>,
+    pool_root: &std::path::Path,
+) -> io::Result<()> {
+    // Initialize tracing with optional log file
+    init_tracing(log_file)?;
+
+    // Detect how to invoke the agent_pool CLI (returns helpful error if not found)
+    let invoker = Invoker::<AgentPoolCli>::detect()?;
+
+    let (cfg, config_dir) = parse_config(config)?;
+    cfg.validate().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E051] config validation failed: {e}"),
+        )
+    })?;
+
+    let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
+
+    // Parse initial tasks
+    let initial_tasks = parse_initial_tasks(initial)?;
+
+    // Resolve pool ID or path
+    let pool_path = resolve_pool_path(pool, pool_root)?;
+
+    let runner_config = RunnerConfig {
+        agent_pool_root: &pool_path,
+        config_base_path: &config_dir,
+        wake_script: wake,
+        initial_tasks,
+        invoker: &invoker,
+    };
+
+    run(&cfg, &schemas, runner_config)
+}
+
+/// Resolve pool ID to full path.
+///
+/// - Absolute paths (starting with `/`) are used directly
+/// - Relative IDs (no slashes) are resolved relative to `pool_root`
+/// - Relative paths with slashes are rejected (use `--pool-root` instead)
+fn resolve_pool_path(pool: Option<&str>, pool_root: &std::path::Path) -> io::Result<PathBuf> {
+    match pool {
+        None => {
+            let temp = std::env::temp_dir().join("gsd-pool");
+            std::fs::create_dir_all(&temp).ok();
+            Ok(temp)
+        }
+        Some(p) => {
+            // Allow absolute paths (backward compatible)
+            if p.starts_with('/') {
+                return Ok(PathBuf::from(p));
+            }
+            // Reject relative paths with slashes (ambiguous)
+            if p.contains('/') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "[E058] pool ID '{p}' cannot contain '/'. Use --pool-root to specify the base directory, or use an absolute path."
+                    ),
+                ));
+            }
+            Ok(agent_pool::resolve_pool(pool_root, p))
+        }
+    }
 }
 
 /// Parse config from either inline JSON/JSONC or a file path.
