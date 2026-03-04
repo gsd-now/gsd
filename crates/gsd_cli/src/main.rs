@@ -202,9 +202,7 @@ fn run_command(
 
 /// Resolve pool ID to full path.
 ///
-/// - Absolute paths (starting with `/`) are used directly
-/// - Relative IDs (no slashes) are resolved relative to `pool_root`
-/// - Relative paths with slashes are rejected (use `--pool-root` instead)
+/// Pool IDs cannot contain `/` - use `--pool-root` to specify the base directory.
 fn resolve_pool_path(pool: Option<&str>, pool_root: &std::path::Path) -> io::Result<PathBuf> {
     match pool {
         None => {
@@ -213,16 +211,11 @@ fn resolve_pool_path(pool: Option<&str>, pool_root: &std::path::Path) -> io::Res
             Ok(temp)
         }
         Some(p) => {
-            // Allow absolute paths (backward compatible)
-            if p.starts_with('/') {
-                return Ok(PathBuf::from(p));
-            }
-            // Reject relative paths with slashes (ambiguous)
             if p.contains('/') {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "[E058] pool ID '{p}' cannot contain '/'. Use --pool-root to specify the base directory, or use an absolute path."
+                        "[E058] pool ID '{p}' cannot contain '/'. Use --pool-root to specify the base directory."
                     ),
                 ));
             }

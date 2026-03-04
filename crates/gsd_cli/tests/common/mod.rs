@@ -365,15 +365,22 @@ impl GsdRunner {
         &self,
         config: &str,
         initial_tasks: &str,
-        pool_root: &Path,
+        pool_path: &Path,
     ) -> std::io::Result<std::process::Output> {
+        let pool_root = pool_path.parent().unwrap_or(pool_path);
+        let pool_id = pool_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pool");
         Command::new(&self.bin)
+            .arg("--pool-root")
+            .arg(pool_root)
             .arg("run")
             .arg(config)
             .arg("--initial")
             .arg(initial_tasks)
             .arg("--pool")
-            .arg(pool_root)
+            .arg(pool_id)
             .output()
     }
 
