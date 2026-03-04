@@ -648,10 +648,17 @@ pub fn run(
             dropped_count += 1;
         }
 
+        let remaining = runner.pending();
         info!(
-            "{} completed, {} remaining",
+            "{} {} completed, {} {} remaining",
             completed_count,
-            runner.pending()
+            if completed_count == 1 {
+                "task"
+            } else {
+                "tasks"
+            },
+            remaining,
+            if remaining == 1 { "task" } else { "tasks" }
         );
     }
 
