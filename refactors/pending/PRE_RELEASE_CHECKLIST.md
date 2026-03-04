@@ -6,7 +6,6 @@ Items that must be completed before shipping v0.2.
 
 | Item | Doc | Status |
 |------|-----|--------|
-| Config Schema | CONFIG_SCHEMA_SUBCOMMAND.md | CLI done, schema stub |
 | Default Step | DEFAULT_STEP.md | Pending approval |
 | State Persistence | STATE_PERSISTENCE.md | Pending approval |
 | Documentation | DOCUMENTATION.md | Pending approval |
@@ -15,16 +14,7 @@ Items that must be completed before shipping v0.2.
 
 ## Must Have (Incomplete)
 
-### 1. Config Schema Subcommand
-**Doc:** `CONFIG_SCHEMA_SUBCOMMAND.md`
-
-Add `gsd config schema` subcommand that prints JSON schema. Enables validation and IDE autocomplete.
-
-**Status:** CLI restructure done (`gsd config docs/validate/graph/schema`). Schema stub added. Need to implement actual schema generation with schemars.
-
----
-
-### 2. Default Step
+### 1. Default Step
 **Doc:** `DEFAULT_STEP.md`
 
 Allow configs to specify a default starting step so users don't have to pass initial tasks.
@@ -33,7 +23,7 @@ Allow configs to specify a default starting step so users don't have to pass ini
 
 ---
 
-### 3. State Persistence and Resume
+### 2. State Persistence and Resume
 **Doc:** `STATE_PERSISTENCE.md`
 
 Write task queue state to a file so runs can be resumed after interruption.
@@ -42,7 +32,7 @@ Write task queue state to a file so runs can be resumed after interruption.
 
 ---
 
-### 4. Documentation
+### 3. Documentation
 **Doc:** `DOCUMENTATION.md`
 
 - README with quick start
@@ -73,7 +63,16 @@ When running GSD, show progress: "X task(s) completed, Y task(s) remaining"
 
 ---
 
-### 7. Package Manager Auto-Detection
+### 7. Config Schema Subcommand
+**Doc:** `CONFIG_SCHEMA_SUBCOMMAND.md`
+
+Add `gsd config schema` subcommand that prints JSON schema. Enables validation and IDE autocomplete.
+
+**Status:** DONE. schemars derives JsonSchema on config types. Schema built as CI artifact and published to npm.
+
+---
+
+### 8. Package Manager Auto-Detection
 **Doc:** `AGENT_POOL_COMMAND.md` (in past/)
 
 Auto-detect pnpm/yarn/npm from package.json and use appropriate dlx command.
@@ -82,7 +81,7 @@ Auto-detect pnpm/yarn/npm from package.json and use appropriate dlx command.
 
 ---
 
-### 8. Pool Root Configuration for GSD
+### 9. Pool Root Configuration for GSD
 **Doc:** `GSD_POOL_ROOT.md` (in past/)
 
 Allow passing `--pool-root` to gsd CLI.
@@ -91,7 +90,7 @@ Allow passing `--pool-root` to gsd CLI.
 
 ---
 
-### 9. Version Subcommand
+### 10. Version Subcommand
 **Doc:** `VERSION_SUBCOMMAND.md` (in past/)
 
 Add `version` subcommand.
