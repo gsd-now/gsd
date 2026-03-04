@@ -920,3 +920,25 @@ This checks both that a task file appeared AND that the response file is gone (i
 **Current state:**
 
 The agent module already has proper canary verification and is event-driven (not polling). The main question is whether unification provides enough value to justify the API changes.
+
+---
+
+## CLI Invoker Version Checking
+
+**Status: TODO**
+
+The `cli_invoker` crate resolves how to invoke CLI tools (binary path, package manager dlx, etc.) but doesn't verify version compatibility.
+
+**Issues:**
+
+1. **Binary version mismatch** - When using a binary directly (env var, cargo workspace, node_modules), we should check `--version` first and warn if it differs from the current library version.
+
+2. **Package manager version pinning** - When using `pnpm dlx @gsd-now/agent-pool` (or similar), we should include the current version: `pnpm dlx @gsd-now/agent-pool@0.1.0`. Otherwise we might get a different version than expected.
+
+**Implementation:**
+
+1. Add `VERSION` constant to `cli_invoker` (or pass it in via trait)
+2. For binary invocation: run `<binary> --version`, parse output, warn if mismatch
+3. For package manager invocation: append `@{VERSION}` to the package name in `prefix_args`
+
+**Priority:** Low - not a blocker for initial release, but important for stability when multiple versions exist.
