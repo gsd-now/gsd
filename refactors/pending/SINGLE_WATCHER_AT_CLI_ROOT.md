@@ -27,15 +27,13 @@ Create the `VerifiedWatcher` at CLI entry point (`main()`) and pass it to all fu
 ```rust
 /// Create a watcher for the pool.
 fn create_pool_watcher(pool_root: &Path) -> io::Result<VerifiedWatcher> {
-    let agents_dir = pool_root.join(AGENTS_DIR);
-    let submissions_dir = pool_root.join(SUBMISSIONS_DIR);
-
-    // Watch pool root recursively.
-    // Need canaries in agents/ and submissions/ to verify watcher
-    // is receiving events from those directories (inotify race condition).
-    VerifiedWatcher::new(pool_root, &[agents_dir, submissions_dir])
+    // CLI: directories already exist (created by daemon), so a single canary
+    // at the root is sufficient to verify the watcher is working.
+    VerifiedWatcher::new(pool_root, &[pool_root.to_path_buf()])
 }
 ```
+
+**Note:** The daemon has different canary needs—it creates `agents/` and `submissions/` directories after setting up the watcher, so it needs canaries in those subdirectories to handle the inotify race condition. The CLI runs after the daemon is ready, so directories already exist.
 
 ### Update function signatures
 
