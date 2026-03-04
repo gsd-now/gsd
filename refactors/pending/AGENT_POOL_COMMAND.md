@@ -127,36 +127,67 @@ enum InvokerKind {
 }
 
 impl<T: InvokableCli> Invoker<T> {
-    pub fn detect() -> Self {
+    pub fn detect() -> io::Result<Self> {
         // 1. AGENT_POOL env var
         if let Ok(path) = std::env::var(T::ENV_VAR_BINARY) {
-            return Self::binary(PathBuf::from(path));
+            return Ok(Self::binary(PathBuf::from(path)));
         }
 
         // 2. AGENT_POOL_COMMAND env var
         if let Ok(cmd) = std::env::var(T::ENV_VAR_COMMAND) {
             if let Some(invoker) = Self::from_command_string(&cmd) {
-                return invoker;
+                return Ok(invoker);
             }
         }
 
         // 3. Cargo workspace binary (local dev)
         if let Some(binary) = find_cargo_workspace_binary(T::BINARY_NAME) {
-            return Self::binary(binary);
+            return Ok(Self::binary(binary));
         }
 
         // 4. node_modules/.bin (already installed)
         if let Some(binary) = find_node_modules_binary(T::BINARY_NAME) {
-            return Self::binary(binary);
+            return Ok(Self::binary(binary));
         }
 
         // 5. packageManager field in package.json
         if let Some(pm) = find_package_manager_field() {
-            return Self::from_package_manager(&pm, T::NPM_PACKAGE);
+            return Ok(Self::from_package_manager(&pm, T::NPM_PACKAGE));
         }
 
         // 6. Global package manager in PATH
-        Self::from_global_package_manager(T::NPM_PACKAGE)
+        if let Some(invoker) = Self::try_global_package_manager(T::NPM_PACKAGE) {
+            return Ok(invoker);
+        }
+
+        // Nothing found - return helpful error
+        Err(Self::not_found_error())
+    }
+
+    fn not_found_error() -> io::Error {
+        let msg = format!(
+            r#"Could not find '{binary}'. Looked in:
+
+  1. ${env_var} environment variable (not set)
+  2. ${env_var_cmd} environment variable (not set)
+  3. Cargo workspace target/debug/{binary} (not found)
+  4. node_modules/.bin/{binary} (not found)
+  5. package.json packageManager field (not found)
+  6. Global package managers pnpm/npx/yarn (not in PATH)
+
+To fix this, either:
+  - Install the package: pnpm add {npm_package}
+  - Or install globally: pnpm add -g {npm_package}
+  - Or set the environment variable: export {env_var}=/path/to/{binary}
+  - Or install a package manager (pnpm, npm, or yarn) and run via:
+      pnpm dlx {npm_package} <command>
+"#,
+            binary = T::BINARY_NAME,
+            env_var = T::ENV_VAR_BINARY,
+            env_var_cmd = T::ENV_VAR_COMMAND,
+            npm_package = T::NPM_PACKAGE,
+        );
+        io::Error::new(io::ErrorKind::NotFound, msg)
     }
 
     pub fn run<I, S>(&self, args: I) -> io::Result<Output>
@@ -219,7 +250,7 @@ impl<T: InvokableCli> Invoker<T> {
         }
     }
 
-    fn from_global_package_manager(npm_package: &str) -> Self {
+    fn try_global_package_manager(npm_package: &str) -> Option<Self> {
         let (program, prefix_args) = if is_in_path("pnpm") {
             ("pnpm", vec!["dlx", npm_package])
         } else if is_in_path("npx") {
@@ -227,15 +258,15 @@ impl<T: InvokableCli> Invoker<T> {
         } else if is_in_path("yarn") {
             ("yarn", vec!["dlx", npm_package])
         } else {
-            ("npx", vec![npm_package]) // last resort
+            return None; // no package manager found
         };
-        Self {
+        Some(Self {
             kind: InvokerKind::PackageManager {
                 program: program.to_string(),
                 prefix_args: prefix_args.into_iter().map(String::from).collect(),
             },
             _marker: PhantomData,
-        }
+        })
     }
 }
 
@@ -375,8 +406,8 @@ fn main() -> io::Result<()> {
         Command::Run { config, initial, pool, wake, log_file } => {
             init_tracing(log_file.as_ref())?;
 
-            // NEW: Create invoker once at entry point
-            let invoker = Invoker::<AgentPoolCli>::detect();
+            // NEW: Create invoker once at entry point (returns helpful error if not found)
+            let invoker = Invoker::<AgentPoolCli>::detect()?;
 
             let (cfg, config_dir) = parse_config(&config)?;
             // ...
