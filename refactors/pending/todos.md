@@ -777,27 +777,24 @@ Changes made:
 
 ---
 
-## GSD Pool Root Support
+## ~~GSD Pool Root Support~~ ✓ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-The `gsd` CLI should support `--pool-root` to match the `agent_pool` CLI. Currently GSD only accepts a pool name via `--pool`, and uses the default pool root (`/tmp/agent_pool/`).
+The `gsd` CLI now has `--pool-root` global flag matching the `agent_pool` CLI:
 
-For environments where the pool root is customized (e.g., `.aiCodeEditor/rules/local-rules`), users must specify the full path as the pool name, which is awkward.
-
-**Proposed:**
 ```bash
-# Current (full path as pool name)
-gsd run config.json --pool /path/to/pool-root/my-pool
+# Absolute paths still work (backward compatible)
+gsd run config.json --pool /custom/path/my-pool
 
-# Desired
-gsd run config.json --pool my-pool --pool-root /path/to/pool-root
+# New: cleaner syntax with --pool-root
+gsd run config.json --pool my-pool --pool-root /custom/path
 ```
 
-Implementation:
-- Add `--pool-root` flag to `gsd run` command
-- Default to `/tmp/agent_pool/` if not specified
-- Combine with `--pool` to form full pool path
+Pool argument handling:
+- Absolute paths (starting with `/`) are used directly
+- Relative IDs (no slashes) are resolved relative to `pool_root`
+- Relative paths with slashes are rejected with E058 error
 
 ---
 
