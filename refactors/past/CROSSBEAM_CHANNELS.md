@@ -1,5 +1,7 @@
 # Migrate to crossbeam channels
 
+**Status: Complete** (2026-03-03)
+
 ## Motivation
 
 The codebase currently uses `std::sync::mpsc` channels. This works but has limitations:
