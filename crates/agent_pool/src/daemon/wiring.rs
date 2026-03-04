@@ -796,12 +796,12 @@ impl Drop for SocketCleanup {
     }
 }
 
-/// Guard that cleans up pool state when dropped.
+/// Guard that deletes the entire pool folder when dropped.
 struct PoolStateCleanup(PathBuf);
 
 impl Drop for PoolStateCleanup {
     fn drop(&mut self) {
-        cleanup_pool_state(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
