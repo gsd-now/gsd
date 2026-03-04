@@ -45,7 +45,7 @@ This is inconsistent with the rest of the codebase which uses `VerifiedWatcher` 
 
 ## Proposed Solution
 
-Use `VerifiedWatcher` to watch for the status file. Rename existing method for clarity.
+Rename existing `wait_for` method and add timeout variant. Use private implementation.
 
 ### New VerifiedWatcher Methods
 
@@ -122,146 +122,6 @@ impl VerifiedWatcher {
 }
 ```
 
-### Single Watcher Per CLI Invocation
-
-**Goal:** Exactly one `VerifiedWatcher` per CLI process. Runtime panic if violated.
-
-Create a `PoolWatcher` that watches all relevant directories upfront:
-
-```rust
-// crates/agent_pool/src/pool_watcher.rs
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::Path;
-
-/// Tracks whether a watcher has been created for this process.
-/// Panics in debug mode if a second watcher is created.
-static WATCHER_CREATED: AtomicBool = AtomicBool::new(false);
-
-pub struct PoolWatcher {
-    inner: VerifiedWatcher,
-}
-
-impl PoolWatcher {
-    /// Create a watcher for all pool directories.
-    /// Panics if called twice in the same process (debug builds).
-    pub fn new(pool_root: &Path) -> io::Result<Self> {
-        // Panic if already created (catch bugs in dev)
-        let was_created = WATCHER_CREATED.swap(true, Ordering::SeqCst);
-        debug_assert!(
-            !was_created,
-            "PoolWatcher created twice! Only one watcher per CLI invocation allowed."
-        );
-
-        let agents_dir = pool_root.join(AGENTS_DIR);
-        let submissions_dir = pool_root.join(SUBMISSIONS_DIR);
-
-        // Watch all directories we'll need
-        let watch_dirs = [pool_root, &agents_dir, &submissions_dir];
-        let inner = VerifiedWatcher::new(pool_root, &watch_dirs)?;
-
-        Ok(Self { inner })
-    }
-
-    pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
-        self.inner.wait_for_file(target)
-    }
-
-    pub fn wait_for_file_with_timeout(
-        &mut self,
-        target: &Path,
-        timeout: Duration,
-    ) -> io::Result<()> {
-        self.inner.wait_for_file_with_timeout(target, timeout)
-    }
-}
-
-impl Drop for PoolWatcher {
-    fn drop(&mut self) {
-        WATCHER_CREATED.store(false, Ordering::SeqCst);
-    }
-}
-```
-
-### All functions take the watcher
-
-No more creating watchers internally - all functions require the shared watcher:
-
-```rust
-pub fn wait_for_pool_ready(
-    watcher: &mut PoolWatcher,
-    root: &Path,
-    timeout: Duration,
-) -> io::Result<()> {
-    let status_path = root.join(STATUS_FILE);
-    if status_path.exists() {
-        return Ok(());
-    }
-    watcher.wait_for_file_with_timeout(&status_path, timeout)
-}
-
-pub fn wait_for_task(
-    watcher: &mut PoolWatcher,
-    pool_root: &Path,
-    name: Option<&str>,
-) -> io::Result<TaskAssignment> {
-    // ... uses watcher.wait_for_file()
-}
-
-pub fn submit_file(
-    watcher: &mut PoolWatcher,
-    root: &Path,
-    payload: &Payload,
-) -> io::Result<Response> {
-    // ... uses watcher.wait_for_file()
-}
-```
-
-### CLI creates watcher once at startup
-
-```rust
-fn main() -> ExitCode {
-    let pool_root = resolve_pool(...);
-
-    // Create the ONE watcher for this CLI invocation
-    let mut watcher = match PoolWatcher::new(&pool_root) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to create watcher: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // Pass to all operations
-    wait_for_pool_ready(&mut watcher, &pool_root, timeout)?;
-    wait_for_task(&mut watcher, &pool_root, name)?;
-    // ...
-}
-```
-
-### CLI Update
-
-Replace `wait_for_status_file` with the library function:
-
-```rust
-// crates/agent_pool_cli/src/main.rs
-
-// Before:
-let status_file = root.join(STATUS_FILE);
-if !wait_for_status_file(&status_file) {
-    eprintln!("Daemon not ready...");
-    return ExitCode::FAILURE;
-}
-
-// After:
-if let Err(e) = wait_for_pool_ready(&root, Duration::from_secs(5)) {
-    eprintln!("Daemon not ready: {e}");
-    return ExitCode::FAILURE;
-}
-```
-
-Then delete `wait_for_status_file` function entirely.
-
 ### Update Existing wait_for Callers
 
 Rename `wait_for` → `wait_for_file` at call sites:
@@ -274,23 +134,22 @@ watcher.wait_for_file(&task)?;
 watcher.wait_for_file(&response_path)?;
 ```
 
+### CLI Update
+
+Delete `wait_for_status_file` from CLI - it will use library functions via `PoolWatcher` (see `SINGLE_WATCHER_AT_CLI_ROOT.md`).
+
 ## Migration Steps
 
 1. Add private `wait_for_file_impl` with `Option<Duration>`
 2. Add public `wait_for_file` and `wait_for_file_with_timeout` that call impl
-3. Create `PoolWatcher` wrapper with debug_assert for single-creation
-4. Update `wait_for_pool_ready` to take `&mut PoolWatcher`
-5. Update `wait_for_task` to take `&mut PoolWatcher`
-6. Update `submit_file` to take `&mut PoolWatcher`
-7. Update CLI to create `PoolWatcher` once at startup and pass to all functions
-8. Delete `wait_for_status_file` from CLI
-9. Run tests to verify (debug builds will panic if multiple watchers created)
+3. Rename all `wait_for` call sites to `wait_for_file`
+4. Delete `wait_for_status_file` from CLI
+5. Run tests to verify
 
 ## Testing
 
-- Daemon startup in tests still works
-- CLI `get_task` waits properly for daemon
-- Timeout fires correctly if daemon never starts
+- All existing tests pass
+- Timeout fires correctly
 - No polling in hot path (verify with tracing)
 
 ## Notes
