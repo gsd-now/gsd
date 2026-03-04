@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "agent_pool",
  "clap",
+ "cli_invoker",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -516,7 +517,9 @@ name = "gsd_cli"
 version = "0.1.0"
 dependencies = [
  "agent_pool",
+ "agent_pool_cli",
  "clap",
+ "cli_invoker",
  "gsd_config",
  "interprocess",
  "json5",
@@ -530,6 +533,8 @@ name = "gsd_config"
 version = "0.1.0"
 dependencies = [
  "agent_pool",
+ "agent_pool_cli",
+ "cli_invoker",
  "interprocess",
  "jsonschema",
  "rstest",

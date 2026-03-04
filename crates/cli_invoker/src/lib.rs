@@ -58,6 +58,16 @@ pub struct Invoker<T: InvokableCli> {
     _marker: PhantomData<T>,
 }
 
+impl<T: InvokableCli> Clone for Invoker<T> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[derive(Clone)]
 enum InvokerKind {
     /// Direct binary path
     Binary(PathBuf),
@@ -69,6 +79,15 @@ enum InvokerKind {
 }
 
 impl<T: InvokableCli> Invoker<T> {
+    /// Create an invoker with an explicit binary path.
+    ///
+    /// This bypasses detection and uses the specified path directly.
+    /// Primarily useful for testing.
+    #[must_use]
+    pub const fn from_binary(path: PathBuf) -> Self {
+        Self::binary(path)
+    }
+
     /// Detect how to invoke the CLI.
     ///
     /// Resolution order:
