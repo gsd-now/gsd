@@ -923,62 +923,33 @@ The agent module already has proper canary verification and is event-driven (not
 
 ---
 
-## Annotate All Error Messages with Context
+## ~~Annotate All Error Messages with Context~~ ✓ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-Many error messages in the codebase pass through raw OS errors without adding context about what operation failed or which file/path/ID was involved. This makes debugging difficult.
+All error messages now have:
+1. **Unique error IDs** (E001-E057) for easy lookup
+2. **Contextual information** (file paths, IDs, values)
 
-**Example of the problem:**
+Error ID ranges:
+- E001-E004: verified_watcher.rs (atomic write, watcher disconnect)
+- E005-E008: submit/file.rs (file-based submission)
+- E009-E013: daemon/io.rs (ID/submission lookup, finish)
+- E014-E021: runner.rs (pool paths, submit, wake, command)
+- E022: cli_invoker (not found)
+- E023-E026: stop.rs (daemon stop)
+- E027-E028: transport.rs (socket not implemented)
+- E029: lock.rs (daemon already running)
+- E030-E036: daemon/wiring.rs (event loop, socket)
+- E037-E043: submit/socket.rs (socket-based submission)
+- E044-E047: verified_watcher.rs (watcher creation, timeouts)
+- E048-E050: value_schema.rs (schema loading)
+- E051-E057: gsd_cli/main.rs (config parsing/validation)
+
+Example:
 ```
-Submit error: No such file or directory (os error 2)
+[E005] failed to canonicalize pool root /tmp/foo: No such file or directory (os error 2)
 ```
-This tells you nothing about which directory is missing.
-
-### Critical (opaque OS errors that need path context)
-
-| File | Line | Operation | Fix |
-|------|------|-----------|-----|
-| `verified_watcher.rs` | 74 | `fs::write(&temp_path, content)?` | Add `.map_err()` with temp_path |
-| `verified_watcher.rs` | 75 | `fs::rename(&temp_path, target)?` | Add `.map_err()` with both paths |
-| `submit/file.rs` | 77 | `fs::canonicalize(root.as_ref())?` | Add `.map_err()` with root path |
-| `submit/file.rs` | 100 | `fs::read_to_string(&response_path)?` | Add `.map_err()` with response_path |
-
-### Poor context (generic messages lacking IDs/values)
-
-| File | Line | Current Message | Fix |
-|------|------|-----------------|-----|
-| `daemon/io.rs` | 300, 308 | "id not found" | Include actual ID value |
-| `daemon/io.rs` | 342 | "submission not found" | Include submission ID |
-| `verified_watcher.rs` | 262 | "watcher disconnected" | Include what was being watched |
-
-### Pattern to follow
-
-**Before:**
-```rust
-fs::write(&path, content)?;
-```
-
-**After:**
-```rust
-fs::write(&path, content)
-    .map_err(|e| io::Error::new(e.kind(), format!("failed to write {}: {e}", path.display())))?;
-```
-
-Or use a helper:
-```rust
-fn write_with_context(path: &Path, content: &[u8]) -> io::Result<()> {
-    fs::write(path, content)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to write {}: {e}", path.display())))
-}
-```
-
-### Scope
-
-Best-effort pass through all `crates/` looking for:
-- Bare `fs::` calls with `?`
-- `.map_err(io::Error::other)` that loses context
-- Error messages with "not found" that don't include the ID/path
 
 ---
 
