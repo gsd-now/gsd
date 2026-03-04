@@ -49,7 +49,16 @@ Allow configs to specify a default starting step so users don't have to pass ini
 
 ---
 
-### 6. Documentation
+### 6. Config Schema Subcommand
+**Doc:** (needs creation)
+
+Add `gsd schema` subcommand that prints the JSON schema of the config format. This allows users to validate configs and IDE integrations to provide autocomplete.
+
+**Status:** Not started.
+
+---
+
+### 7. Documentation
 **Doc:** (needs creation)
 
 - README with quick start

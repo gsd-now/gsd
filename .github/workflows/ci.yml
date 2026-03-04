@@ -160,6 +160,16 @@ jobs:
           targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         if: steps.cache-binaries.outputs.cache-hit != 'true'
+      - name: Write version files
+        if: steps.cache-binaries.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-main-${GITHUB_SHA::8}"
+          fi
+          echo "$VERSION" > libs/agent_pool/version.txt
+          echo "$VERSION" > libs/gsd/version.txt
       - name: Build
         if: steps.cache-binaries.outputs.cache-hit != 'true'
         run: cargo build --release --target x86_64-apple-darwin -p agent_pool_cli -p gsd_cli
@@ -192,6 +202,16 @@ jobs:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         if: steps.cache-binaries.outputs.cache-hit != 'true'
+      - name: Write version files
+        if: steps.cache-binaries.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-main-${GITHUB_SHA::8}"
+          fi
+          echo "$VERSION" > libs/agent_pool/version.txt
+          echo "$VERSION" > libs/gsd/version.txt
       - name: Build
         if: steps.cache-binaries.outputs.cache-hit != 'true'
         run: cargo build --release --target aarch64-apple-darwin -p agent_pool_cli -p gsd_cli
@@ -227,6 +247,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
         if: steps.cache-binaries.outputs.cache-hit != 'true'
+      - name: Write version files
+        if: steps.cache-binaries.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-main-${GITHUB_SHA::8}"
+          fi
+          echo "$VERSION" > libs/agent_pool/version.txt
+          echo "$VERSION" > libs/gsd/version.txt
       - name: Build
         if: steps.cache-binaries.outputs.cache-hit != 'true'
         run: cargo build --release --target x86_64-unknown-linux-musl -p agent_pool_cli -p gsd_cli
@@ -262,6 +292,16 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
       - uses: Swatinem/rust-cache@v2
         if: steps.cache-binaries.outputs.cache-hit != 'true'
+      - name: Write version files
+        if: steps.cache-binaries.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-main-${GITHUB_SHA::8}"
+          fi
+          echo "$VERSION" > libs/agent_pool/version.txt
+          echo "$VERSION" > libs/gsd/version.txt
       - name: Build
         if: steps.cache-binaries.outputs.cache-hit != 'true'
         run: cross build --release --target aarch64-unknown-linux-musl -p agent_pool_cli -p gsd_cli
@@ -294,6 +334,17 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         if: steps.cache-binaries.outputs.cache-hit != 'true'
+      - name: Write version files
+        if: steps.cache-binaries.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -match '^refs/tags/v(.+)$') {
+            $VERSION = $Matches[1]
+          } else {
+            $VERSION = "0.0.0-main-$($env:GITHUB_SHA.Substring(0,8))"
+          }
+          $VERSION | Out-File -FilePath libs/agent_pool/version.txt -Encoding utf8 -NoNewline
+          $VERSION | Out-File -FilePath libs/gsd/version.txt -Encoding utf8 -NoNewline
       - name: Build
         if: steps.cache-binaries.outputs.cache-hit != 'true'
         run: cargo build --release --target x86_64-pc-windows-msvc -p agent_pool_cli -p gsd_cli

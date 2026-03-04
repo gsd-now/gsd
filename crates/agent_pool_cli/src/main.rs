@@ -19,6 +19,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const AGENT_PROTOCOL: &str = include_str!("../../agent_pool/protocols/AGENT_PROTOCOL.md");
 const LOW_LEVEL_PROTOCOL: &str = include_str!("../../agent_pool/protocols/LOW_LEVEL_PROTOCOL.md");
+const VERSION: &str = env!("AGENT_POOL_VERSION");
 
 /// Log level for the agent pool.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
@@ -144,6 +145,12 @@ enum Command {
         /// Agent name (optional, for debugging)
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Print version information
+    Version {
+        /// Output as JSON (for programmatic access)
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -433,6 +440,13 @@ fn main() -> ExitCode {
                     eprintln!("Failed to get task: {e}");
                     return ExitCode::FAILURE;
                 }
+            }
+        }
+        Command::Version { json } => {
+            if json {
+                println!(r#"{{"version": "{VERSION}"}}"#);
+            } else {
+                println!("{VERSION}");
             }
         }
     }

@@ -12,6 +12,8 @@ use std::io;
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+const VERSION: &str = env!("GSD_VERSION");
+
 #[derive(Parser)]
 #[command(name = "gsd")]
 #[command(about = "Get Sh*** Done - JSON-based task orchestrator")]
@@ -60,6 +62,13 @@ enum Command {
     Graph {
         /// Config (JSON string or path to file)
         config: String,
+    },
+
+    /// Print version information
+    Version {
+        /// Output as JSON (for programmatic access)
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -144,6 +153,14 @@ fn main() -> io::Result<()> {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let dot = generate_graphviz(&cfg);
             print!("{dot}");
+        }
+
+        Command::Version { json } => {
+            if json {
+                println!(r#"{{"version": "{VERSION}"}}"#);
+            } else {
+                println!("{VERSION}");
+            }
         }
     }
 
