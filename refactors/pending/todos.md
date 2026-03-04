@@ -950,6 +950,16 @@ Example:
 
 ---
 
+## Agent Pool Protocol --tag Parameter
+
+**Status: TODO**
+
+Add a `--tag` parameter to `agent_pool protocol` command (or the agent instructions) to specify which npm tag to use when running `pnpm dlx @gsd-now/agent-pool`.
+
+Currently agents are manually told to use `@main` in the instructions. This should be a first-class parameter.
+
+---
+
 ## CLI Invoker Version Checking
 
 **Status: TODO**
