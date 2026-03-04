@@ -234,7 +234,7 @@ impl<T: InvokableCli> Invoker<T> {
 
     fn not_found_error() -> io::Error {
         let msg = format!(
-            r"Could not find '{binary}'. Looked in:
+            r"[E022] Could not find '{binary}'. Looked in:
 
   1. ${env_var} environment variable (not set)
   2. ${env_var_cmd} environment variable (not set)

@@ -31,9 +31,24 @@ impl CompiledSchemas {
                 Some(SchemaRef::Inline(schema)) => Some(compile_schema(schema)?),
                 Some(SchemaRef::Link(path)) => {
                     let full_path = base_path.join(path);
-                    let content = fs::read_to_string(&full_path)?;
-                    let schema: Value = serde_json::from_str(&content)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    let content = fs::read_to_string(&full_path).map_err(|e| {
+                        io::Error::new(
+                            e.kind(),
+                            format!(
+                                "[E048] failed to read schema file {}: {e}",
+                                full_path.display()
+                            ),
+                        )
+                    })?;
+                    let schema: Value = serde_json::from_str(&content).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "[E049] invalid JSON in schema file {}: {e}",
+                                full_path.display()
+                            ),
+                        )
+                    })?;
                     Some(compile_schema(&schema)?)
                 }
             };
@@ -77,8 +92,12 @@ impl CompiledSchemas {
 }
 
 fn compile_schema(schema: &Value) -> io::Result<Validator> {
-    Validator::new(schema)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("invalid schema: {e}")))
+    Validator::new(schema).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E050] invalid schema: {e}"),
+        )
+    })
 }
 
 /// Errors that can occur during validation.

@@ -31,7 +31,10 @@ pub fn acquire_lock(lock_path: &Path) -> io::Result<LockGuard> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                format!("daemon already running (PID {pid})"),
+                format!(
+                    "[E029] daemon already running (PID {pid}, lock file {})",
+                    lock_path.display()
+                ),
             ));
         }
         // Stale lock - remove it

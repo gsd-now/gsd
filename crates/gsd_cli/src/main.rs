@@ -92,8 +92,12 @@ fn main() -> io::Result<()> {
             let invoker = Invoker::<AgentPoolCli>::detect()?;
 
             let (cfg, config_dir) = parse_config(&config)?;
-            cfg.validate()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            cfg.validate().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("[E051] config validation failed: {e}"),
+                )
+            })?;
 
             let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
 
@@ -147,15 +151,22 @@ fn main() -> io::Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Config validation failed: {e}");
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("[E052] config validation failed: {e}"),
+                    ));
                 }
             }
         }
 
         Command::Graph { config } => {
             let (cfg, _) = parse_config(&config)?;
-            cfg.validate()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            cfg.validate().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("[E053] config validation failed: {e}"),
+                )
+            })?;
             let dot = generate_graphviz(&cfg);
             print!("{dot}");
         }
@@ -178,16 +189,27 @@ fn main() -> io::Result<()> {
 fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
     let path = PathBuf::from(input);
     if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("[E054] failed to read config file {}: {e}", path.display()),
+            )
+        })?;
         let cfg: Config = json5::from_str(&content).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {e}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("[E055] invalid config in {}: {e}", path.display()),
+            )
         })?;
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         Ok((cfg, dir.to_path_buf()))
     } else {
         // Assume inline JSON/JSONC
         let cfg: Config = json5::from_str(input).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("invalid config: {e}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("[E056] invalid inline config: {e}"),
+            )
         })?;
         Ok((cfg, PathBuf::from(".")))
     }
@@ -208,7 +230,7 @@ fn parse_initial_tasks(initial: &str) -> io::Result<Vec<Task>> {
     json5::from_str(&content).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid initial tasks: {e}"),
+            format!("[E057] invalid initial tasks JSON: {e}"),
         )
     })
 }

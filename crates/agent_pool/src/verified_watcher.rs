@@ -71,8 +71,25 @@ pub fn atomic_write(pool_root: &Path, target: &Path, content: &[u8]) -> io::Resu
     let scratch_dir = pool_root.join(SCRATCH_DIR);
     let temp_path = scratch_dir.join(format!("{}.tmp", Uuid::new_v4()));
 
-    fs::write(&temp_path, content)?;
-    fs::rename(&temp_path, target)?;
+    fs::write(&temp_path, content).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E001] failed to write temp file {}: {e}",
+                temp_path.display()
+            ),
+        )
+    })?;
+    fs::rename(&temp_path, target).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E002] failed to rename {} to {}: {e}",
+                temp_path.display(),
+                target.display()
+            ),
+        )
+    })?;
 
     Ok(())
 }
@@ -167,11 +184,18 @@ impl VerifiedWatcher {
             },
             Config::default(),
         )
-        .map_err(io::Error::other)?;
+        .map_err(|e| {
+            io::Error::other(format!("[E044] failed to create filesystem watcher: {e}"))
+        })?;
 
         watcher
             .watch(watch_dir, RecursiveMode::Recursive)
-            .map_err(io::Error::other)?;
+            .map_err(|e| {
+                io::Error::other(format!(
+                    "[E045] failed to watch directory {}: {e}",
+                    watch_dir.display()
+                ))
+            })?;
 
         let remaining_canaries = canary_dirs
             .iter()
@@ -229,7 +253,11 @@ impl VerifiedWatcher {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!("timed out waiting for {}", target.display()),
+                    format!(
+                        "[E046] timed out after {:?} waiting for {}",
+                        t,
+                        target.display()
+                    ),
                 ));
             }
 
@@ -261,7 +289,10 @@ impl VerifiedWatcher {
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "watcher disconnected",
+                        format!(
+                            "[E003] watcher disconnected while waiting for {}",
+                            target.display()
+                        ),
                     ));
                 }
             }
@@ -286,7 +317,7 @@ impl VerifiedWatcher {
             if start.elapsed() > timeout {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "verification timed out",
+                    format!("[E047] watcher canary verification timed out after {timeout:?}"),
                 ));
             }
 
@@ -306,7 +337,7 @@ impl VerifiedWatcher {
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "watcher disconnected",
+                        "[E004] watcher disconnected during canary verification",
                     ));
                 }
             }

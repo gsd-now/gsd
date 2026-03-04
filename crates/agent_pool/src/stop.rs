@@ -25,15 +25,31 @@ pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
     if !lock_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "no daemon running (lock file not found)",
+            format!(
+                "[E023] no daemon running (lock file {} not found)",
+                lock_path.display()
+            ),
         ));
     }
 
-    let pid_str = fs::read_to_string(&lock_path)?;
-    let pid: u32 = pid_str
-        .trim()
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let pid_str = fs::read_to_string(&lock_path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E024] failed to read lock file {}: {e}",
+                lock_path.display()
+            ),
+        )
+    })?;
+    let pid: u32 = pid_str.trim().parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "[E025] invalid PID in lock file {}: {e}",
+                lock_path.display()
+            ),
+        )
+    })?;
 
     // Signal graceful shutdown
     debug!(
@@ -87,7 +103,7 @@ fn terminate_process(pid: u32) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "failed to terminate process {pid}"
+            "[E026] failed to terminate process {pid}"
         )))
     }
 }
@@ -104,7 +120,7 @@ fn terminate_process(pid: u32) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "failed to terminate process {pid}"
+            "[E026] failed to terminate process {pid}"
         )))
     }
 }

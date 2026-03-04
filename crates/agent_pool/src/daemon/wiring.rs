@@ -276,7 +276,7 @@ fn run_daemon(
     // Wait for event loop to finish (it exits when channel closes)
     let final_state = event_loop_handle
         .join()
-        .map_err(|_| io::Error::other("event loop thread panicked"))?;
+        .map_err(|_| io::Error::other("[E030] event loop thread panicked"))?;
 
     debug!(
         workers = final_state.worker_count(),
@@ -709,7 +709,7 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(e) => Err(io::Error::new(
             e.kind(),
-            format!("socket accept failed: {e}"),
+            format!("[E031] socket accept failed: {e}"),
         )),
     }
 }
@@ -723,12 +723,21 @@ fn accept_socket_task(listener: &Listener) -> io::Result<Option<(String, Stream)
 /// For inline payloads, returns the content directly.
 /// For file references, reads the file and returns its contents.
 fn resolve_payload(raw: &str) -> io::Result<String> {
-    let payload: Payload =
-        serde_json::from_str(raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let payload: Payload = serde_json::from_str(raw).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E032] failed to parse payload JSON: {e}"),
+        )
+    })?;
 
     match payload {
         Payload::Inline { content } => Ok(content),
-        Payload::FileReference { path } => fs::read_to_string(path),
+        Payload::FileReference { path } => fs::read_to_string(&path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("[E033] failed to read payload file {}: {e}", path.display()),
+            )
+        }),
     }
 }
 
@@ -737,18 +746,34 @@ fn resolve_payload(raw: &str) -> io::Result<String> {
 // =============================================================================
 
 fn create_socket_listener(socket_path: &Path) -> io::Result<Listener> {
-    let name = socket_path
-        .to_fs_name::<GenericFilePath>()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("[E034] invalid socket path {}: {e}", socket_path.display()),
+        )
+    })?;
 
     let listener = ListenerOptions::new()
         .name(name)
         .create_sync()
-        .map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e))?;
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "[E035] failed to create socket {}: {e}",
+                    socket_path.display()
+                ),
+            )
+        })?;
 
     listener
         .set_nonblocking(ListenerNonblockingMode::Accept)
-        .map_err(io::Error::other)?;
+        .map_err(|e| {
+            io::Error::other(format!(
+                "[E036] failed to set socket non-blocking {}: {e}",
+                socket_path.display()
+            ))
+        })?;
 
     Ok(listener)
 }

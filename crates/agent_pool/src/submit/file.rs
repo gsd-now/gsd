@@ -74,7 +74,16 @@ pub fn submit_file_with_timeout(
     payload: &Payload,
     timeout: Duration,
 ) -> io::Result<Response> {
-    let root = fs::canonicalize(root.as_ref())?;
+    let root_ref = root.as_ref();
+    let root = fs::canonicalize(root_ref).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E005] failed to canonicalize pool root {}: {e}",
+                root_ref.display()
+            ),
+        )
+    })?;
     let submissions_dir = root.join(SUBMISSIONS_DIR);
 
     // Generate unique submission ID
@@ -89,22 +98,38 @@ pub fn submit_file_with_timeout(
     watcher.wait_for_file_with_timeout(&status_path, POOL_READY_TIMEOUT)?;
 
     // Write request file with serialized payload (atomic via scratch/)
-    let content = serde_json::to_string(payload)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let content = serde_json::to_string(payload).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E006] failed to serialize payload: {e}"),
+        )
+    })?;
     atomic_write_str(&root, &request_path, &content)?;
 
     // Wait for response using the watcher
     watcher.wait_for_file_with_timeout(&response_path, timeout)?;
 
     // Read and parse response
-    let response_content = fs::read_to_string(&response_path)?;
+    let response_content = fs::read_to_string(&response_path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E007] failed to read response file {}: {e}",
+                response_path.display()
+            ),
+        )
+    })?;
 
     // Clean up both files
     let _ = fs::remove_file(&request_path);
     let _ = fs::remove_file(&response_path);
 
-    let response: Response = serde_json::from_str(&response_content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let response: Response = serde_json::from_str(&response_content).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E008] failed to parse response JSON: {e}"),
+        )
+    })?;
 
     Ok(response)
 }

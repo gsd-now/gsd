@@ -295,17 +295,23 @@ impl<Id: TransportId> TransportMap<Id> {
 
     /// Write content to a file in the transport for the given ID.
     pub fn write_to(&self, id: Id, filename: &str, content: &str) -> io::Result<()> {
-        let transport = self
-            .get_transport(id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "id not found"))?;
+        let transport = self.get_transport(id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("[E009] transport not found for id {id:?}"),
+            )
+        })?;
         transport.write(filename, content)
     }
 
     /// Read content from a file in the transport for the given ID.
     pub fn read_from(&self, id: Id, filename: &str) -> io::Result<String> {
-        let transport = self
-            .get_transport(id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "id not found"))?;
+        let transport = self.get_transport(id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("[E010] transport not found for id {id:?}"),
+            )
+        })?;
         transport.read(filename)
     }
 
@@ -337,9 +343,12 @@ impl SubmissionMap {
     /// For socket transports, sends length-prefixed response over the socket.
     pub fn finish(&mut self, id: SubmissionId, response: &str) -> io::Result<SubmissionData> {
         debug!(submission_id = id.0, "finish: completing submission");
-        let (mut transport, data) = self
-            .remove(id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "submission not found"))?;
+        let (mut transport, data) = self.remove(id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("[E011] submission not found for id {}", id.0),
+            )
+        })?;
 
         match &mut transport {
             #[allow(clippy::expect_used)]
@@ -364,8 +373,25 @@ impl SubmissionMap {
                     .parent()
                     .unwrap_or(path)
                     .join(format!(".response-{}.tmp", uuid::Uuid::new_v4()));
-                fs::write(&temp_path, response)?;
-                fs::rename(&temp_path, &response_path)?;
+                fs::write(&temp_path, response).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "[E012] failed to write response temp file {}: {e}",
+                            temp_path.display()
+                        ),
+                    )
+                })?;
+                fs::rename(&temp_path, &response_path).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "[E013] failed to rename response {} to {}: {e}",
+                            temp_path.display(),
+                            response_path.display()
+                        ),
+                    )
+                })?;
             }
             Transport::Socket(stream) => {
                 debug!(submission_id = id.0, "finish: sending socket response");

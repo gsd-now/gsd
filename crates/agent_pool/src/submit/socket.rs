@@ -30,7 +30,16 @@ pub fn submit(
     root: impl AsRef<Path>,
     payload: &Payload,
 ) -> io::Result<Response> {
-    let root = fs::canonicalize(root.as_ref())?;
+    let root_ref = root.as_ref();
+    let root = fs::canonicalize(root_ref).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E037] failed to canonicalize pool root {}: {e}",
+                root_ref.display()
+            ),
+        )
+    })?;
 
     // Wait for daemon to be ready using filesystem watcher
     let status_path = root.join(STATUS_FILE);
@@ -39,14 +48,31 @@ pub fn submit(
     let socket_path = root.join(SOCKET_NAME);
 
     let name = socket_path
+        .clone()
         .to_fs_name::<GenericFilePath>()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("[E038] invalid socket path {}: {e}", socket_path.display()),
+            )
+        })?;
 
-    let input = serde_json::to_string(payload)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let input = serde_json::to_string(payload).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E039] failed to serialize payload: {e}"),
+        )
+    })?;
 
-    let mut stream =
-        Stream::connect(name).map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+    let mut stream = Stream::connect(name).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!(
+                "[E040] failed to connect to daemon socket {}: {e}",
+                socket_path.display()
+            ),
+        )
+    })?;
     writeln!(stream, "{}", input.len())?;
     stream.write_all(input.as_bytes())?;
     stream.flush()?;
@@ -55,16 +81,27 @@ pub fn submit(
 
     let mut len_line = String::new();
     reader.read_line(&mut len_line)?;
-    let len: usize = len_line
-        .trim()
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let len: usize = len_line.trim().parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E041] invalid response length from daemon: {e}"),
+        )
+    })?;
 
     let mut output = vec![0u8; len];
     reader.read_exact(&mut output)?;
 
-    let json =
-        String::from_utf8(output).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json = String::from_utf8(output).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E042] invalid UTF-8 in daemon response: {e}"),
+        )
+    })?;
 
-    serde_json::from_str(&json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&json).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("[E043] failed to parse daemon response JSON: {e}"),
+        )
+    })
 }

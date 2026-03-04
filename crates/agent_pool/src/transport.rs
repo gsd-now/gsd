@@ -62,7 +62,7 @@ impl Transport {
             }
             Transport::Socket(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "socket read not yet implemented",
+                "[E027] socket read not yet implemented",
             )),
         }
     }
@@ -95,7 +95,7 @@ impl Transport {
             }
             Transport::Socket(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "socket write not yet implemented",
+                "[E028] socket write not yet implemented",
             )),
         }
     }

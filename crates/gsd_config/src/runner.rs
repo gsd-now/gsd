@@ -643,7 +643,7 @@ pub fn run(
     if dropped_count > 0 {
         error!(dropped_count, "task queue completed with dropped tasks");
         return Err(io::Error::other(format!(
-            "{dropped_count} task(s) were dropped (retries exhausted)"
+            "[E018] {dropped_count} task(s) were dropped (retries exhausted)"
         )));
     }
     info!("task queue complete");
@@ -791,7 +791,7 @@ fn call_wake_script(script: &str) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "wake script failed with status: {status}"
+            "[E019] wake script failed with status: {status}"
         )))
     }
 }
@@ -813,11 +813,16 @@ fn run_command_action(script: &str, task_json: &str, working_dir: &Path) -> io::
 
     let output = child.wait_with_output()?;
     if output.status.success() {
-        String::from_utf8(output.stdout).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        String::from_utf8(output.stdout).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("[E020] invalid UTF-8 in command output: {e}"),
+            )
+        })
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(io::Error::other(format!(
-            "command failed with status {}: {}",
+            "[E021] command failed with status {}: {}",
             output.status,
             stderr.trim()
         )))
@@ -960,7 +965,10 @@ fn submit_via_cli(
     let pool_root = pool_path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Invalid pool path (no parent): {}", pool_path.display()),
+            format!(
+                "[E014] invalid pool path (no parent): {}",
+                pool_path.display()
+            ),
         )
     })?;
     let pool_id = pool_path
@@ -969,7 +977,10 @@ fn submit_via_cli(
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Invalid pool path (no basename): {}", pool_path.display()),
+                format!(
+                    "[E015] invalid pool path (no basename): {}",
+                    pool_path.display()
+                ),
             )
         })?;
 
@@ -991,7 +1002,7 @@ fn submit_via_cli(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!(
-            "agent_pool submit_task failed: {}",
+            "[E016] agent_pool submit_task failed: {}",
             stderr.trim()
         )));
     }
@@ -999,7 +1010,7 @@ fn submit_via_cli(
     serde_json::from_slice(&output.stdout).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Failed to parse agent_pool output: {e}"),
+            format!("[E017] failed to parse agent_pool output: {e}"),
         )
     })
 }
