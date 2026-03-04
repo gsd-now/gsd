@@ -25,14 +25,13 @@ Create the `VerifiedWatcher` at CLI entry point (`main()`) and pass it to all fu
 ### Create watcher at CLI root
 
 ```rust
-/// Create a watcher for all pool directories.
+/// Create a watcher for the pool.
 fn create_pool_watcher(pool_root: &Path) -> io::Result<VerifiedWatcher> {
-    let agents_dir = pool_root.join(AGENTS_DIR);
-    let submissions_dir = pool_root.join(SUBMISSIONS_DIR);
-
-    // Watch all directories we'll need
-    let watch_dirs = [pool_root, &agents_dir, &submissions_dir];
-    VerifiedWatcher::new(pool_root, &watch_dirs)
+    // Watch pool root recursively.
+    // Single canary at root is sufficient to verify watcher works -
+    // subdirectories (agents/, submissions/) already exist by the time
+    // CLI connects (daemon creates them at startup).
+    VerifiedWatcher::new(pool_root, &[pool_root.to_path_buf()])
 }
 ```
 
