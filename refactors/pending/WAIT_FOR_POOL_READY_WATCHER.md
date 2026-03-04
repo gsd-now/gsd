@@ -45,40 +45,54 @@ This is inconsistent with the rest of the codebase which uses `VerifiedWatcher` 
 
 ## Proposed Solution
 
-Use `VerifiedWatcher` to watch for the status file, with a timeout.
+Use `VerifiedWatcher` to watch for the status file. Rename existing method for clarity.
 
-### Updated Implementation
+### New VerifiedWatcher Methods
 
-```rust
-// crates/agent_pool/src/submit/mod.rs
-
-use crate::verified_watcher::VerifiedWatcher;
-
-pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Result<()> {
-    let root = root.as_ref();
-    let status_path = root.join(STATUS_FILE);
-
-    // Early return if already ready
-    if status_path.exists() {
-        return Ok(());
-    }
-
-    // Watch the root directory for the status file to appear
-    let mut watcher = VerifiedWatcher::new(root, std::slice::from_ref(&root))?;
-    watcher.wait_for_timeout(&status_path, timeout)
-}
-```
-
-### New VerifiedWatcher Method
-
-Add `wait_for_timeout` to `VerifiedWatcher`:
+Rename existing `wait_for` and add timeout variant:
 
 ```rust
 // crates/agent_pool/src/verified_watcher.rs
 
 impl VerifiedWatcher {
+    /// Wait for a target file to exist (no timeout).
+    /// Renamed from `wait_for` for clarity.
+    pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
+        if target.exists() {
+            return Ok(());
+        }
+
+        loop {
+            match self.state.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(event) => {
+                    if event.paths.iter().any(|p| p == target) || target.exists() {
+                        return Ok(());
+                    }
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                    if target.exists() {
+                        return Ok(());
+                    }
+                    for canary in &mut self.state.remaining_canaries {
+                        canary.retry()?;
+                    }
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "watcher disconnected",
+                    ));
+                }
+            }
+        }
+    }
+
     /// Wait for a target file to exist, with a timeout.
-    pub fn wait_for_timeout(&mut self, target: &Path, timeout: Duration) -> io::Result<()> {
+    pub fn wait_for_file_with_timeout(
+        &mut self,
+        target: &Path,
+        timeout: Duration,
+    ) -> io::Result<()> {
         if target.exists() {
             return Ok(());
         }
@@ -94,8 +108,8 @@ impl VerifiedWatcher {
                 ));
             }
 
-            // Use recv_timeout with remaining time (capped at 100ms for canary retries)
             let wait_time = remaining.min(Duration::from_millis(100));
+
             match self.state.rx.recv_timeout(wait_time) {
                 Ok(event) => {
                     if event.paths.iter().any(|p| p == target) || target.exists() {
@@ -103,11 +117,9 @@ impl VerifiedWatcher {
                     }
                 }
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                    // Check if file appeared (edge case)
                     if target.exists() {
                         return Ok(());
                     }
-                    // Retry canaries
                     for canary in &mut self.state.remaining_canaries {
                         canary.retry()?;
                     }
@@ -121,6 +133,26 @@ impl VerifiedWatcher {
             }
         }
     }
+}
+```
+
+### Updated wait_for_pool_ready
+
+```rust
+// crates/agent_pool/src/submit/mod.rs
+
+use crate::verified_watcher::VerifiedWatcher;
+
+pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Result<()> {
+    let root = root.as_ref();
+    let status_path = root.join(STATUS_FILE);
+
+    if status_path.exists() {
+        return Ok(());
+    }
+
+    let mut watcher = VerifiedWatcher::new(root, std::slice::from_ref(&root))?;
+    watcher.wait_for_file_with_timeout(&status_path, timeout)
 }
 ```
 
@@ -147,13 +179,27 @@ if let Err(e) = wait_for_pool_ready(&root, Duration::from_secs(5)) {
 
 Then delete `wait_for_status_file` function entirely.
 
+### Update Existing wait_for Callers
+
+Rename `wait_for` → `wait_for_file` at call sites:
+
+```rust
+// worker.rs
+watcher.wait_for_file(&task)?;
+
+// submit/file.rs
+watcher.wait_for_file(&response_path)?;
+```
+
 ## Migration Steps
 
-1. Add `wait_for_timeout` method to `VerifiedWatcher`
-2. Update `wait_for_pool_ready` to use `VerifiedWatcher`
-3. Update CLI to use `wait_for_pool_ready` instead of `wait_for_status_file`
-4. Delete `wait_for_status_file` from CLI
-5. Run tests to verify
+1. Rename `wait_for` to `wait_for_file`
+2. Add `wait_for_file_with_timeout` method
+3. Update `wait_for_pool_ready` to use `VerifiedWatcher`
+4. Update all `wait_for` call sites to use `wait_for_file`
+5. Update CLI to use `wait_for_pool_ready` instead of `wait_for_status_file`
+6. Delete `wait_for_status_file` from CLI
+7. Run tests to verify
 
 ## Testing
 
