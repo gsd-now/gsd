@@ -1,66 +1,27 @@
 # Convert wait_for_pool_ready to use VerifiedWatcher
 
+**Status:** Implemented
+
 ## Motivation
 
-`wait_for_pool_ready` currently polls every 10ms:
+`wait_for_pool_ready` polled every 10ms and `wait_for_status_file` in the CLI polled every 100ms. This was inconsistent with the rest of the codebase which uses `VerifiedWatcher` for file watching.
 
-```rust
-// crates/agent_pool/src/submit/mod.rs:27-46
-pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Result<()> {
-    while !status_path.exists() {
-        if start.elapsed() > timeout {
-            return Err(...);
-        }
-        thread::sleep(Duration::from_millis(10));  // Polling!
-    }
-    Ok(())
-}
-```
+## What Was Done
 
-Similarly, `wait_for_status_file` in the CLI polls every 100ms:
+### 1. Added new VerifiedWatcher methods
 
-```rust
-// crates/agent_pool_cli/src/main.rs:470-468
-fn wait_for_status_file(status_file: &std::path::Path) -> bool {
-    while start.elapsed() < TIMEOUT {
-        if status_file.exists() {
-            return true;
-        }
-        thread::sleep(POLL_INTERVAL);  // 100ms polling!
-    }
-    false
-}
-```
-
-This is inconsistent with the rest of the codebase which uses `VerifiedWatcher` for file watching.
-
-## Current Call Sites
-
-| Location | Timeout | Used For |
-|----------|---------|----------|
-| `agent_pool/tests/common/mod.rs:686` | 10s | Test daemon startup |
-| `gsd_cli/tests/common/mod.rs:272` | 10s | Test daemon startup |
-| `gsd_config/tests/common/mod.rs:328` | 10s | Test daemon startup |
-| `agent_pool_cli/src/main.rs:428` | 5s | CLI `get_task` command |
-
-## Proposed Solution
-
-Rename existing `wait_for` method and add timeout variant. Use private implementation.
-
-### New VerifiedWatcher Methods
-
-One private implementation, two public conveniences:
+Renamed `wait_for` to private `wait_for_file_impl` and added two public convenience methods:
 
 ```rust
 // crates/agent_pool/src/verified_watcher.rs
 
 impl VerifiedWatcher {
-    /// Wait for a target file to exist (no timeout).
+    /// Wait for a specific file to appear (no timeout).
     pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
         self.wait_for_file_impl(target, None)
     }
 
-    /// Wait for a target file to exist, with a timeout.
+    /// Wait for a specific file to appear with a timeout.
     pub fn wait_for_file_with_timeout(
         &mut self,
         target: &Path,
@@ -69,48 +30,43 @@ impl VerifiedWatcher {
         self.wait_for_file_impl(target, Some(timeout))
     }
 
-    fn wait_for_file_impl(
-        &mut self,
-        target: &Path,
-        timeout: Option<Duration>,
-    ) -> io::Result<()> {
+    fn wait_for_file_impl(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
         if target.exists() {
             return Ok(());
         }
 
-        let deadline = timeout.map(|t| Instant::now() + t);
-
+        let start = Instant::now();
         loop {
-            // Check timeout if set
-            let wait_time = match deadline {
-                Some(d) => {
-                    let remaining = d.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            format!("timed out waiting for {}", target.display()),
-                        ));
-                    }
-                    remaining.min(Duration::from_millis(100))
-                }
-                None => Duration::from_millis(100),
-            };
+            if let Some(t) = timeout && start.elapsed() > t {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("timed out waiting for {}", target.display()),
+                ));
+            }
 
-            match self.state.rx.recv_timeout(wait_time) {
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(event) => {
-                    if event.paths.iter().any(|p| p == target) || target.exists() {
-                        return Ok(());
+                    for path in &event.paths {
+                        if let Some(parent) = path.parent() {
+                            self.remaining_canaries.retain(|c| c.dir() != parent);
+                        }
+                        if path == target {
+                            return Ok(());
+                        }
                     }
-                }
-                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                     if target.exists() {
                         return Ok(());
                     }
-                    for canary in &mut self.state.remaining_canaries {
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if target.exists() {
+                        return Ok(());
+                    }
+                    for canary in &mut self.remaining_canaries {
                         canary.retry()?;
                     }
                 }
-                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                Err(RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         "watcher disconnected",
@@ -122,43 +78,53 @@ impl VerifiedWatcher {
 }
 ```
 
-### Update Existing wait_for Callers
-
-Rename `wait_for` → `wait_for_file` at call sites:
+### 2. Updated call sites
 
 ```rust
-// worker.rs
-watcher.wait_for_file(&task)?;
+// worker.rs - handles Option<Duration>
+match timeout {
+    Some(t) => watcher.wait_for_file_with_timeout(&task, t)?,
+    None => watcher.wait_for_file(&task)?,
+}
 
 // submit/file.rs
-watcher.wait_for_file(&response_path)?;
+watcher.wait_for_file_with_timeout(&status_path, POOL_READY_TIMEOUT)?;
+watcher.wait_for_file_with_timeout(&response_path, timeout)?;
+
+// submit/socket.rs
+watcher.wait_for_file_with_timeout(&status_path, POOL_READY_TIMEOUT)?;
 ```
 
-### CLI Update
+### 3. Deleted polling functions
 
-Delete `wait_for_status_file` from CLI - it will use library functions via `PoolWatcher` (see `SINGLE_WATCHER_AT_CLI_ROOT.md`).
+- Deleted `wait_for_pool_ready` from `submit/mod.rs`
+- Deleted `wait_for_status_file` from `agent_pool_cli/src/main.rs`
+- Removed `wait_for_pool_ready` from lib.rs exports
 
-## Migration Steps
+### 4. Updated CLI to use watcher
 
-1. Add private `wait_for_file_impl` with `Option<Duration>`
-2. Add public `wait_for_file` and `wait_for_file_with_timeout` that call impl
-3. Rename all `wait_for` call sites to `wait_for_file`
-4. Delete `wait_for_status_file` from CLI
-5. Run tests to verify
+```rust
+// GetTask command now uses watcher directly
+let status_file = root.join(STATUS_FILE);
+if let Err(e) = watcher.wait_for_file_with_timeout(&status_file, Duration::from_secs(5)) {
+    eprintln!("Daemon not ready: {e}");
+    return ExitCode::FAILURE;
+}
+```
 
-## Testing
+### 5. Updated test helpers
 
-- All existing tests pass
-- Timeout fires correctly
-- No polling in hot path (verify with tracing)
+Test helpers in `agent_pool/tests/common/mod.rs`, `gsd_cli/tests/common/mod.rs`, and `gsd_config/tests/common/mod.rs` now create a watcher and use `wait_for_file_with_timeout` instead of calling `wait_for_pool_ready`.
 
-## Notes
+## Files Changed
 
-The original comment said polling was needed because "the daemon clears and recreates the pool directory on startup, which would race with watcher setup." This is not actually a problem:
-
-1. The pool root directory must exist before calling `wait_for_pool_ready` (caller creates it or it already exists)
-2. We watch the root directory, not the status file specifically
-3. The daemon creates subdirectories then writes the status file
-4. Our watcher sees the status file creation event
-
-The race condition concern was about watching a directory that gets deleted, but we watch the parent which persists.
+- `crates/agent_pool/src/verified_watcher.rs` - Added new methods
+- `crates/agent_pool/src/worker.rs` - Updated call site
+- `crates/agent_pool/src/submit/file.rs` - Updated call sites
+- `crates/agent_pool/src/submit/socket.rs` - Updated call site
+- `crates/agent_pool/src/submit/mod.rs` - Deleted `wait_for_pool_ready`
+- `crates/agent_pool/src/lib.rs` - Removed export
+- `crates/agent_pool_cli/src/main.rs` - Deleted `wait_for_status_file`, updated GetTask
+- `crates/agent_pool/tests/common/mod.rs` - Updated to use watcher
+- `crates/gsd_cli/tests/common/mod.rs` - Updated to use watcher
+- `crates/gsd_config/tests/common/mod.rs` - Updated to use watcher

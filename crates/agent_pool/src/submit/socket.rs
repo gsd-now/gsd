@@ -34,7 +34,7 @@ pub fn submit(
 
     // Wait for daemon to be ready using filesystem watcher
     let status_path = root.join(STATUS_FILE);
-    watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
+    watcher.wait_for_file_with_timeout(&status_path, POOL_READY_TIMEOUT)?;
 
     let socket_path = root.join(SOCKET_NAME);
 

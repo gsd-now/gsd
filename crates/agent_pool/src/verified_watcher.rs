@@ -185,17 +185,37 @@ impl VerifiedWatcher {
         })
     }
 
-    /// Wait for a specific file to appear.
-    ///
-    /// Handles canary verification alongside waiting. Canaries are removed
-    /// as their directories are verified.
+    /// Wait for a specific file to appear (no timeout).
     ///
     /// Returns immediately if the file already exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if the wait times out before the file appears.
-    pub fn wait_for(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
+    /// Returns an error if the watcher disconnects.
+    pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
+        self.wait_for_file_impl(target, None)
+    }
+
+    /// Wait for a specific file to appear with a timeout.
+    ///
+    /// Returns immediately if the file already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the wait times out or the watcher disconnects.
+    pub fn wait_for_file_with_timeout(
+        &mut self,
+        target: &Path,
+        timeout: Duration,
+    ) -> io::Result<()> {
+        self.wait_for_file_impl(target, Some(timeout))
+    }
+
+    /// Internal implementation for waiting on a file.
+    ///
+    /// Handles canary verification alongside waiting. Canaries are removed
+    /// as their directories are verified.
+    fn wait_for_file_impl(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
         // Fast path: file already exists
         if target.exists() {
             return Ok(());

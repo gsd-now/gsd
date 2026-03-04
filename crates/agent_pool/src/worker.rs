@@ -59,7 +59,10 @@ pub fn wait_for_task(
     fs::write(&ready, &metadata)?;
 
     // Wait for task file using provided watcher
-    watcher.wait_for(&task, timeout)?;
+    match timeout {
+        Some(t) => watcher.wait_for_file_with_timeout(&task, t)?,
+        None => watcher.wait_for_file(&task)?,
+    }
 
     let content = fs::read_to_string(&task)?;
     Ok(TaskAssignment { uuid, content })

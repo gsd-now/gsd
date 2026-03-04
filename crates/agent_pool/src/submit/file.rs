@@ -86,7 +86,7 @@ pub fn submit_file_with_timeout(
     let status_path = root.join(STATUS_FILE);
 
     // Wait for pool to become ready (returns immediately if status file exists)
-    watcher.wait_for(&status_path, Some(POOL_READY_TIMEOUT))?;
+    watcher.wait_for_file_with_timeout(&status_path, POOL_READY_TIMEOUT)?;
 
     // Write request file with serialized payload (atomic via scratch/)
     let content = serde_json::to_string(payload)
@@ -94,7 +94,7 @@ pub fn submit_file_with_timeout(
     atomic_write_str(&root, &request_path, &content)?;
 
     // Wait for response using the watcher
-    watcher.wait_for(&response_path, Some(timeout))?;
+    watcher.wait_for_file_with_timeout(&response_path, timeout)?;
 
     // Read and parse response
     let response_content = fs::read_to_string(&response_path)?;

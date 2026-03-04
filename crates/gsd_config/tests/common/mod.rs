@@ -4,9 +4,7 @@
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
 
-use agent_pool::{
-    TaskAssignment, VerifiedWatcher, wait_for_pool_ready, wait_for_task, write_response,
-};
+use agent_pool::{STATUS_FILE, TaskAssignment, VerifiedWatcher, wait_for_task, write_response};
 use std::fs;
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
@@ -340,7 +338,13 @@ impl AgentPoolHandle {
             }));
         }
 
-        wait_for_pool_ready(root, Duration::from_secs(10))
+        // Wait for daemon to be ready using watcher
+        let root_buf = root.to_path_buf();
+        let mut watcher = VerifiedWatcher::new(root, std::slice::from_ref(&root_buf))
+            .expect("Failed to create watcher");
+        let status_path = root.join(STATUS_FILE);
+        watcher
+            .wait_for_file_with_timeout(&status_path, Duration::from_secs(10))
             .expect("Agent pool did not become ready in time");
 
         Self {

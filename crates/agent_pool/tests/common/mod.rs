@@ -8,7 +8,7 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::print_stderr)]
 
-use agent_pool::{Response, default_pool_root, id_to_path, wait_for_pool_ready};
+use agent_pool::{Response, STATUS_FILE, VerifiedWatcher, default_pool_root, id_to_path};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -683,7 +683,12 @@ impl AgentPoolHandle {
             }));
         }
 
-        wait_for_pool_ready(&root, Duration::from_secs(10))
+        // Wait for daemon to be ready using watcher
+        let mut watcher = VerifiedWatcher::new(&root, std::slice::from_ref(&root))
+            .expect("Failed to create watcher");
+        let status_path = root.join(STATUS_FILE);
+        watcher
+            .wait_for_file_with_timeout(&status_path, Duration::from_secs(10))
             .expect("Agent pool did not become ready in time");
 
         Self {

@@ -448,8 +448,9 @@ fn main() -> ExitCode {
 
             // Wait for daemon to be ready (status file signals readiness after sync)
             let status_file = root.join(STATUS_FILE);
-            if !wait_for_status_file(&status_file) {
-                eprintln!("Daemon not ready (status file not found within timeout)");
+            if let Err(e) = watcher.wait_for_file_with_timeout(&status_file, Duration::from_secs(5))
+            {
+                eprintln!("Daemon not ready: {e}");
                 return ExitCode::FAILURE;
             }
 
@@ -486,20 +487,4 @@ fn validate_pool_id(pool: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Wait for the status file to appear (daemon ready signal).
-/// Returns true if found within timeout, false otherwise.
-fn wait_for_status_file(status_file: &std::path::Path) -> bool {
-    const TIMEOUT: Duration = Duration::from_secs(5);
-    const POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-    let start = std::time::Instant::now();
-    while start.elapsed() < TIMEOUT {
-        if status_file.exists() {
-            return true;
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    false
 }
