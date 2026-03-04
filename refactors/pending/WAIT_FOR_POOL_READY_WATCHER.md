@@ -122,43 +122,122 @@ impl VerifiedWatcher {
 }
 ```
 
-### Updated wait_for_pool_ready
+### Single Watcher Per CLI Invocation
 
-This is a one-shot operation (startup check), so it creates its own watcher internally:
+**Goal:** Exactly one `VerifiedWatcher` per CLI process. Runtime panic if violated.
+
+Create a `PoolWatcher` that watches all relevant directories upfront:
 
 ```rust
-pub fn wait_for_pool_ready(root: impl AsRef<Path>, timeout: Duration) -> io::Result<()> {
-    let root = root.as_ref();
-    let status_path = root.join(STATUS_FILE);
+// crates/agent_pool/src/pool_watcher.rs
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+
+/// Tracks whether a watcher has been created for this process.
+/// Panics in debug mode if a second watcher is created.
+static WATCHER_CREATED: AtomicBool = AtomicBool::new(false);
+
+pub struct PoolWatcher {
+    inner: VerifiedWatcher,
+}
+
+impl PoolWatcher {
+    /// Create a watcher for all pool directories.
+    /// Panics if called twice in the same process (debug builds).
+    pub fn new(pool_root: &Path) -> io::Result<Self> {
+        // Panic if already created (catch bugs in dev)
+        let was_created = WATCHER_CREATED.swap(true, Ordering::SeqCst);
+        debug_assert!(
+            !was_created,
+            "PoolWatcher created twice! Only one watcher per CLI invocation allowed."
+        );
+
+        let agents_dir = pool_root.join(AGENTS_DIR);
+        let submissions_dir = pool_root.join(SUBMISSIONS_DIR);
+
+        // Watch all directories we'll need
+        let watch_dirs = [pool_root, &agents_dir, &submissions_dir];
+        let inner = VerifiedWatcher::new(pool_root, &watch_dirs)?;
+
+        Ok(Self { inner })
+    }
+
+    pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
+        self.inner.wait_for_file(target)
+    }
+
+    pub fn wait_for_file_with_timeout(
+        &mut self,
+        target: &Path,
+        timeout: Duration,
+    ) -> io::Result<()> {
+        self.inner.wait_for_file_with_timeout(target, timeout)
+    }
+}
+
+impl Drop for PoolWatcher {
+    fn drop(&mut self) {
+        WATCHER_CREATED.store(false, Ordering::SeqCst);
+    }
+}
+```
+
+### All functions take the watcher
+
+No more creating watchers internally - all functions require the shared watcher:
+
+```rust
+pub fn wait_for_pool_ready(
+    watcher: &mut PoolWatcher,
+    root: &Path,
+    timeout: Duration,
+) -> io::Result<()> {
+    let status_path = root.join(STATUS_FILE);
     if status_path.exists() {
         return Ok(());
     }
-
-    let mut watcher = VerifiedWatcher::new(root, std::slice::from_ref(&root))?;
     watcher.wait_for_file_with_timeout(&status_path, timeout)
 }
-```
 
-### Watcher Reuse (for repeated operations)
-
-`wait_for_task` and `submit_file` may be called repeatedly and watch the same directories. These should accept an optional watcher:
-
-```rust
-// Agent loop can reuse watcher across multiple wait_for_task calls
-pub fn wait_for_task_with_watcher(
+pub fn wait_for_task(
+    watcher: &mut PoolWatcher,
     pool_root: &Path,
     name: Option<&str>,
-    watcher: Option<&mut VerifiedWatcher>,
-) -> io::Result<TaskAssignment>;
+) -> io::Result<TaskAssignment> {
+    // ... uses watcher.wait_for_file()
+}
 
-// Convenience version creates its own
-pub fn wait_for_task(pool_root: &Path, name: Option<&str>) -> io::Result<TaskAssignment> {
-    wait_for_task_with_watcher(pool_root, name, None)
+pub fn submit_file(
+    watcher: &mut PoolWatcher,
+    root: &Path,
+    payload: &Payload,
+) -> io::Result<Response> {
+    // ... uses watcher.wait_for_file()
 }
 ```
 
-Note: `wait_for_pool_ready` watches the **pool root**, while `wait_for_task` watches the **agents dir** - different directories, so they can't share a watcher anyway.
+### CLI creates watcher once at startup
+
+```rust
+fn main() -> ExitCode {
+    let pool_root = resolve_pool(...);
+
+    // Create the ONE watcher for this CLI invocation
+    let mut watcher = match PoolWatcher::new(&pool_root) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to create watcher: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Pass to all operations
+    wait_for_pool_ready(&mut watcher, &pool_root, timeout)?;
+    wait_for_task(&mut watcher, &pool_root, name)?;
+    // ...
+}
+```
 
 ### CLI Update
 
@@ -199,13 +278,13 @@ watcher.wait_for_file(&response_path)?;
 
 1. Add private `wait_for_file_impl` with `Option<Duration>`
 2. Add public `wait_for_file` and `wait_for_file_with_timeout` that call impl
-3. Update `wait_for_pool_ready` to use `VerifiedWatcher` (creates its own, one-shot)
-4. Add `wait_for_task_with_watcher` that accepts optional watcher (for agent loops)
-5. Add `submit_file_with_watcher` that accepts optional watcher (for repeated submissions)
-6. Update all `wait_for` call sites to use new names
-7. Update CLI to use `wait_for_pool_ready` instead of `wait_for_status_file`
+3. Create `PoolWatcher` wrapper with debug_assert for single-creation
+4. Update `wait_for_pool_ready` to take `&mut PoolWatcher`
+5. Update `wait_for_task` to take `&mut PoolWatcher`
+6. Update `submit_file` to take `&mut PoolWatcher`
+7. Update CLI to create `PoolWatcher` once at startup and pass to all functions
 8. Delete `wait_for_status_file` from CLI
-9. Run tests to verify
+9. Run tests to verify (debug builds will panic if multiple watchers created)
 
 ## Testing
 
