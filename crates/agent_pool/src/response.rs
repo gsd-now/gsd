@@ -6,7 +6,7 @@
 //! ```json
 //! {"kind": "Processed", "stdout": "...", "stderr": "..."}
 //! {"kind": "NotProcessed", "reason": "timeout"}
-//! {"kind": "NotProcessed", "reason": "shutdown"}
+//! {"kind": "NotProcessed", "reason": "stopped"}
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NotProcessedReason {
-    /// The daemon is shutting down.
-    Shutdown,
+    /// The pool is stopping.
+    Stopped,
     /// Timed out waiting for confirmation.
     Timeout,
 }
@@ -103,11 +103,11 @@ mod tests {
 
     #[test]
     fn not_processed_serializes_correctly() {
-        let response = Response::not_processed(NotProcessedReason::Shutdown);
+        let response = Response::not_processed(NotProcessedReason::Stopped);
         let json = serde_json::to_string(&response).expect("serialize failed");
         // Keys are lowercase, values are UpperCamelCase
         assert!(json.contains(r#""kind":"NotProcessed""#));
-        assert!(json.contains(r#""reason":"shutdown""#));
+        assert!(json.contains(r#""reason":"stopped""#));
         assert!(!json.contains("stdout"));
     }
 

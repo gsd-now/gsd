@@ -30,8 +30,7 @@ use crate::verified_watcher::VerifiedWatcher;
 
 use super::core::{Effect, Event, WorkerId};
 use super::io::{
-    IdAllocator, IoConfig, ShutdownNotifier, SubmissionData, SubmissionMap, WorkerMap,
-    execute_effect,
+    IdAllocator, IoConfig, StopNotifier, SubmissionData, SubmissionMap, WorkerMap, execute_effect,
 };
 use super::path_category::{self, PathCategory};
 
@@ -233,8 +232,8 @@ fn run_daemon(
     // Create channel for socket connections
     let (socket_tx, socket_rx) = channel::unbounded::<(String, Stream)>();
 
-    // Shutdown notifier - signals timer threads to exit immediately
-    let shutdown = Arc::new(ShutdownNotifier::new());
+    // Stop notifier - signals timer threads to exit immediately
+    let stop_notifier = Arc::new(StopNotifier::new());
 
     // Spawn socket accept thread
     let _socket_thread = spawn_socket_accept_thread(listener, socket_tx);
@@ -267,11 +266,11 @@ fn run_daemon(
         agents_dir,
         submissions_dir,
         io_config,
-        &shutdown,
+        &stop_notifier,
     );
 
-    // Signal shutdown to wake up all timer threads immediately
-    shutdown.shutdown();
+    // Signal stop to wake up all timer threads immediately
+    stop_notifier.stop();
 
     // Wait for event loop to finish (it exits when channel closes)
     let final_state = event_loop_handle
@@ -281,7 +280,7 @@ fn run_daemon(
     debug!(
         workers = final_state.worker_count(),
         pending = final_state.pending_count(),
-        "daemon shutdown complete"
+        "daemon stop complete"
     );
 
     result
@@ -341,7 +340,7 @@ fn io_loop(
     agents_dir: &Path,
     submissions_dir: &Path,
     io_config: &IoConfig,
-    shutdown: &Arc<ShutdownNotifier>,
+    stop_notifier: &Arc<StopNotifier>,
 ) -> io::Result<()> {
     debug!(
         "io_loop starting, agents_dir={:?}, submissions_dir={:?}",
@@ -414,7 +413,7 @@ fn io_loop(
                     kicked_paths,
                     events_tx,
                     io_config,
-                    shutdown,
+                    stop_notifier,
                 )?;
             }
         }

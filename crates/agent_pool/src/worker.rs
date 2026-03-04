@@ -16,7 +16,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::constants::{AGENTS_DIR, ready_path, response_path, task_path};
-use crate::verified_watcher::VerifiedWatcher;
+use crate::verified_watcher::{VerifiedWatcher, WaitError};
 
 /// Result of waiting for a task.
 #[derive(Debug)]
@@ -39,7 +39,8 @@ pub struct TaskAssignment {
 ///
 /// # Errors
 ///
-/// Returns an error if:
+/// Returns `WaitError::Stopped` if the pool was stopped.
+/// Returns `WaitError::Io` if:
 /// - File operations fail (writing ready file, reading task file)
 /// - Timeout is exceeded waiting for task
 pub fn wait_for_task(
@@ -47,7 +48,7 @@ pub fn wait_for_task(
     pool_root: &Path,
     name: Option<&str>,
     timeout: Option<Duration>,
-) -> io::Result<TaskAssignment> {
+) -> Result<TaskAssignment, WaitError> {
     let agents_dir = pool_root.join(AGENTS_DIR);
     let uuid = Uuid::new_v4().to_string();
 
@@ -58,10 +59,14 @@ pub fn wait_for_task(
     let metadata = name.map_or_else(|| "{}".to_string(), |n| format!(r#"{{"name":"{n}"}}"#));
     fs::write(&ready, &metadata)?;
 
-    // Wait for task file using provided watcher
-    match timeout {
-        Some(t) => watcher.wait_for_file_with_timeout(&task, t)?,
-        None => watcher.wait_for_file(&task)?,
+    // Wait for task file, clean up ready file on any error
+    let result = match timeout {
+        Some(t) => watcher.wait_for_file_with_timeout(&task, t),
+        None => watcher.wait_for_file(&task),
+    };
+    if let Err(e) = result {
+        let _ = fs::remove_file(&ready);
+        return Err(e);
     }
 
     let content = fs::read_to_string(&task)?;

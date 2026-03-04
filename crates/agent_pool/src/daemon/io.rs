@@ -28,17 +28,17 @@ use crate::response::{NotProcessedReason, Response};
 use super::core::{Effect, Event, SubmissionId, TaskId, WorkerId};
 
 // =============================================================================
-// Shutdown Notifier
+// Stop Notifier
 // =============================================================================
 
-/// Thread-safe shutdown notifier with interruptible wait.
+/// Thread-safe stop notifier with interruptible wait.
 ///
 /// Timer threads use `wait_timeout` to sleep with the ability to wake up
-/// immediately when `shutdown` is called. This prevents timer threads from
-/// continuing to run after the daemon starts shutting down.
+/// immediately when `stop` is called. This prevents timer threads from
+/// continuing to run after the pool starts stopping.
 #[derive(Debug, Default)]
-pub(super) struct ShutdownNotifier {
-    /// Flag indicating shutdown is in progress.
+pub(super) struct StopNotifier {
+    /// Flag indicating stop is in progress.
     flag: AtomicBool,
     /// Mutex for the condvar (condvar requires a mutex guard).
     mutex: Mutex<()>,
@@ -46,19 +46,19 @@ pub(super) struct ShutdownNotifier {
     condvar: Condvar,
 }
 
-impl ShutdownNotifier {
-    /// Create a new shutdown notifier.
+impl StopNotifier {
+    /// Create a new stop notifier.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Wait for the given duration or until shutdown is signaled.
+    /// Wait for the given duration or until stop is signaled.
     ///
-    /// Returns `true` if shutdown was signaled (either before or during the wait).
-    /// Returns `false` if the timeout elapsed without shutdown.
+    /// Returns `true` if stop was signaled (either before or during the wait).
+    /// Returns `false` if the timeout elapsed without stop.
     #[allow(clippy::significant_drop_tightening)] // Guard must be held for condvar wait
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
-        // Check if already shutdown
+        // Check if already stopped
         if self.flag.load(Ordering::Relaxed) {
             return true;
         }
@@ -77,12 +77,12 @@ impl ShutdownNotifier {
             return true;
         }
 
-        // Timeout elapsed without shutdown
+        // Timeout elapsed without stop
         timeout_result.timed_out()
     }
 
-    /// Signal shutdown and wake all waiting threads.
-    pub fn shutdown(&self) {
+    /// Signal stop and wake all waiting threads.
+    pub fn stop(&self) {
         self.flag.store(true, Ordering::Relaxed);
         self.condvar.notify_all();
     }
@@ -434,7 +434,7 @@ pub(super) fn execute_effect(
     kicked_paths: &mut HashSet<PathBuf>,
     events_tx: &Sender<Event>,
     config: &IoConfig,
-    shutdown: &Arc<ShutdownNotifier>,
+    stop_notifier: &Arc<StopNotifier>,
 ) -> io::Result<()> {
     match effect {
         Effect::TaskAssigned { worker_id, task_id } => {
@@ -455,7 +455,7 @@ pub(super) fn execute_effect(
                         events_tx.clone(),
                         worker_id,
                         submission_data.timeout,
-                        Arc::clone(shutdown),
+                        Arc::clone(stop_notifier),
                     );
                 }
                 TaskId::Heartbeat => {
@@ -474,7 +474,7 @@ pub(super) fn execute_effect(
                         events_tx.clone(),
                         worker_id,
                         config.idle_timeout,
-                        Arc::clone(shutdown),
+                        Arc::clone(stop_notifier),
                     );
                 }
             }
@@ -485,7 +485,7 @@ pub(super) fn execute_effect(
                     events_tx.clone(),
                     worker_id,
                     config.idle_timeout,
-                    Arc::clone(shutdown),
+                    Arc::clone(stop_notifier),
                 );
             }
         }
@@ -546,24 +546,24 @@ pub(super) fn execute_effect(
 
 /// Start a task timeout timer that sends `WorkerTimedOut` after the given duration.
 ///
-/// The timer uses an interruptible wait. If shutdown is signaled during the wait,
+/// The timer uses an interruptible wait. If stop is signaled during the wait,
 /// the timer exits immediately without sending an event.
 fn start_task_timeout_timer(
     events_tx: Sender<Event>,
     worker_id: WorkerId,
     timeout: Duration,
-    shutdown: Arc<ShutdownNotifier>,
+    stop_notifier: Arc<StopNotifier>,
 ) {
     thread::spawn(move || {
-        // Wait for timeout or shutdown, whichever comes first
-        let shutdown_signaled = shutdown.wait_timeout(timeout);
-        if shutdown_signaled {
+        // Wait for timeout or stop, whichever comes first
+        let stopped = stop_notifier.wait_timeout(timeout);
+        if stopped {
             debug!(
                 worker_id = worker_id.0,
-                "task timeout timer cancelled due to shutdown"
+                "task timeout timer cancelled due to stop"
             );
         } else {
-            // Timeout elapsed without shutdown - fire the event
+            // Timeout elapsed without stop - fire the event
             let _ = events_tx.send(Event::WorkerTimedOut { worker_id });
         }
     });
@@ -571,24 +571,21 @@ fn start_task_timeout_timer(
 
 /// Start an idle timer that sends `AssignHeartbeatIfIdle` after the given duration.
 ///
-/// The timer uses an interruptible wait. If shutdown is signaled during the wait,
+/// The timer uses an interruptible wait. If stop is signaled during the wait,
 /// the timer exits immediately without sending an event.
 fn start_idle_timer(
     events_tx: Sender<Event>,
     worker_id: WorkerId,
     timeout: Duration,
-    shutdown: Arc<ShutdownNotifier>,
+    stop_notifier: Arc<StopNotifier>,
 ) {
     thread::spawn(move || {
-        // Wait for timeout or shutdown, whichever comes first
-        let shutdown_signaled = shutdown.wait_timeout(timeout);
-        if shutdown_signaled {
-            debug!(
-                worker_id = worker_id.0,
-                "idle timer cancelled due to shutdown"
-            );
+        // Wait for timeout or stop, whichever comes first
+        let stopped = stop_notifier.wait_timeout(timeout);
+        if stopped {
+            debug!(worker_id = worker_id.0, "idle timer cancelled due to stop");
         } else {
-            // Timeout elapsed without shutdown - fire the event
+            // Timeout elapsed without stop - fire the event
             let _ = events_tx.send(Event::AssignHeartbeatIfIdle { worker_id });
         }
     });

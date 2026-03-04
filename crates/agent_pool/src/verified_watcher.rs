@@ -1,6 +1,6 @@
 //! Filesystem utilities for atomic operations and file watching.
 
-use crate::constants::SCRATCH_DIR;
+use crate::constants::{SCRATCH_DIR, STATUS_FILE, STATUS_STOP};
 use crossbeam_channel::{self as channel, Receiver, RecvTimeoutError};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
@@ -8,6 +8,52 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+// =============================================================================
+// WaitError
+// =============================================================================
+
+/// Error type for wait operations.
+#[derive(Debug)]
+pub enum WaitError {
+    /// Pool stop was requested (stop file written).
+    Stopped,
+    /// I/O error (timeout, disconnect, file error, etc).
+    Io(io::Error),
+}
+
+impl std::fmt::Display for WaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "pool stopped"),
+            Self::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for WaitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Stopped => None,
+            Self::Io(e) => Some(e),
+        }
+    }
+}
+
+impl From<io::Error> for WaitError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<WaitError> for io::Error {
+    fn from(e: WaitError) -> Self {
+        match e {
+            WaitError::Stopped => io::Error::new(io::ErrorKind::Interrupted, "pool stopped"),
+            WaitError::Io(e) => e,
+        }
+    }
+}
 
 // =============================================================================
 // Platform-specific event detection
@@ -160,6 +206,9 @@ pub struct VerifiedWatcher {
     /// Canary guards for directories still being verified.
     /// As directories are verified, their canaries are removed.
     remaining_canaries: Vec<CanaryGuard>,
+    /// Path to the stop file (`pool_root/status`). When this file contains
+    /// `STATUS_STOP`, wait operations return `WaitError::Stopped`.
+    stop_path: PathBuf,
 }
 
 impl VerifiedWatcher {
@@ -202,10 +251,14 @@ impl VerifiedWatcher {
             .map(|dir| CanaryGuard::new(dir))
             .collect::<io::Result<Vec<_>>>()?;
 
+        // Assume watch_dir is pool root (true after SINGLE_WATCHER_AT_ENTRY_POINT)
+        let stop_path = watch_dir.join(STATUS_FILE);
+
         Ok(Self {
             watcher,
             rx,
             remaining_canaries,
+            stop_path,
         })
     }
 
@@ -215,8 +268,9 @@ impl VerifiedWatcher {
     ///
     /// # Errors
     ///
-    /// Returns an error if the watcher disconnects.
-    pub fn wait_for_file(&mut self, target: &Path) -> io::Result<()> {
+    /// Returns `WaitError::Stopped` if the pool stop was requested.
+    /// Returns `WaitError::Io` if the watcher disconnects.
+    pub fn wait_for_file(&mut self, target: &Path) -> Result<(), WaitError> {
         self.wait_for_file_impl(target, None)
     }
 
@@ -226,47 +280,64 @@ impl VerifiedWatcher {
     ///
     /// # Errors
     ///
-    /// Returns an error if the wait times out or the watcher disconnects.
+    /// Returns `WaitError::Stopped` if the pool stop was requested.
+    /// Returns `WaitError::Io` if the wait times out or the watcher disconnects.
     pub fn wait_for_file_with_timeout(
         &mut self,
         target: &Path,
         timeout: Duration,
-    ) -> io::Result<()> {
+    ) -> Result<(), WaitError> {
         self.wait_for_file_impl(target, Some(timeout))
     }
 
     /// Internal implementation for waiting on a file.
     ///
     /// Handles canary verification alongside waiting. Canaries are removed
-    /// as their directories are verified.
-    fn wait_for_file_impl(&mut self, target: &Path, timeout: Option<Duration>) -> io::Result<()> {
+    /// as their directories are verified. Also monitors the stop file and
+    /// returns `WaitError::Stopped` if stop is requested.
+    fn wait_for_file_impl(
+        &mut self,
+        target: &Path,
+        timeout: Option<Duration>,
+    ) -> Result<(), WaitError> {
         // Fast path: file already exists
         if target.exists() {
             return Ok(());
         }
 
-        let start = Instant::now();
-        loop {
-            // Check timeout
-            if let Some(t) = timeout
-                && start.elapsed() > t
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!(
-                        "[E046] timed out after {:?} waiting for {}",
-                        t,
-                        target.display()
-                    ),
-                ));
-            }
+        // Check if stop was already requested
+        if is_stop_requested(&self.stop_path) {
+            return Err(WaitError::Stopped);
+        }
 
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
+        let deadline = timeout.map(|t| Instant::now() + t);
+
+        loop {
+            let wait_time = match deadline {
+                Some(d) => {
+                    let remaining = d.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(WaitError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!("[E046] timed out waiting for {}", target.display()),
+                        )));
+                    }
+                    remaining.min(Duration::from_millis(100))
+                }
+                None => Duration::from_millis(100),
+            };
+
+            match self.rx.recv_timeout(wait_time) {
                 Ok(event) => {
                     for path in &event.paths {
                         // Remove canary for verified directory
                         if let Some(parent) = path.parent() {
                             self.remaining_canaries.retain(|c| c.dir() != parent);
+                        }
+
+                        // Check for stop file
+                        if path == &self.stop_path && is_stop_requested(&self.stop_path) {
+                            return Err(WaitError::Stopped);
                         }
 
                         if path == target {
@@ -287,13 +358,13 @@ impl VerifiedWatcher {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(
+                    return Err(WaitError::Io(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         format!(
                             "[E003] watcher disconnected while waiting for {}",
                             target.display()
                         ),
-                    ));
+                    )));
                 }
             }
         }
@@ -346,6 +417,13 @@ impl VerifiedWatcher {
         // Canaries verified and will be cleaned up when remaining_canaries drops
         Ok((self.watcher, self.rx))
     }
+}
+
+/// Check if the stop file contains the stop signal.
+fn is_stop_requested(stop_path: &Path) -> bool {
+    fs::read_to_string(stop_path)
+        .map(|s| s.trim().starts_with(STATUS_STOP))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
