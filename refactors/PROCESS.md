@@ -123,9 +123,25 @@ When implementing a refactor:
 - Squashing - we want the atomic commits preserved on master
 - Large commits that do multiple unrelated things
 
-### If you need to experiment
+### While working on the branch
 
-If you need exploratory work (debugging, false starts), do it locally and then restructure into clean atomic commits before pushing. Use `git rebase -i` to clean up history before the branch is shared.
+While actively developing on the branch, feel free to:
+- Make messy commits
+- Squash things together
+- Experiment and revert
+- Push work-in-progress
+
+The branch is your workspace. Don't worry about commit cleanliness until you're ready to merge.
+
+### Before merging to master
+
+Do a final pass to restructure the branch into clean atomic commits:
+
+1. Review the full diff from master
+2. Use `git rebase -i` to reorganize commits
+3. Each commit should be one logical change that passes CI
+4. Push the cleaned-up branch and verify CI passes on all commits
+5. Only then merge to master
 
 ### Merging to master
 
