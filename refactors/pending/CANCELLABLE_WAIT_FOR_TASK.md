@@ -126,20 +126,24 @@ fn wait_for_file_impl(
     }
 }
 
+/// Error code for pool shutdown (distinguishable from other interrupts).
+pub const SHUTDOWN_ERROR: &str = "[E100] pool shutdown";
+
 fn is_stop_requested(stop_path: &Path) -> bool {
     std::fs::read_to_string(stop_path)
-        .map(|s| s.trim().starts_with("stop"))
+        .map(|s| s.trim().starts_with(STATUS_STOP))  // STATUS_STOP is existing constant
         .unwrap_or(false)
 }
 
-/// Distinguishable shutdown error (vs regular Interrupted).
+/// Create shutdown error (pool is stopping).
 pub fn shutdown_error() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "[SHUTDOWN] pool stopped")
+    io::Error::new(io::ErrorKind::Interrupted, SHUTDOWN_ERROR)
 }
 
+/// Check if an error is a shutdown error (vs timeout, disconnect, etc).
 pub fn is_shutdown(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Interrupted
-        && err.to_string().starts_with("[SHUTDOWN]")
+        && err.to_string().contains("[E100]")
 }
 ```
 
