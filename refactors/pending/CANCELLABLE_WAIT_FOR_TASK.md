@@ -183,32 +183,78 @@ pub fn wait_for_pool_ready(
 ) -> io::Result<()> {
     let root = root.as_ref();
     let status_path = root.join(STATUS_FILE);
-    let start = Instant::now();
 
-    let never = channel::never();
-    let cancel = cancel.unwrap_or(&never);
-
-    while !status_path.exists() {
-        if start.elapsed() > timeout {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("pool did not become ready: {}", root.display()),
-            ));
-        }
-
-        // Check cancel with short timeout
-        select! {
-            recv(cancel) -> _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
-            }
-            default(Duration::from_millis(10)) => {}
-        }
+    // Early return if already ready
+    if status_path.exists() {
+        return Ok(());
     }
 
-    Ok(())
+    // Use VerifiedWatcher like everything else
+    let mut watcher = VerifiedWatcher::new(root, std::slice::from_ref(&root))?;
+    watcher.wait_for_with_timeout(&status_path, timeout, cancel)
+}
+```
+
+This requires adding a `wait_for_with_timeout` variant to `VerifiedWatcher`:
+
+```rust
+impl VerifiedWatcher {
+    pub fn wait_for_with_timeout(
+        &mut self,
+        target: &Path,
+        timeout: Duration,
+        cancel: Option<&CancelRx>,
+    ) -> io::Result<()> {
+        if target.exists() {
+            return Ok(());
+        }
+
+        let never = channel::never();
+        let cancel = cancel.unwrap_or(&never);
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("timed out waiting for {}", target.display()),
+                ));
+            }
+
+            select! {
+                recv(self.state.rx) -> event => {
+                    match event {
+                        Ok(e) => {
+                            if e.paths.iter().any(|p| p == target) || target.exists() {
+                                return Ok(());
+                            }
+                        }
+                        Err(_) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "watcher disconnected",
+                            ));
+                        }
+                    }
+                }
+                recv(cancel) -> _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "cancelled",
+                    ));
+                }
+                default(remaining.min(Duration::from_millis(100))) => {
+                    if target.exists() {
+                        return Ok(());
+                    }
+                    for canary in &mut self.state.remaining_canaries {
+                        canary.retry()?;
+                    }
+                }
+            }
+        }
+    }
 }
 ```
 
@@ -271,13 +317,14 @@ impl GsdTestAgent {
 
 1. Add `CancelRx` type alias
 2. Update `VerifiedWatcher::wait_for` signature and implementation
-3. Update `VerifiedWatcher::into_receiver` signature and implementation
-4. Update `wait_for_task` to accept and pass through cancel
-5. Update `submit_file` to accept and pass through cancel
-6. Update `submit` to accept cancel (for wait_for phase)
-7. Update `wait_for_pool_ready` to accept cancel
-8. Update test agents to use cancel channel instead of AtomicBool + timeout
-9. Remove timeout parameter from functions where it was only used for cancellation polling
+3. Add `VerifiedWatcher::wait_for_with_timeout` for deadline-based waiting
+4. Update `VerifiedWatcher::into_receiver` signature and implementation
+5. Update `wait_for_task` to accept and pass through cancel
+6. Update `submit_file` to accept and pass through cancel
+7. Update `submit` to accept cancel (for wait_for phase)
+8. Update `wait_for_pool_ready` to use `VerifiedWatcher` instead of polling
+9. Update test agents to use cancel channel instead of AtomicBool + timeout
+10. Remove timeout parameter from functions where it was only used for cancellation polling
 
 ## Open Questions
 
