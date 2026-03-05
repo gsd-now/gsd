@@ -6,12 +6,19 @@
 
 2. **Multi-Pool Task Routing** - Allow different steps to be routed to different agent pools. This enables heterogeneous workflows where some tasks require specialized agents (e.g., code review agents vs. implementation agents) or where command execution happens in a separate pool from AI reasoning.
 
-3. **Config References** - Allow configs to reference and compose other config files. This enables:
+3. **Config References and Reusable Blocks** - Allow configs to reference other config files and return values. This enables:
    - Sharing common step definitions across workflows
    - Building complex workflows from reusable components
    - Overriding specific steps while inheriting the rest
+   - Configs as callable blocks that return values (like functions)
+
+   Use cases:
+   - Default step config that returns initial tasks
+   - Reusable analysis pipeline that returns findings
+   - Shared validation config that returns pass/fail
 
    Possible syntax: `{"$ref": "./common-steps.jsonc"}` or `{"extends": "./base-config.jsonc"}`
+   Return values: configs can specify output schema and terminal steps emit return values
 
 ---
 
