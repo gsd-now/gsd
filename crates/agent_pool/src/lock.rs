@@ -38,10 +38,26 @@ pub fn acquire_lock(lock_path: &Path) -> io::Result<LockGuard> {
             ));
         }
         // Stale lock - remove it
-        fs::remove_file(lock_path)?;
+        fs::remove_file(lock_path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "[E067] failed to remove stale lock {}: {e}",
+                    lock_path.display()
+                ),
+            )
+        })?;
     }
 
-    fs::write(lock_path, std::process::id().to_string())?;
+    fs::write(lock_path, std::process::id().to_string()).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E068] failed to write lock file {}: {e}",
+                lock_path.display()
+            ),
+        )
+    })?;
     Ok(LockGuard {
         path: lock_path.to_path_buf(),
     })

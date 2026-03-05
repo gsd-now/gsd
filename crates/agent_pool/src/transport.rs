@@ -83,15 +83,43 @@ impl Transport {
                 // Temp file must be on the same filesystem as target for rename to work.
                 let target = path.join(filename);
                 let temp = path.join(format!(".{}.{}.tmp", filename, uuid::Uuid::new_v4()));
-                fs::write(&temp, content)?;
-                fs::rename(&temp, &target)
+                fs::write(&temp, content).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("[E061] failed to write temp file {}: {e}", temp.display()),
+                    )
+                })?;
+                fs::rename(&temp, &target).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "[E062] failed to rename {} to {}: {e}",
+                            temp.display(),
+                            target.display()
+                        ),
+                    )
+                })
             }
             Transport::FlatFile { dir, uuid } => {
                 let target_name = format!("{uuid}.{filename}");
                 let target = dir.join(&target_name);
                 let temp = dir.join(format!(".{}.{}.tmp", target_name, uuid::Uuid::new_v4()));
-                fs::write(&temp, content)?;
-                fs::rename(&temp, &target)
+                fs::write(&temp, content).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("[E063] failed to write temp file {}: {e}", temp.display()),
+                    )
+                })?;
+                fs::rename(&temp, &target).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "[E064] failed to rename {} to {}: {e}",
+                            temp.display(),
+                            target.display()
+                        ),
+                    )
+                })
             }
             Transport::Socket(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,

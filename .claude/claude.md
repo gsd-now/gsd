@@ -83,6 +83,17 @@ When GitHub CI runs show as "cancelled", that means they **timed out** - not tha
 
 The goal: minimize back-and-forth. Get information proactively so you can solve problems without waiting for user feedback.
 
+## Investigation is read-only
+
+**When asked to investigate, debug, or diagnose something, DO NOT make any changes.** Only read files, run queries, and report findings. Do not:
+- Edit files
+- Create tags
+- Push to git
+- Make commits
+- Run commands that modify state
+
+Investigation means: gather information and report back. That's it. Wait for explicit instructions before taking any action.
+
 ## Refactors
 
 **STOP. READ THIS BEFORE DOING ANYTHING.**

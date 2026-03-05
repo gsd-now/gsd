@@ -57,7 +57,15 @@ pub fn stop(root: impl AsRef<Path>) -> io::Result<()> {
         target_pid = pid,
         "sending stop signal"
     );
-    fs::write(&status_path, STATUS_STOP)?;
+    fs::write(&status_path, STATUS_STOP).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E057] failed to write stop signal to {}: {e}",
+                status_path.display()
+            ),
+        )
+    })?;
 
     // Give the daemon a moment to shut down gracefully
     thread::sleep(Duration::from_millis(100));

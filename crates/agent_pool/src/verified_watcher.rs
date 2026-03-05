@@ -165,9 +165,22 @@ struct CanaryGuard {
 impl CanaryGuard {
     fn new(dir: &Path) -> io::Result<Self> {
         // Canonicalize to match FSEvents paths (e.g., /tmp -> /private/tmp on macOS)
-        let dir = fs::canonicalize(dir)?;
+        let dir = fs::canonicalize(dir).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "[E047] failed to canonicalize canary dir {}: {e}",
+                    dir.display()
+                ),
+            )
+        })?;
         let path = dir.join(format!("{}.canary", Uuid::new_v4()));
-        fs::write(&path, "0")?;
+        fs::write(&path, "0").map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("[E048] failed to write canary file {}: {e}", path.display()),
+            )
+        })?;
         Ok(Self {
             path,
             dir,
@@ -181,7 +194,16 @@ impl CanaryGuard {
 
     fn retry(&mut self) -> io::Result<()> {
         self.writes += 1;
-        fs::write(&self.path, self.writes.to_string())
+        fs::write(&self.path, self.writes.to_string()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "[E049] failed to write canary file {} (retry {}): {e}",
+                    self.path.display(),
+                    self.writes
+                ),
+            )
+        })
     }
 }
 

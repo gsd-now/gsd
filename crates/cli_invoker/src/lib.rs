@@ -176,6 +176,20 @@ impl<T: InvokableCli> Invoker<T> {
         }
     }
 
+    /// Returns a human-readable description of how the CLI is being invoked.
+    ///
+    /// Useful for debugging and error messages.
+    #[must_use]
+    pub fn description(&self) -> String {
+        match &self.kind {
+            InvokerKind::Binary(path) => format!("binary: {}", path.display()),
+            InvokerKind::PackageManager {
+                program,
+                prefix_args,
+            } => format!("{} {}", program, prefix_args.join(" ")),
+        }
+    }
+
     const fn binary(path: PathBuf) -> Self {
         Self {
             kind: InvokerKind::Binary(path),

@@ -57,7 +57,12 @@ pub fn wait_for_task(
 
     // Write ready file with optional metadata
     let metadata = name.map_or_else(|| "{}".to_string(), |n| format!(r#"{{"name":"{n}"}}"#));
-    fs::write(&ready, &metadata)?;
+    fs::write(&ready, &metadata).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("[E058] failed to write ready file {}: {e}", ready.display()),
+        )
+    })?;
 
     // Wait for task file, clean up ready file on any error
     let result = match timeout {
@@ -69,7 +74,12 @@ pub fn wait_for_task(
         return Err(e);
     }
 
-    let content = fs::read_to_string(&task)?;
+    let content = fs::read_to_string(&task).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("[E059] failed to read task file {}: {e}", task.display()),
+        )
+    })?;
     Ok(TaskAssignment { uuid, content })
 }
 
@@ -83,7 +93,15 @@ pub fn wait_for_task(
 pub fn write_response(pool_root: &Path, uuid: &str, content: &str) -> io::Result<()> {
     let agents_dir = pool_root.join(AGENTS_DIR);
     let path = response_path(&agents_dir, uuid);
-    fs::write(&path, content)
+    fs::write(&path, content).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E060] failed to write response file {}: {e}",
+                path.display()
+            ),
+        )
+    })
 }
 
 #[cfg(test)]

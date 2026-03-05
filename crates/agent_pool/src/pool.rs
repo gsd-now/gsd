@@ -88,8 +88,25 @@ pub fn list_pools(pool_root: &Path) -> io::Result<Vec<PoolInfo>> {
 
     let mut pools = Vec::new();
 
-    for entry in fs::read_dir(pool_root)? {
-        let entry = entry?;
+    let entries = fs::read_dir(pool_root).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E065] failed to read pool root {}: {e}",
+                pool_root.display()
+            ),
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "[E066] failed to read pool entry in {}: {e}",
+                    pool_root.display()
+                ),
+            )
+        })?;
         let path = entry.path();
 
         if !path.is_dir() {

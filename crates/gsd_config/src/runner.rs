@@ -1024,15 +1024,24 @@ fn submit_via_cli(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!(
-            "[E016] agent_pool submit_task failed: {}",
+            "[E016] agent_pool submit_task failed\n  invoker: {}\n  pool_root: {}\n  pool: {}\n  error: {}",
+            invoker.description(),
+            pool_root.display(),
+            pool_id,
             stderr.trim()
         )));
     }
 
     serde_json::from_slice(&output.stdout).map_err(|e| {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("[E017] failed to parse agent_pool output: {e}"),
+            format!(
+                "[E017] failed to parse agent_pool output\n  invoker: {}\n  pool: {}\n  error: {e}\n  stdout: {}",
+                invoker.description(),
+                pool_path.display(),
+                stdout.trim()
+            ),
         )
     })
 }

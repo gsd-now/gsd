@@ -153,10 +153,27 @@ impl From<DaemonConfig> for IoConfig {
 ///
 /// Returns an error if the lock can't be acquired or an I/O error occurs.
 pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Result<Infallible> {
-    fs::create_dir_all(root.as_ref())?;
+    let root_ref = root.as_ref();
+    fs::create_dir_all(root_ref).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E050] failed to create pool directory {}: {e}",
+                root_ref.display()
+            ),
+        )
+    })?;
     // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
     // so FSEvent paths match our stored paths.
-    let root = fs::canonicalize(root.as_ref())?;
+    let root = fs::canonicalize(root_ref).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E051] failed to canonicalize pool root {}: {e}",
+                root_ref.display()
+            ),
+        )
+    })?;
 
     // Clean up stale state from previous runs (crashed daemon, etc.)
     cleanup_pool_state(&root);
@@ -169,13 +186,45 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
 
     // Clean up stale socket if it exists
     if socket_path.exists() {
-        fs::remove_file(&socket_path)?;
+        fs::remove_file(&socket_path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "[E052] failed to remove stale socket {}: {e}",
+                    socket_path.display()
+                ),
+            )
+        })?;
     }
 
     // Create directories first (needed for watcher canary)
-    fs::create_dir_all(&submissions_dir)?;
-    fs::create_dir_all(&agents_dir)?;
-    fs::create_dir_all(&scratch_dir)?;
+    fs::create_dir_all(&submissions_dir).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E053] failed to create submissions dir {}: {e}",
+                submissions_dir.display()
+            ),
+        )
+    })?;
+    fs::create_dir_all(&agents_dir).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E054] failed to create agents dir {}: {e}",
+                agents_dir.display()
+            ),
+        )
+    })?;
+    fs::create_dir_all(&scratch_dir).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E055] failed to create scratch dir {}: {e}",
+                scratch_dir.display()
+            ),
+        )
+    })?;
 
     // Clean up pool state on exit (SIGTERM or panic)
     let _pool_cleanup = PoolStateCleanup(root.clone());
@@ -191,7 +240,16 @@ pub fn run_with_config(root: impl AsRef<Path>, config: DaemonConfig) -> io::Resu
     let _cleanup = SocketCleanup(socket_path.clone());
 
     // Write status file to signal daemon is ready
-    fs::write(root.join(STATUS_FILE), STATUS_READY)?;
+    let status_path = root.join(STATUS_FILE);
+    fs::write(&status_path, STATUS_READY).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "[E056] failed to write status file {}: {e}",
+                status_path.display()
+            ),
+        )
+    })?;
 
     info!(socket = %socket_path.display(), "daemon listening");
 
