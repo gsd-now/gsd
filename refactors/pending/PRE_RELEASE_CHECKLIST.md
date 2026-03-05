@@ -47,7 +47,7 @@ Write task queue state to a file so runs can be resumed after interruption.
 ## Must Have (Complete)
 
 ### 5. Cancellable Wait For Task
-**Doc:** `CANCELLABLE_WAIT_FOR_TASK.md`
+**Doc:** `past/CANCELLABLE_WAIT_FOR_TASK.md`
 
 Use crossbeam select! to make blocking operations cancellable. Foundation for graceful shutdown.
 
@@ -64,7 +64,7 @@ When running GSD, show progress: "X task(s) completed, Y task(s) remaining"
 ---
 
 ### 7. Config Schema Subcommand
-**Doc:** `CONFIG_SCHEMA_SUBCOMMAND.md`
+**Doc:** `past/CONFIG_SCHEMA_SUBCOMMAND.md`
 
 Add `gsd config schema` subcommand that prints JSON schema. Enables validation and IDE autocomplete.
 
