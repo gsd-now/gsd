@@ -34,18 +34,22 @@ You are an agent in a task pool. You'll be given a **pool ID** and optionally a 
 ## Getting tasks
 
 ```bash
-agent_pool [--pool-root <POOL_ROOT>] get_task --pool <POOL_ID> [--name <AGENT_NAME>]
+pnpm dlx @gsd-now/agent-pool@main get_task --pool <POOL_ID> --name <AGENT_NAME>
 ```
 
-If `--pool-root` is not specified, it defaults to `/tmp/agent_pool`. The `--name` parameter is optional and used for debugging/logging only.
+If you need a custom pool root (not the default `/tmp/agent_pool`):
 
-This registers you with the pool and waits for a message. The response includes:
+```bash
+pnpm dlx @gsd-now/agent-pool@main --pool-root <POOL_ROOT> get_task --pool <POOL_ID> --name <AGENT_NAME>
+```
+
+This blocks until a message is available. The response is JSON:
 
 ```json
 {
   "uuid": "550e8400-e29b-41d4-a716-446655440000",
   "kind": "Task",
-  "response_file": "/tmp/agent_pool/<pool>/agents/<uuid>.response.json",
+  "response_file": "/tmp/agent_pool/<POOL_ID>/agents/550e8400-e29b-41d4-a716-446655440000.response.json",
   "content": {
     "instructions": "What you should do...",
     "data": {"kind": "StepName", "value": {...}}
@@ -55,17 +59,17 @@ This registers you with the pool and waits for a message. The response includes:
 
 The `uuid` identifies this task cycle. The `response_file` is where you write your response.
 
-### Task kinds
+## Message kinds
 
-#### Task
+### Task
 
 A real task from a submitter:
 
 ```json
 {
-  "uuid": "...",
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
   "kind": "Task",
-  "response_file": "...",
+  "response_file": "/tmp/agent_pool/<POOL_ID>/agents/<uuid>.response.json",
   "content": {
     "instructions": "What you should do...",
     "data": {"kind": "StepName", "value": {...}}
@@ -73,38 +77,38 @@ A real task from a submitter:
 }
 ```
 
-#### Heartbeat
+### Heartbeat
 
 A liveness check from the daemon:
 
 ```json
 {
-  "uuid": "...",
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
   "kind": "Heartbeat",
-  "response_file": "...",
+  "response_file": "/tmp/agent_pool/<POOL_ID>/agents/<uuid>.response.json",
   "content": {
-    "instructions": "Respond with any valid JSON to confirm you're alive...",
+    "instructions": "Respond with any valid JSON to confirm you're alive. The daemon discards your response - this exists to detect stuck workers.",
     "data": null
   }
 }
 ```
 
-Both Task and Heartbeat have the same structure. Follow the instructions - for heartbeats, just write any valid JSON to the response file.
+For heartbeats, just write any valid JSON (like `{}` or `"ok"`) to the response file.
 
-#### Kicked
+### Kicked
 
 You've been removed from the pool (usually due to timeout):
 
 ```json
 {
-  "uuid": "...",
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
   "kind": "Kicked",
-  "response_file": "...",
+  "response_file": "/tmp/agent_pool/<POOL_ID>/agents/<uuid>.response.json",
   "content": null
 }
 ```
 
-When you receive this, you can call `get_task` again to reconnect.
+When you receive a Kicked message, **do not write to the response file**. Instead, immediately call `get_task` again to reconnect to the pool.
 
 ## Doing the work
 
@@ -125,10 +129,47 @@ echo '<YOUR_JSON_RESPONSE>' > "$RESPONSE_FILE"
 Then immediately call `get_task` again to wait for the next task:
 
 ```bash
-agent_pool get_task --pool <POOL_ID>
+pnpm dlx @gsd-now/agent-pool@main get_task --pool <POOL_ID> --name <AGENT_NAME>
 ```
 
 **Do not exit after completing a task.** The orchestrator decides when all work is done. There may always be more tasks coming. Keep calling `get_task` in a loop.
+
+## Example bash loop
+
+```bash
+POOL_ID="<POOL_ID>"
+AGENT_NAME="<AGENT_NAME>"
+
+while true; do
+    # Wait for a task
+    TASK=$(pnpm dlx @gsd-now/agent-pool@main get_task --pool "$POOL_ID" --name "$AGENT_NAME")
+
+    # Extract fields
+    KIND=$(echo "$TASK" | jq -r '.kind')
+    RESPONSE_FILE=$(echo "$TASK" | jq -r '.response_file')
+
+    # Handle Kicked - reconnect immediately
+    if [ "$KIND" = "Kicked" ]; then
+        echo "Kicked, reconnecting..."
+        continue
+    fi
+
+    # Handle Heartbeat - respond with any JSON
+    if [ "$KIND" = "Heartbeat" ]; then
+        echo '{}' > "$RESPONSE_FILE"
+        continue
+    fi
+
+    # Handle Task - do the work
+    INSTRUCTIONS=$(echo "$TASK" | jq -r '.content.instructions')
+    DATA=$(echo "$TASK" | jq '.content.data')
+
+    # ... do your work based on instructions ...
+    RESPONSE='[{"kind": "NextStep", "value": {}}]'
+
+    echo "$RESPONSE" > "$RESPONSE_FILE"
+done
+```
 
 ## Shutting down
 
