@@ -106,10 +106,15 @@ impl QueueState {
         id
     }
 
+    /// Remove a task from pending by ID.
+    fn take(&mut self, id: &TaskId) -> Option<PendingTask> {
+        let pos = self.pending.iter().position(|t| &t.id == id)?;
+        Some(self.pending.remove(pos))
+    }
+
     /// Mark a task as completed successfully.
     pub fn complete(&mut self, id: &TaskId, spawned: Vec<TaskId>) {
-        if let Some(pos) = self.pending.iter().position(|t| &t.id == id) {
-            let task = self.pending.remove(pos);
+        if let Some(task) = self.take(id) {
             self.outcomes.push(TaskOutcome::Completed {
                 id: task.id,
                 step: task.step,
@@ -122,8 +127,7 @@ impl QueueState {
 
     /// Mark a task as failed.
     pub fn fail(&mut self, id: &TaskId, reason: FailureReason) {
-        if let Some(pos) = self.pending.iter().position(|t| &t.id == id) {
-            let task = self.pending.remove(pos);
+        if let Some(task) = self.take(id) {
             self.outcomes.push(TaskOutcome::Failed {
                 id: task.id,
                 step: task.step,
