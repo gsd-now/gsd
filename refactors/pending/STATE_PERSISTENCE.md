@@ -31,8 +31,8 @@ pub struct QueueState {
     next_id: u64,
     /// Tasks waiting to be processed.
     pub pending: Vec<PendingTask>,
-    /// Tasks that completed (append-only log).
-    pub completed: Vec<CompletedTask>,
+    /// Task outcomes (append-only log).
+    pub outcomes: Vec<TaskOutcome>,
 }
 
 /// A task waiting to be processed.
@@ -41,17 +41,29 @@ pub struct PendingTask {
     pub id: TaskId,
     pub step: StepName,
     pub value: serde_json::Value,
-    pub retries: u32,
+    pub retries_remaining: u32,
 }
 
-/// A completed task (append-only).
+/// The outcome of a task (append-only log entry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompletedTask {
-    pub id: TaskId,
-    pub step: StepName,
-    pub value: serde_json::Value,
-    /// IDs of tasks spawned by this task's completion.
-    pub spawned: Vec<TaskId>,
+pub enum TaskOutcome {
+    /// Task completed successfully and returned next tasks.
+    Completed {
+        id: TaskId,
+        step: StepName,
+        value: serde_json::Value,
+        retries_remaining: u32,
+        /// IDs of tasks spawned by this task's completion.
+        spawned: Vec<TaskId>,
+    },
+    /// Task failed after exhausting retries.
+    Failed {
+        id: TaskId,
+        step: StepName,
+        value: serde_json::Value,
+        retries_remaining: u32,
+        error: String,
+    },
 }
 
 impl QueueState {
@@ -59,7 +71,7 @@ impl QueueState {
         Self {
             next_id: 0,
             pending: Vec::new(),
-            completed: Vec::new(),
+            outcomes: Vec::new(),
         }
     }
 
@@ -79,31 +91,46 @@ impl QueueState {
     }
 
     /// Add a task to the pending queue.
-    pub fn enqueue_one(&mut self, task: Task) {
+    pub fn enqueue_one(&mut self, task: Task) -> TaskId {
         let id = self.next_id();
         self.pending.push(PendingTask {
-            id,
+            id: id.clone(),
             step: task.step,
             value: task.value,
-            retries: task.retries,
+            retries_remaining: task.retries,
         });
+        id
     }
 
-    /// Add multiple tasks to the pending queue.
-    pub fn enqueue(&mut self, tasks: Vec<Task>) {
-        for task in tasks {
-            self.enqueue_one(task);
-        }
+    /// Add multiple tasks to the pending queue, returning their IDs.
+    pub fn enqueue(&mut self, tasks: Vec<Task>) -> Vec<TaskId> {
+        tasks.into_iter().map(|t| self.enqueue_one(t)).collect()
     }
 
-    /// Mark a task as completed (moves from pending to completed).
-    pub fn complete(&mut self, id: &TaskId) {
+    /// Mark a task as completed successfully.
+    pub fn complete(&mut self, id: &TaskId, spawned: Vec<TaskId>) {
         if let Some(pos) = self.pending.iter().position(|t| &t.id == id) {
             let task = self.pending.remove(pos);
-            self.completed.push(CompletedTask {
+            self.outcomes.push(TaskOutcome::Completed {
                 id: task.id,
                 step: task.step,
                 value: task.value,
+                retries_remaining: task.retries_remaining,
+                spawned,
+            });
+        }
+    }
+
+    /// Mark a task as failed.
+    pub fn fail(&mut self, id: &TaskId, error: String) {
+        if let Some(pos) = self.pending.iter().position(|t| &t.id == id) {
+            let task = self.pending.remove(pos);
+            self.outcomes.push(TaskOutcome::Failed {
+                id: task.id,
+                step: task.step,
+                value: task.value,
+                retries_remaining: task.retries_remaining,
+                error,
             });
         }
     }
@@ -125,10 +152,11 @@ The run ID is generated at start (short UUID). Multiple runs for the same pool t
 Change `TaskRunner` to use `QueueState` internally.
 
 **Changes:**
-- Add `QueueState`, `PendingTask`, `CompletedTask`, `TaskId` types
+- Add `QueueState`, `PendingTask`, `TaskOutcome`, `TaskId` types
 - Modify `TaskRunner` to own a `QueueState`
-- Replace `VecDeque<QueuedTask>` with `state.pending`
-- When task completes: call `state.complete(id)`
+- Replace `VecDeque<QueuedTask>` with iteration over `state.pending`
+- When task completes: call `state.complete(id, spawned_ids)`
+- When task fails: call `state.fail(id, error)`
 - When new tasks spawn: call `state.enqueue(tasks)`
 
 **No CLI changes** - internal refactor only. Tests should pass unchanged.
@@ -165,7 +193,7 @@ Add `--state-output` and ability to resume from state file.
 - Modify `resolve_initial_state()` to detect and parse `QueueState` directly from file
 
 **Detecting state file vs task array:**
-- If file contains `{"pending": [...], "completed": [...]}` → it's a `QueueState`
+- If file contains `{"pending": [...], "outcomes": [...]}` → it's a `QueueState`
 - If file contains `[{"kind": ..., "value": ...}]` → it's a `Vec<Task>`
 
 **Flow for resume:**
@@ -205,7 +233,7 @@ Add to todos.md:
 
 ```bash
 gsd runs list --root /tmp/agent_pool
-# Shows: mypool.a3f2c1.json (3 pending, 7 completed)
+# Shows: mypool.a3f2c1.json (3 pending, 5 completed, 2 failed)
 ```
 
 ### Config Hash Validation
