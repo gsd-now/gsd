@@ -8,53 +8,283 @@
 
 ## Motivation
 
-Currently, config parsing may defer file reads (e.g., schema references, script paths). This creates issues:
-1. FS reads during execution can fail unexpectedly
+Currently, config parsing may defer file reads (e.g., instruction links). This creates issues:
+1. FS reads during execution can fail unexpectedly (file deleted, permissions changed)
 2. Can't serialize config to state file without resolving references first
 3. Harder to reason about what the config "is" at any point
+4. Same file read multiple times (once per task of that step)
 
 ## Goal
 
-After `Config::parse()`, all file references are resolved. The resulting `Config` struct is fully self-contained - no further FS reads needed.
+After config loading, all file references are resolved. The resulting struct is fully self-contained - no further FS reads needed during execution.
 
 ## Current State
 
 File reads happen at different times:
 
-1. **`SchemaRef::Link`** (value_schema) - Read in `CompiledSchemas::compile()` which is called at startup. **OK**
+| Reference Type | When Read | Location | Status |
+|----------------|-----------|----------|--------|
+| `SchemaRef::Link` | Startup (`CompiledSchemas::compile()`) | `value_schema.rs:34` | OK |
+| `Instructions::Link` | Per task execution | `docs.rs:23` | **PROBLEM** |
+| `Action::Command { script }` | N/A (inline string) | - | OK |
 
-2. **`Instructions::Link`** - Read in `generate_step_docs()` which is called **per task execution**. **PROBLEM**
+The main issue is `Instructions::Link` - linked markdown files are read every time we build the agent payload.
 
-3. **`Action::Command { script }`** - Just a string, not a file path. **OK**
+## Before/After: Config JSON
 
-The main issue is `Instructions::Link` - linked markdown files are read every time we build the agent payload, not at startup.
+**Before (config.jsonc):**
+```jsonc
+{
+  "steps": [
+    {
+      "name": "Analyze",
+      "action": {
+        "kind": "Pool",
+        "instructions": {"link": "instructions/analyze.md"}  // File reference
+      },
+      "value_schema": {"link": "schemas/analyze.json"},  // File reference
+      "next": ["Report"]
+    }
+  ]
+}
+```
 
-## Proposed Changes
+**After (inlined, what gets serialized):**
+```json
+{
+  "steps": [
+    {
+      "name": "Analyze",
+      "action": {
+        "kind": "Pool",
+        "instructions": "# Analyze Step\n\nYou are analyzing code..."  // Inlined content
+      },
+      "value_schema": {"type": "object", "properties": {...}},  // Inlined schema
+      "next": ["Report"]
+    }
+  ]
+}
+```
 
-1. **All file reads happen during parsing** - If a config references a file, read it during `Config::parse()` or `Config::load()`
+## Before/After: Rust Types
 
-2. **Store resolved content, not paths** - Where we currently store a path to a schema file, store the parsed schema instead
+### Before
 
-3. **Clear separation** - `ConfigFile` (raw JSON structure) vs `Config` (fully resolved, validated, ready to run)
+```rust
+// crates/gsd_config/src/config.rs
 
-## Implementation
+/// Instructions can be inline or linked to a file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Instructions {
+    Inline(String),
+    Link { link: String },  // Stores path, read later
+}
 
-### Phase 1: Inline Instructions at Config Load
+/// Schema can be inline or linked to a file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SchemaRef {
+    Link(String),  // Stores path, read in CompiledSchemas::compile()
+    Inline(serde_json::Value),
+}
+```
 
-**Changes:**
-- Add `InlinedConfig` struct that mirrors `Config` but with all links resolved
-- `Instructions::Link { link }` becomes `Instructions::Inline(String)` with file content
-- Create `Config::inline(base_path: &Path) -> io::Result<InlinedConfig>`
-- Call this once at startup, store `InlinedConfig`
+### After
 
-**Result:** `generate_step_docs()` never reads files - instructions are already inline.
+```rust
+// crates/gsd_config/src/config.rs
 
-### Phase 2: Store InlinedConfig in Runner
+/// Raw config as parsed from JSON (may contain file references)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigFile {
+    pub steps: Vec<StepFile>,
+    // ... other fields
+}
 
-**Changes:**
-- `TaskRunner` holds `InlinedConfig` instead of `&Config`
-- Remove `config_base_path` from `TaskRunner` (no longer needed for file resolution)
+/// Raw step (may contain file references)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepFile {
+    pub name: StepName,
+    pub action: ActionFile,  // May have Instructions::Link
+    pub value_schema: Option<SchemaRefFile>,  // May have SchemaRef::Link
+    // ...
+}
 
-### Serialization for STATE_PERSISTENCE
+/// Fully resolved config (no file references)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub steps: Vec<Step>,
+    // ... other fields
+}
 
-The `InlinedConfig` is what gets serialized to `config.json` in the run folder. All references resolved, ready to resume without the original files.
+/// Fully resolved step
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Step {
+    pub name: StepName,
+    pub action: Action,  // Instructions always inline
+    pub value_schema: Option<serde_json::Value>,  // Schema always inline
+    // ...
+}
+
+/// Instructions are always inline after resolution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Instructions(String);  // No Link variant
+
+impl ConfigFile {
+    /// Load from JSON file
+    pub fn load(path: &Path) -> io::Result<Self> { ... }
+
+    /// Resolve all file references, producing a fully inlined Config
+    pub fn resolve(self, base_path: &Path) -> io::Result<Config> {
+        // Read all linked files here
+        // Return Config with everything inlined
+    }
+}
+```
+
+## Before/After: Doc Generation
+
+### Before (docs.rs)
+
+```rust
+fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
+    let instructions = match action {
+        Action::Pool { instructions } | Action::Command { instructions, .. } => instructions,
+    };
+
+    match instructions {
+        Instructions::Inline(text) => {
+            writeln!(doc, "{}", text.trim()).ok();
+        }
+        Instructions::Link { link } => {
+            // FILE READ HAPPENS HERE - per task execution!
+            let full_path = base_path.join(link);
+            match fs::read_to_string(&full_path) {
+                Ok(content) => writeln!(doc, "{}", content.trim()).ok(),
+                Err(e) => writeln!(doc, "*Error loading instructions: {e}*").ok(),
+            };
+        }
+    }
+}
+```
+
+### After (docs.rs)
+
+```rust
+fn write_instructions(doc: &mut String, action: &Action) {
+    // No base_path needed - instructions already resolved
+    let instructions = match action {
+        Action::Pool { instructions } | Action::Command { instructions, .. } => instructions,
+    };
+
+    // Instructions is just a String now, always inline
+    writeln!(doc, "{}", instructions.0.trim()).ok();
+}
+```
+
+## Before/After: TaskRunner
+
+### Before
+
+```rust
+pub struct TaskRunner<'a> {
+    config: &'a Config,
+    config_base_path: &'a Path,  // Needed for resolving links at runtime
+    // ...
+}
+
+impl TaskRunner<'_> {
+    fn process_task(&self, task: Task) {
+        let docs = generate_step_docs(step, self.config, self.config_base_path);
+        //                                              ^^^^^^^^^^^^^^^^^^^^
+        //                                              Passed through for file reads
+    }
+}
+```
+
+### After
+
+```rust
+pub struct TaskRunner {
+    config: Config,  // Owned, fully resolved
+    // No config_base_path needed
+    // ...
+}
+
+impl TaskRunner {
+    fn process_task(&self, task: Task) {
+        let docs = generate_step_docs(step, &self.config);
+        //                                  No base_path needed
+    }
+}
+```
+
+## Implementation Phases
+
+### Phase 1: Add ConfigFile type
+
+1. Rename current `Config` to `ConfigFile`
+2. Rename current `Step` to `StepFile`
+3. Add new `Config` and `Step` types with inlined fields
+4. Implement `ConfigFile::resolve(base_path) -> io::Result<Config>`
+5. Update `Config::load()` to call `ConfigFile::load()` then `resolve()`
+
+**Tests still pass** - external API unchanged, just internal restructuring.
+
+### Phase 2: Update docs.rs
+
+1. Remove `base_path` parameter from `write_instructions()`
+2. Remove `base_path` parameter from `generate_step_docs()`
+3. `Instructions` becomes a newtype `Instructions(String)` - no Link variant
+
+### Phase 3: Update TaskRunner
+
+1. Change `config: &'a Config` to `config: Config` (owned)
+2. Remove `config_base_path` field
+3. Update all call sites
+
+### Phase 4: Cleanup
+
+1. Remove `Instructions::Link` variant entirely
+2. Remove `SchemaRef::Link` variant (already resolved during `ConfigFile::resolve()`)
+3. `CompiledSchemas::compile()` now receives pre-resolved schemas
+
+## Error Handling
+
+File read errors during `ConfigFile::resolve()`:
+
+```rust
+pub fn resolve(self, base_path: &Path) -> io::Result<Config> {
+    for step in &self.steps {
+        if let Instructions::Link { link } = &step.action.instructions {
+            let path = base_path.join(link);
+            let content = fs::read_to_string(&path).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("[E070] failed to read instructions file '{}': {e}", path.display())
+                )
+            })?;
+            // Store content...
+        }
+    }
+    // ...
+}
+```
+
+All file errors surface at startup, not during task execution.
+
+## Serialization
+
+The resolved `Config` serializes cleanly to JSON:
+
+```rust
+let config: Config = ConfigFile::load("config.jsonc")?.resolve(base_path)?;
+
+// For STATE_PERSISTENCE - serialize to run folder
+let json = serde_json::to_string_pretty(&config)?;
+fs::write(run_folder.join("config.json"), json)?;
+
+// On resume - deserialize directly (no file resolution needed)
+let config: Config = serde_json::from_str(&fs::read_to_string("config.json")?)?;
+```
