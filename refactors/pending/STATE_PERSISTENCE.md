@@ -187,21 +187,22 @@ Make `--initial-state` and `--entrypoint-value` flow through `QueueState`.
 
 ### Phase 3: State Serialization/Deserialization
 
-Add `--state-output` and ability to resume from state file.
+Add `--log` flag and ability to resume from log file.
 
 **Changes:**
-- Add `--state-output <path>` CLI flag
-- After each task completion, serialize `QueueState` to file
-- Delete state file on successful completion
-- Modify `resolve_initial_state()` to detect and parse `QueueState` directly from file
+- Add `--log <path>` CLI flag (path to log file in `<root>/runs/`)
+- On startup, print: `Creating log at <path>. Resume with: gsd run config.jsonc --log <path>`
+- After each task completion, serialize `QueueState` to log file
+- Delete log file on successful completion
+- Modify `resolve_initial_state()` to detect and parse `QueueState` directly from log file
 
-**Detecting state file vs task array:**
-- If file contains `{"pending": [...], "outcomes": [...]}` → it's a `QueueState`
-- If file contains `[{"kind": ..., "value": ...}]` → it's a `Vec<Task>`
+**Detecting log file vs task array:**
+- If file contains `{"pending": [...], "outcomes": [...]}` → it's a `QueueState` (resume)
+- If file contains `[{"kind": ..., "value": ...}]` → it's a `Vec<TaskInput>` (fresh start)
 
 **Flow for resume:**
 ```
---initial-state /path/to/state.json
+--log /tmp/agent_pool/runs/mypool.abc123.json
         ↓
     parse file → detect QueueState format
         ↓
@@ -213,14 +214,15 @@ Add `--state-output` and ability to resume from state file.
 ## CLI
 
 ```bash
-# Normal run
+# Normal run (no persistence)
 gsd run config.jsonc --pool mypool --initial-state '[{"kind": "Start", "value": {}}]'
 
-# Run with state output
-gsd run config.jsonc --pool mypool --initial-state '[...]' --state-output /tmp/run.state.json
+# Run with log file for resume capability
+gsd run config.jsonc --pool mypool --initial-state '[...]' --log /tmp/agent_pool/runs/myrun.json
+# Prints: Creating log at /tmp/agent_pool/runs/myrun.json. Resume with: gsd run config.jsonc --log /tmp/agent_pool/runs/myrun.json
 
-# Resume from state file (config embedded in state, no config.jsonc needed)
-gsd run --pool mypool --initial-state /tmp/run.state.json
+# Resume from log file
+gsd run config.jsonc --pool mypool --log /tmp/agent_pool/runs/myrun.json
 ```
 
 ## What We Don't Track (v1)
@@ -238,21 +240,3 @@ Add to todos.md:
 gsd runs list --root /tmp/agent_pool
 # Shows: mypool.a3f2c1.json (3 pending, 5 completed, 2 failed)
 ```
-
-### Embed Config in State File
-
-Serialize the full config into the state file. Benefits:
-- Resume doesn't need the original config file - state is self-contained
-- No risk of config drift between start and resume
-- `gsd resume /tmp/run.state.json` just works
-
-The state file would include:
-```json
-{
-  "config": { ... },  // Full parsed config
-  "pending": [...],
-  "outcomes": [...]
-}
-```
-
-This means `gsd run config.jsonc` is only needed for the initial start. Resume only needs the state file.

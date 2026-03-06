@@ -22,6 +22,28 @@
 
 ---
 
+## Embed Config in Log File (Self-Contained Resume)
+
+**Status: TODO**
+
+Serialize the full config into the log file so resume doesn't need the original config file.
+
+Benefits:
+- Resume is self-contained: `gsd run --log /path/to/log.json` just works
+- No risk of config drift between start and resume
+- Log file has everything needed to continue
+
+The log file would include:
+```json
+{
+  "config": { ... },  // Full parsed config
+  "pending": [...],
+  "outcomes": [...]
+}
+```
+
+---
+
 ## Global Variables
 
 **Status: TODO (needs design)**
