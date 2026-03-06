@@ -32,7 +32,7 @@ cleanup() {
     echo ""
     echo "=== Cleaning up ==="
     # Stop pool first - this kicks the agent cleanly
-    $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
+    $AGENT_POOL --root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
     sleep 0.2
     # Force kill agent if still running
     kill -9 $AGENT_PID 2>/dev/null || true
@@ -44,20 +44,20 @@ trap cleanup EXIT
 
 # Start agent pool in background (use LOG_LEVEL=debug or trace for more output)
 echo "Starting agent pool..."
-$AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-info}" &
+$AGENT_POOL --root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-info}" &
 POOL_PID=$!
 sleep 0.5
 
 # Start agent in background
 echo "Starting agent..."
-"$SCRIPT_DIR/../scripts/echo-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "agent-1" --sleep 0.1 &
+"$SCRIPT_DIR/../scripts/echo-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "agent-1" --sleep 0.1 &
 AGENT_PID=$!
 sleep 0.3
 
 # Submit a task
 echo ""
 echo "Submitting task: 'Hello, World!'"
-result=$($AGENT_POOL --pool-root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Echo this back","data":"Hello, World!"}}')
+result=$($AGENT_POOL --root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Echo this back","data":"Hello, World!"}}')
 echo "Result: $result"
 echo ""
 echo "=== Success! ==="

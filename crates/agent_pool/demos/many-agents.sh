@@ -31,7 +31,7 @@ echo ""
 cleanup() {
     echo ""
     echo "=== Cleaning up ==="
-    $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
+    $AGENT_POOL --root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
     sleep 0.2
     kill -9 $AGENT1_PID $AGENT2_PID $AGENT3_PID 2>/dev/null || true
     wait $AGENT1_PID $AGENT2_PID $AGENT3_PID 2>/dev/null || true
@@ -42,17 +42,17 @@ trap cleanup EXIT
 
 # Start agent pool in background
 echo "Starting agent pool..."
-$AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" &
+$AGENT_POOL --root "$POOL_ROOT" start --pool "$POOL_ID" &
 POOL_PID=$!
 sleep 0.5
 
 # Start agents with different sleep times
 echo "Starting agents with varying response times..."
-"$SCRIPT_DIR/../scripts/echo-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "fast-agent" --sleep 0.1 &
+"$SCRIPT_DIR/../scripts/echo-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "fast-agent" --sleep 0.1 &
 AGENT1_PID=$!
-"$SCRIPT_DIR/../scripts/echo-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "medium-agent" --sleep 0.3 &
+"$SCRIPT_DIR/../scripts/echo-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "medium-agent" --sleep 0.3 &
 AGENT2_PID=$!
-"$SCRIPT_DIR/../scripts/echo-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "slow-agent" --sleep 0.5 &
+"$SCRIPT_DIR/../scripts/echo-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "slow-agent" --sleep 0.5 &
 AGENT3_PID=$!
 sleep 0.3
 
@@ -64,7 +64,7 @@ echo ""
 submit_task() {
     local task="$1"
     local json="{\"kind\":\"Task\",\"task\":{\"instructions\":\"Echo this back\",\"data\":\"$task\"}}"
-    result=$($AGENT_POOL --pool-root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data "$json")
+    result=$($AGENT_POOL --root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data "$json")
     echo "Result: $result"
 }
 

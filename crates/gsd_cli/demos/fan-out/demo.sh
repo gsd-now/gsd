@@ -81,7 +81,7 @@ else
     cleanup() {
         echo ""
         echo "=== Cleaning up ==="
-        $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
+        $AGENT_POOL --root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
         sleep 0.2
         for pid in $AGENT_PIDS; do
             kill -9 $pid 2>/dev/null || true
@@ -96,14 +96,14 @@ else
 
     # Start agent pool
     echo "Starting agent pool..."
-    $AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-warn}" &
+    $AGENT_POOL --root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-warn}" &
     POOL_PID=$!
     sleep 0.5
 
     # Start multiple agents
     echo "Starting $NUM_AGENTS agents..."
     for i in $(seq 1 $NUM_AGENTS); do
-        "$SCRIPT_DIR/../../scripts/fan-out-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "agent-$i" --workers "$NUM_WORKERS" --sleep "$WORKER_SLEEP" &
+        "$SCRIPT_DIR/../../scripts/fan-out-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "agent-$i" --workers "$NUM_WORKERS" --sleep "$WORKER_SLEEP" &
         AGENT_PIDS="$AGENT_PIDS $!"
     done
     sleep 0.3
@@ -116,7 +116,7 @@ else
 
     START_TIME=$(date +%s.%N)
 
-    $GSD --pool-root "$POOL_ROOT" run "$SCRIPT_DIR/config.jsonc" \
+    $GSD --root "$POOL_ROOT" run "$SCRIPT_DIR/config.jsonc" \
         --pool "$POOL_ID" \
         --initial-state '[{"kind": "Distribute", "value": {}}]'
 

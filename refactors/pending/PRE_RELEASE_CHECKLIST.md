@@ -84,7 +84,7 @@ Auto-detect pnpm/yarn/npm from package.json and use appropriate dlx command.
 ### 9. Pool Root Configuration for GSD
 **Doc:** `GSD_POOL_ROOT.md` (in past/)
 
-Allow passing `--pool-root` to gsd CLI.
+Allow passing `--root` to gsd CLI (renamed from `--pool-root`).
 
 **Status:** DONE.
 

@@ -69,7 +69,7 @@ else
     cleanup() {
         echo ""
         echo "=== Cleaning up ==="
-        $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
+        $AGENT_POOL --root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
         sleep 0.2
         kill -9 $AGENT_PID 2>/dev/null || true
         wait $AGENT_PID 2>/dev/null || true
@@ -80,20 +80,20 @@ else
 
     # Start agent pool
     echo "Starting agent pool..."
-    $AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-info}" &
+    $AGENT_POOL --root "$POOL_ROOT" start --pool "$POOL_ID" --log-level "${LOG_LEVEL:-info}" &
     POOL_PID=$!
     sleep 0.5
 
     # Start GSD-aware agent that chooses PathA
     echo "Starting GSD agent (will choose PathA)..."
-    "$SCRIPT_DIR/../../scripts/gsd-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "branching-agent" --transitions "Decide:PathA,PathA:Done,Done:" --sleep 0.1 &
+    "$SCRIPT_DIR/../../scripts/gsd-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "branching-agent" --transitions "Decide:PathA,PathA:Done,Done:" --sleep 0.1 &
     AGENT_PID=$!
     sleep 0.3
 
     # Run GSD
     echo ""
     echo "Running GSD with branching config..."
-    $GSD --pool-root "$POOL_ROOT" run "$SCRIPT_DIR/config.jsonc" \
+    $GSD --root "$POOL_ROOT" run "$SCRIPT_DIR/config.jsonc" \
         --pool "$POOL_ID" \
         --initial-state '[{"kind": "Decide", "value": {}}]'
 

@@ -27,7 +27,7 @@ echo ""
 cleanup() {
     echo ""
     echo "=== Cleaning up ==="
-    $AGENT_POOL --pool-root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
+    $AGENT_POOL --root "$POOL_ROOT" stop --pool "$POOL_ID" 2>/dev/null || true
     sleep 0.2
     kill -9 $AGENT_PID 2>/dev/null || true
     wait $AGENT_PID 2>/dev/null || true
@@ -38,25 +38,25 @@ trap cleanup EXIT
 
 # Start agent pool
 echo "Starting agent pool..."
-$AGENT_POOL --pool-root "$POOL_ROOT" start --pool "$POOL_ID" &
+$AGENT_POOL --root "$POOL_ROOT" start --pool "$POOL_ID" &
 POOL_PID=$!
 sleep 0.5
 
 # Start greeting agent
 echo "Starting greeting agent..."
-"$SCRIPT_DIR/../scripts/greeting-agent.sh" --pool-root "$POOL_ROOT" --pool "$POOL_ID" --name "friendly-bot" --sleep 0.1 &
+"$SCRIPT_DIR/../scripts/greeting-agent.sh" --root "$POOL_ROOT" --pool "$POOL_ID" --name "friendly-bot" --sleep 0.1 &
 AGENT_PID=$!
 sleep 0.3
 
 # Submit greeting requests
 echo ""
 echo "Requesting casual greeting..."
-result=$($AGENT_POOL --pool-root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Return a greeting","data":"casual"}}')
+result=$($AGENT_POOL --root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Return a greeting","data":"casual"}}')
 echo "Response: $result"
 echo ""
 
 echo "Requesting formal greeting..."
-result=$($AGENT_POOL --pool-root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Return a greeting","data":"formal"}}')
+result=$($AGENT_POOL --root "$POOL_ROOT" submit_task --pool "$POOL_ID" --data '{"kind":"Task","task":{"instructions":"Return a greeting","data":"formal"}}')
 echo "Response: $result"
 echo ""
 

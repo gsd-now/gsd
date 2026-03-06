@@ -1,7 +1,7 @@
 #!/bin/bash
 # GSD-aware demo agent that understands the GSD protocol.
 #
-# Usage: ./gsd-agent.sh --pool-root <root> --pool <id> --name <agent-id> [--transitions <map>] [--sleep <seconds>]
+# Usage: ./gsd-agent.sh --root <root> --pool <id> --name <agent-id> [--transitions <map>] [--sleep <seconds>]
 #
 # The agent receives JSON payloads like:
 #   {"task": {"kind": "Start", "value": {...}}, "instructions": "..."}
@@ -25,7 +25,7 @@ SLEEP_TIME="0.1"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --pool-root) POOL_ROOT="$2"; shift 2 ;;
+        --root) POOL_ROOT="$2"; shift 2 ;;
         --pool) POOL_ID="$2"; shift 2 ;;
         --name) AGENT_ID="$2"; shift 2 ;;
         --transitions) TRANSITION_MAP="$2"; shift 2 ;;
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$POOL_ROOT" ] || [ -z "$POOL_ID" ] || [ -z "$AGENT_ID" ]; then
-    echo "Usage: $0 --pool-root <root> --pool <id> --name <agent-id> [--transitions <map>] [--sleep <seconds>]" >&2
+    echo "Usage: $0 --root <root> --pool <id> --name <agent-id> [--transitions <map>] [--sleep <seconds>]" >&2
     exit 1
 fi
 
@@ -81,7 +81,7 @@ get_next_step() {
 
 while true; do
     # Get next task
-    TASK_JSON=$("$AGENT_POOL" --pool-root "$POOL_ROOT" get_task --pool "$POOL_ID" --name "$AGENT_ID" 2>/dev/null) || {
+    TASK_JSON=$("$AGENT_POOL" --root "$POOL_ROOT" get_task --pool "$POOL_ID" --name "$AGENT_ID" 2>/dev/null) || {
         echo "[$AGENT_ID] get_task failed, exiting" >&2
         exit 1
     }

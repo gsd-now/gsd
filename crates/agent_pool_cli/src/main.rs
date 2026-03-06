@@ -482,7 +482,7 @@ fn main() -> ExitCode {
 fn validate_pool_id(pool: &str) -> Result<(), String> {
     if pool.contains('/') || pool.contains('\\') {
         return Err(format!(
-            "Pool ID cannot contain path separators. Got: '{pool}'. Use --pool-root to specify the base directory."
+            "Pool ID cannot contain path separators. Got: '{pool}'. Use --root to specify the base directory."
         ));
     }
     Ok(())

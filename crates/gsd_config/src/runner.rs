@@ -1015,7 +1015,7 @@ fn submit_via_cli(
     // Use 24-hour timeout. TODO: Add --no-timeout support to CLI.
     let output = invoker.run([
         "submit_task",
-        "--pool-root",
+        "--root",
         pool_root.to_str().unwrap_or("."),
         "--pool",
         pool_id,

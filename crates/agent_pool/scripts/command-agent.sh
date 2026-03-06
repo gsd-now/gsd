@@ -1,7 +1,7 @@
 #!/bin/bash
 # Agent that executes shell commands from tasks.
 #
-# Usage: ./command-agent.sh --pool <POOL_ID> [--pool-root <ROOT>] [--log <LOG_FILE>]
+# Usage: ./command-agent.sh --pool <POOL_ID> [--root <ROOT>] [--log <LOG_FILE>]
 #
 # This agent:
 # 1. Connects to the pool and waits for tasks
@@ -25,14 +25,14 @@ LOG_FILE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --pool) POOL_ID="$2"; shift 2 ;;
-        --pool-root) POOL_ROOT="$2"; shift 2 ;;
+        --root) POOL_ROOT="$2"; shift 2 ;;
         --log) LOG_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 if [ -z "$POOL_ID" ]; then
-    echo "Usage: $0 --pool <POOL_ID> [--pool-root <ROOT>] [--log <LOG_FILE>]" >&2
+    echo "Usage: $0 --pool <POOL_ID> [--root <ROOT>] [--log <LOG_FILE>]" >&2
     exit 1
 fi
 
@@ -70,7 +70,7 @@ RECONNECT_DELAY=2
 # Build CLI args for pool-root (goes before subcommand)
 CLI_GLOBAL_ARGS=""
 if [ -n "$POOL_ROOT" ]; then
-    CLI_GLOBAL_ARGS="--pool-root $POOL_ROOT"
+    CLI_GLOBAL_ARGS="--root $POOL_ROOT"
     POOL_DIR="$POOL_ROOT/$POOL_ID"
 else
     POOL_DIR="/tmp/agent_pool/$POOL_ID"

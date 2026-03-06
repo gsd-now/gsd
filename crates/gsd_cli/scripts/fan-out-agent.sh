@@ -1,7 +1,7 @@
 #!/bin/bash
 # GSD agent that fans out Distribute -> 10 Worker tasks -> done.
 #
-# Usage: ./fan-out-agent.sh --pool-root <root> --pool <id> --name <agent-id> [--workers <num>] [--sleep <seconds>]
+# Usage: ./fan-out-agent.sh --root <root> --pool <id> --name <agent-id> [--workers <num>] [--sleep <seconds>]
 
 set -e
 
@@ -14,7 +14,7 @@ SLEEP_TIME="0.2"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --pool-root) POOL_ROOT="$2"; shift 2 ;;
+        --root) POOL_ROOT="$2"; shift 2 ;;
         --pool) POOL_ID="$2"; shift 2 ;;
         --name) AGENT_ID="$2"; shift 2 ;;
         --workers) NUM_WORKERS="$2"; shift 2 ;;
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$POOL_ROOT" ] || [ -z "$POOL_ID" ] || [ -z "$AGENT_ID" ]; then
-    echo "Usage: $0 --pool-root <root> --pool <id> --name <agent-id> [--workers <num>] [--sleep <seconds>]" >&2
+    echo "Usage: $0 --root <root> --pool <id> --name <agent-id> [--workers <num>] [--sleep <seconds>]" >&2
     exit 1
 fi
 
@@ -49,7 +49,7 @@ trap cleanup SIGINT SIGTERM
 
 while true; do
     # Get next task
-    TASK_JSON=$("$AGENT_POOL" --pool-root "$POOL_ROOT" get_task --pool "$POOL_ID" --name "$AGENT_ID" 2>/dev/null) || {
+    TASK_JSON=$("$AGENT_POOL" --root "$POOL_ROOT" get_task --pool "$POOL_ID" --name "$AGENT_ID" 2>/dev/null) || {
         echo "[$AGENT_ID] get_task failed, exiting" >&2
         exit 1
     }

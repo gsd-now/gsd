@@ -818,12 +818,12 @@ Implementation considerations:
 
 **Status: COMPLETE**
 
-The default pool directory is now `/tmp/agent_pool/<pool_id>/`. The `--pool-root` CLI flag allows overriding this.
+The default pool directory is now `/tmp/agent_pool/pools/<pool_id>/`. The `--root` CLI flag allows overriding this.
 
 Changes made:
-- Added `default_pool_root()` function in `pool.rs`
-- Added `--pool-root` global CLI option
-- Updated all functions to accept pool root as parameter
+- Added `default_root()` function in `pool.rs`
+- Added `--root` global CLI option (renamed from `--pool-root`)
+- Updated all functions to accept root as parameter
 - Updated all doc references from `/tmp/gsd/` to `/tmp/agent_pool/`
 
 ---
@@ -832,19 +832,15 @@ Changes made:
 
 **Status: COMPLETE**
 
-The `gsd` CLI now has `--pool-root` global flag matching the `agent_pool` CLI:
+The `gsd` CLI now has `--root` global flag matching the `agent_pool` CLI:
 
 ```bash
-# Absolute paths still work (backward compatible)
-gsd run config.json --pool /custom/path/my-pool
-
-# New: cleaner syntax with --pool-root
-gsd run config.json --pool my-pool --pool-root /custom/path
+# Pool IDs are resolved relative to root
+gsd run config.json --pool my-pool --root /custom/path
 ```
 
 Pool argument handling:
-- Absolute paths (starting with `/`) are used directly
-- Relative IDs (no slashes) are resolved relative to `pool_root`
+- Relative IDs (no slashes) are resolved relative to `<root>/pools/`
 - Relative paths with slashes are rejected with E058 error
 
 ---
@@ -1019,14 +1015,14 @@ Currently, `gsd run` with an invalid pool root (non-existent directory) does not
 
 **Current behavior:**
 ```bash
-gsd run config.json --pool-root /nonexistent/path --pool mypool --initial '[...]'
+gsd run config.json --root /nonexistent/path --pool mypool --initial '[...]'
 # Starts successfully, then fails on first task submission with cryptic error
 ```
 
 **Desired behavior:**
 ```bash
-gsd run config.json --pool-root /nonexistent/path --pool mypool --initial '[...]'
-# Fails immediately with clear error: "pool root does not exist: /nonexistent/path"
+gsd run config.json --root /nonexistent/path --pool mypool --initial '[...]'
+# Fails immediately with clear error: "root does not exist: /nonexistent/path"
 ```
 
 **Implementation:**

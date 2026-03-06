@@ -250,7 +250,7 @@ impl GsdTestAgent {
         let bin = find_agent_pool_binary();
         let _ = Command::new(&bin)
             .arg("stop")
-            .arg("--pool-root")
+            .arg("--root")
             .arg(self.pool_root.parent().unwrap_or(&self.pool_root))
             .arg("--pool")
             .arg(self.pool_root.file_name().unwrap_or_default())
@@ -308,10 +308,10 @@ impl AgentPoolHandle {
             bin.display()
         );
 
-        // Build command - use --pool-root and pool name
+        // Build command - use --root and pool name
         let mut cmd = Command::new(&bin);
         cmd.arg("start")
-            .arg("--pool-root")
+            .arg("--root")
             .arg(root.parent().unwrap_or(root))
             .arg("--pool")
             .arg(root.file_name().unwrap_or_default())
@@ -377,7 +377,7 @@ impl Drop for AgentPoolHandle {
         let bin = find_agent_pool_binary();
         let _ = Command::new(&bin)
             .arg("stop")
-            .arg("--pool-root")
+            .arg("--root")
             .arg(self.root.parent().unwrap_or(&self.root))
             .arg("--pool")
             .arg(self.root.file_name().unwrap_or_default())
