@@ -6,8 +6,8 @@
 //! - [`run()`] - Run the queue to completion
 //! - [`TaskRunner`] - Iterator over task completions for fine-grained control
 
-use crate::config::{Action, Config, EffectiveOptions, Step};
 use crate::docs::generate_step_docs;
+use crate::resolved::{Action, Config, Options, Step};
 use crate::types::StepName;
 use crate::value_schema::{CompiledSchemas, Task, validate_response};
 use agent_pool::Response;
@@ -63,8 +63,8 @@ pub enum PostHookInput {
 pub struct RunnerConfig<'a> {
     /// Path to the `agent_pool` root directory.
     pub agent_pool_root: &'a Path,
-    /// Base path for resolving linked instructions (typically the config file's directory).
-    pub config_base_path: &'a Path,
+    /// Working directory for command actions (typically the config file's directory).
+    pub working_dir: &'a Path,
     /// Optional wake script to call before starting.
     pub wake_script: Option<&'a str>,
     /// Initial tasks to process (must not be empty).
@@ -125,7 +125,7 @@ pub struct TaskRunner<'a> {
     step_map: HashMap<&'a str, &'a Step>,
     queue: VecDeque<QueuedTask>,
     agent_pool_root: &'a Path,
-    config_base_path: &'a Path,
+    working_dir: &'a Path,
     invoker: &'a Invoker<AgentPoolCli>,
     max_concurrency: usize,
     in_flight: usize,
@@ -200,7 +200,7 @@ impl<'a> TaskRunner<'a> {
         // max_user_instances=128. With 3 agents, only ~5 submissions can be actively
         // processed at once anyway - the rest just queue up holding watchers.
         // TODO: Query the pool for actual agent count and use that + small buffer.
-        let max_concurrency = config.options.max_concurrency.unwrap_or(20);
+        let max_concurrency = config.max_concurrency.unwrap_or(20);
 
         info!(
             tasks = runner_config.initial_tasks.len(),
@@ -237,7 +237,7 @@ impl<'a> TaskRunner<'a> {
             step_map: config.step_map(),
             queue,
             agent_pool_root: runner_config.agent_pool_root,
-            config_base_path: runner_config.config_base_path,
+            working_dir: runner_config.working_dir,
             invoker: runner_config.invoker,
             max_concurrency,
             in_flight: 0,
@@ -304,16 +304,16 @@ impl<'a> TaskRunner<'a> {
                 continue;
             }
 
-            let effective = EffectiveOptions::resolve(&self.config.options, &step.options);
             let step_name = step.name.clone();
             let pre_hook = step.pre.clone();
             let post_hook = step.post.clone();
             let finally_hook = step.finally_hook.clone();
+            let options = step.options;
 
             match &step.action {
                 Action::Pool { .. } => {
-                    let docs = generate_step_docs(step, self.config, self.config_base_path);
-                    let timeout = effective.timeout;
+                    let docs = generate_step_docs(step, self.config);
+                    let timeout = options.timeout;
                     let root = self.agent_pool_root.to_path_buf();
                     let invoker = Clone::clone(self.invoker);
                     let tx = self.tx.clone();
@@ -369,7 +369,7 @@ impl<'a> TaskRunner<'a> {
                     let tx = self.tx.clone();
                     let original_value = task.value.clone();
                     let task_step = task.step.clone();
-                    let working_dir = self.config_base_path.to_path_buf();
+                    let working_dir = self.working_dir.to_path_buf();
 
                     info!(step = %task.step, script = %script, "executing command");
 
@@ -511,37 +511,25 @@ impl<'a> TaskRunner<'a> {
             };
         };
 
-        let effective = EffectiveOptions::resolve(&self.config.options, &step.options);
-
         let (task_result, new_tasks, post_input) = match result {
-            SubmitResult::Pool(Ok(response)) => process_pool_response(
-                response,
-                &task,
-                &effective_value,
-                step,
-                self.schemas,
-                &effective,
-            ),
+            SubmitResult::Pool(Ok(response)) => {
+                process_pool_response(response, &task, &effective_value, step, self.schemas)
+            }
             SubmitResult::Pool(Err(e)) => {
                 error!(step = %task.step, error = %e, "submit failed");
-                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let (result, tasks) = process_retry(&task, &step.options, FailureKind::SubmitError);
                 let post_input = PostHookInput::Error {
                     input: effective_value.clone(),
                     error: e.to_string(),
                 };
                 (result, tasks, post_input)
             }
-            SubmitResult::Command(Ok(stdout)) => process_command_response(
-                &stdout,
-                &task,
-                &effective_value,
-                step,
-                self.schemas,
-                &effective,
-            ),
+            SubmitResult::Command(Ok(stdout)) => {
+                process_command_response(&stdout, &task, &effective_value, step, self.schemas)
+            }
             SubmitResult::Command(Err(e)) => {
                 error!(step = %task.step, error = %e, "command failed");
-                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let (result, tasks) = process_retry(&task, &step.options, FailureKind::SubmitError);
                 let post_input = PostHookInput::Error {
                     input: effective_value.clone(),
                     error: e.to_string(),
@@ -550,7 +538,7 @@ impl<'a> TaskRunner<'a> {
             }
             SubmitResult::PreHookError(e) => {
                 error!(step = %task.step, error = %e, "pre hook failed");
-                let (result, tasks) = process_retry(&task, &effective, FailureKind::SubmitError);
+                let (result, tasks) = process_retry(&task, &step.options, FailureKind::SubmitError);
                 let post_input = PostHookInput::PreHookError {
                     input: task.value.clone(),
                     error: e,
@@ -570,7 +558,7 @@ impl<'a> TaskRunner<'a> {
                 Err(e) => {
                     // Post hook failed - trigger retry
                     warn!(step = %task.step, error = %e, "post hook failed");
-                    process_retry(&task, &effective, FailureKind::SubmitError)
+                    process_retry(&task, &step.options, FailureKind::SubmitError)
                 }
             }
         } else {
@@ -684,16 +672,15 @@ fn process_pool_response(
     effective_value: &serde_json::Value,
     step: &Step,
     schemas: &CompiledSchemas,
-    effective: &EffectiveOptions,
 ) -> (TaskResult, Vec<Task>, PostHookInput) {
     match response {
         Response::Processed { stdout, .. } => {
             debug!(stdout = %stdout, "agent response");
-            process_stdout(&stdout, task, effective_value, step, schemas, effective)
+            process_stdout(&stdout, task, effective_value, step, schemas)
         }
         Response::NotProcessed { reason } => {
             warn!(step = %task.step, ?reason, "task outcome unknown");
-            let (result, tasks) = process_retry(task, effective, FailureKind::Timeout);
+            let (result, tasks) = process_retry(task, &step.options, FailureKind::Timeout);
             let post_input = PostHookInput::Timeout {
                 input: effective_value.clone(),
             };
@@ -708,10 +695,9 @@ fn process_command_response(
     effective_value: &serde_json::Value,
     step: &Step,
     schemas: &CompiledSchemas,
-    effective: &EffectiveOptions,
 ) -> (TaskResult, Vec<Task>, PostHookInput) {
     debug!(stdout = %stdout, "command output");
-    process_stdout(stdout, task, effective_value, step, schemas, effective)
+    process_stdout(stdout, task, effective_value, step, schemas)
 }
 
 /// Process stdout from either pool or command action.
@@ -721,7 +707,6 @@ fn process_stdout(
     effective_value: &serde_json::Value,
     step: &Step,
     schemas: &CompiledSchemas,
-    effective: &EffectiveOptions,
 ) -> (TaskResult, Vec<Task>, PostHookInput) {
     match serde_json::from_str::<serde_json::Value>(stdout) {
         Ok(output_value) => match validate_response(&output_value, step, schemas) {
@@ -742,7 +727,8 @@ fn process_stdout(
             }
             Err(e) => {
                 warn!(step = %task.step, error = %e, "invalid response");
-                let (result, tasks) = process_retry(task, effective, FailureKind::InvalidResponse);
+                let (result, tasks) =
+                    process_retry(task, &step.options, FailureKind::InvalidResponse);
                 let post_input = PostHookInput::Error {
                     input: effective_value.clone(),
                     error: e.to_string(),
@@ -752,7 +738,7 @@ fn process_stdout(
         },
         Err(e) => {
             warn!(step = %task.step, error = %e, "failed to parse response JSON");
-            let (result, tasks) = process_retry(task, effective, FailureKind::InvalidResponse);
+            let (result, tasks) = process_retry(task, &step.options, FailureKind::InvalidResponse);
             let post_input = PostHookInput::Error {
                 input: effective_value.clone(),
                 error: format!("failed to parse response JSON: {e}"),
@@ -764,12 +750,12 @@ fn process_stdout(
 
 fn process_retry(
     task: &Task,
-    effective: &EffectiveOptions,
+    options: &Options,
     failure_kind: FailureKind,
 ) -> (TaskResult, Vec<Task>) {
     let retry_allowed = match failure_kind {
-        FailureKind::Timeout => effective.retry_on_timeout,
-        FailureKind::InvalidResponse => effective.retry_on_invalid_response,
+        FailureKind::Timeout => options.retry_on_timeout,
+        FailureKind::InvalidResponse => options.retry_on_invalid_response,
         FailureKind::SubmitError => true,
     };
 
@@ -786,11 +772,11 @@ fn process_retry(
     let mut retry_task = task.clone();
     retry_task.retries += 1;
 
-    if retry_task.retries <= effective.max_retries {
+    if retry_task.retries <= options.max_retries {
         info!(
             step = %task.step,
             retry = retry_task.retries,
-            max = effective.max_retries,
+            max = options.max_retries,
             failure = ?failure_kind,
             "requeuing task"
         );
@@ -805,7 +791,7 @@ fn process_retry(
         error!(step = %task.step, retries = retry_task.retries, "max retries exceeded, dropping task");
         (
             TaskResult::Dropped {
-                reason: format!("max retries ({}) exceeded", effective.max_retries),
+                reason: format!("max retries ({}) exceeded", options.max_retries),
             },
             vec![],
         )

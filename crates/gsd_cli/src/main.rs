@@ -9,7 +9,8 @@ use agent_pool_cli::AgentPoolCli;
 use clap::{Parser, Subcommand};
 use cli_invoker::Invoker;
 use gsd_config::{
-    Action, CompiledSchemas, Config, RunnerConfig, Task, config_schema, generate_full_docs, run,
+    Action, CompiledSchemas, Config, ConfigFile, RunnerConfig, Task, config_schema,
+    generate_full_docs, run,
 };
 use std::fs::File;
 use std::io;
@@ -125,15 +126,18 @@ fn main() -> io::Result<()> {
 
         Command::Config { command } => match command {
             ConfigCommand::Docs { config } => {
-                let (cfg, config_dir) = parse_config(&config)?;
-                let docs = generate_full_docs(&cfg, &config_dir);
+                let (config_file, config_dir) = parse_config(&config)?;
+                let cfg = config_file.resolve(&config_dir)?;
+                let docs = generate_full_docs(&cfg);
                 print!("{docs}");
             }
 
             ConfigCommand::Validate { config } => {
-                let (cfg, _) = parse_config(&config)?;
-                match cfg.validate() {
+                let (config_file, config_dir) = parse_config(&config)?;
+                match config_file.validate() {
                     Ok(()) => {
+                        // Also try to resolve to catch file read errors
+                        let cfg = config_file.resolve(&config_dir)?;
                         println!("Config is valid.");
                         println!("Steps: {}", cfg.steps.len());
                         for step in &cfg.steps {
@@ -159,13 +163,14 @@ fn main() -> io::Result<()> {
             }
 
             ConfigCommand::Graph { config } => {
-                let (cfg, _) = parse_config(&config)?;
-                cfg.validate().map_err(|e| {
+                let (config_file, config_dir) = parse_config(&config)?;
+                config_file.validate().map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("[E053] config validation failed: {e}"),
                     )
                 })?;
+                let cfg = config_file.resolve(&config_dir)?;
                 let dot = generate_graphviz(&cfg);
                 print!("{dot}");
             }
@@ -206,25 +211,35 @@ fn run_command(
     // Detect how to invoke the agent_pool CLI (returns helpful error if not found)
     let invoker = Invoker::<AgentPoolCli>::detect()?;
 
-    let (cfg, config_dir) = parse_config(config)?;
-    cfg.validate().map_err(|e| {
+    let (config_file, config_dir) = parse_config(config)?;
+    config_file.validate().map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("[E051] config validation failed: {e}"),
         )
     })?;
 
-    let schemas = CompiledSchemas::compile(&cfg, &config_dir)?;
+    // Extract entrypoint before resolve consumes config_file
+    let entrypoint = config_file.entrypoint.clone();
+
+    // Resolve to runtime config (loads linked files, computes effective options)
+    let cfg = config_file.resolve(&config_dir)?;
+    let schemas = CompiledSchemas::compile(&cfg)?;
 
     // Resolve initial tasks based on entrypoint or initial_state
-    let initial_tasks = resolve_initial_tasks(&cfg, &schemas, initial_state, entrypoint_value)?;
+    let initial_tasks = resolve_initial_tasks(
+        &schemas,
+        initial_state,
+        entrypoint_value,
+        entrypoint.as_ref(),
+    )?;
 
     // Resolve pool ID
     let pool_path = resolve_pool_path(pool, root)?;
 
     let runner_config = RunnerConfig {
         agent_pool_root: &pool_path,
-        config_base_path: &config_dir,
+        working_dir: &config_dir,
         wake_script: wake,
         initial_tasks,
         invoker: &invoker,
@@ -259,9 +274,9 @@ fn resolve_pool_path(pool: Option<&str>, root: &std::path::Path) -> io::Result<P
 }
 
 /// Parse config from either inline JSON/JSONC or a file path.
-/// Returns the config and the directory for resolving relative schema paths.
+/// Returns the config file and the directory for resolving relative paths.
 /// Supports JSONC (JSON with comments) in both cases.
-fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
+fn parse_config(input: &str) -> io::Result<(ConfigFile, PathBuf)> {
     let path = PathBuf::from(input);
     if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|e| {
@@ -270,7 +285,7 @@ fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
                 format!("[E054] failed to read config file {}: {e}", path.display()),
             )
         })?;
-        let cfg: Config = json5::from_str(&content).map_err(|e| {
+        let cfg: ConfigFile = json5::from_str(&content).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("[E055] invalid config in {}: {e}", path.display()),
@@ -280,7 +295,7 @@ fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
         Ok((cfg, dir.to_path_buf()))
     } else {
         // Assume inline JSON/JSONC
-        let cfg: Config = json5::from_str(input).map_err(|e| {
+        let cfg: ConfigFile = json5::from_str(input).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("[E056] invalid inline config: {e}"),
@@ -292,12 +307,12 @@ fn parse_config(input: &str) -> io::Result<(Config, PathBuf)> {
 
 /// Resolve initial tasks from either --initial-state or entrypoint + --entrypoint-value.
 fn resolve_initial_tasks(
-    cfg: &Config,
     schemas: &CompiledSchemas,
     initial_state: Option<&str>,
     entrypoint_value: Option<&str>,
+    entrypoint: Option<&gsd_config::StepName>,
 ) -> io::Result<Vec<Task>> {
-    match (&cfg.entrypoint, initial_state, entrypoint_value) {
+    match (entrypoint, initial_state, entrypoint_value) {
         // Config has entrypoint
         (Some(entrypoint), None, ev) => {
             // Parse entrypoint value (default to empty object)
@@ -472,10 +487,16 @@ fn generate_graphviz(config: &Config) -> String {
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn resolve_config(json: &str) -> Config {
+        let config_file: ConfigFile = serde_json::from_str(json).unwrap();
+        config_file.resolve(Path::new(".")).unwrap()
+    }
 
     #[test]
     fn graphviz_basic() {
-        let config: Config = serde_json::from_str(
+        let config = resolve_config(
             r#"{
                 "steps": [
                     {"name": "Start", "next": ["Middle"]},
@@ -483,8 +504,7 @@ mod tests {
                     {"name": "End", "next": []}
                 ]
             }"#,
-        )
-        .unwrap();
+        );
 
         let dot = generate_graphviz(&config);
         assert!(dot.contains("digraph GSD"));
@@ -497,24 +517,28 @@ mod tests {
     // resolve_initial_tasks tests
     // =========================================================================
 
-    fn make_config(entrypoint: Option<&str>) -> Config {
-        let mut cfg: Config =
-            serde_json::from_str(r#"{"steps": [{"name": "Start", "next": []}]}"#).unwrap();
-        cfg.entrypoint = entrypoint.map(|s| s.to_string().into());
-        cfg
+    fn make_config_and_schemas(
+        json: &str,
+        entrypoint: Option<&str>,
+    ) -> (Config, CompiledSchemas, Option<gsd_config::StepName>) {
+        let mut config_file: ConfigFile = serde_json::from_str(json).unwrap();
+        config_file.entrypoint = entrypoint.map(|s| s.to_string().into());
+        let ep = config_file.entrypoint.clone();
+        let cfg = config_file.resolve(Path::new(".")).unwrap();
+        let schemas = CompiledSchemas::compile(&cfg).unwrap();
+        (cfg, schemas, ep)
     }
 
-    fn make_schemas(cfg: &Config) -> CompiledSchemas {
-        CompiledSchemas::compile(cfg, std::path::Path::new(".")).unwrap()
+    fn simple_config() -> &'static str {
+        r#"{"steps": [{"name": "Start", "next": []}]}"#
     }
 
     #[test]
     fn resolve_with_entrypoint_and_no_flags() {
         // Config has entrypoint, no flags provided -> uses {} as value
-        let cfg = make_config(Some("Start"));
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), Some("Start"));
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, None);
+        let result = resolve_initial_tasks(&schemas, None, None, ep.as_ref());
         assert!(result.is_ok());
         let tasks = result.unwrap();
         assert_eq!(tasks.len(), 1);
@@ -524,10 +548,9 @@ mod tests {
     #[test]
     fn resolve_with_entrypoint_and_entrypoint_value() {
         // Config has entrypoint, --entrypoint-value provided
-        let cfg = make_config(Some("Start"));
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), Some("Start"));
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, Some(r#"{"foo": 1}"#));
+        let result = resolve_initial_tasks(&schemas, None, Some(r#"{"foo": 1}"#), ep.as_ref());
         assert!(result.is_ok());
         let tasks = result.unwrap();
         assert_eq!(tasks.len(), 1);
@@ -537,14 +560,13 @@ mod tests {
     #[test]
     fn resolve_with_entrypoint_and_initial_state_uses_initial_state() {
         // Config has entrypoint but --initial-state provided -> initial-state takes precedence
-        let cfg = make_config(Some("Start"));
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), Some("Start"));
 
         let result = resolve_initial_tasks(
-            &cfg,
             &schemas,
             Some(r#"[{"kind": "Start", "value": {}}]"#),
             None,
+            ep.as_ref(),
         );
         assert!(result.is_ok());
         let tasks = result.unwrap();
@@ -554,14 +576,13 @@ mod tests {
     #[test]
     fn resolve_without_entrypoint_and_initial_state() {
         // No entrypoint, --initial-state provided -> works
-        let cfg = make_config(None);
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), None);
 
         let result = resolve_initial_tasks(
-            &cfg,
             &schemas,
             Some(r#"[{"kind": "Start", "value": {}}]"#),
             None,
+            ep.as_ref(),
         );
         assert!(result.is_ok());
         let tasks = result.unwrap();
@@ -571,10 +592,9 @@ mod tests {
     #[test]
     fn resolve_without_entrypoint_and_entrypoint_value_errors_e063() {
         // No entrypoint but --entrypoint-value provided -> error
-        let cfg = make_config(None);
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), None);
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, Some(r"{}"));
+        let result = resolve_initial_tasks(&schemas, None, Some(r"{}"), ep.as_ref());
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("E063"));
@@ -583,10 +603,9 @@ mod tests {
     #[test]
     fn resolve_without_entrypoint_and_no_flags_errors_e064() {
         // No entrypoint, no flags -> error
-        let cfg = make_config(None);
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), None);
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, None);
+        let result = resolve_initial_tasks(&schemas, None, None, ep.as_ref());
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("E064"));
@@ -595,10 +614,9 @@ mod tests {
     #[test]
     fn resolve_with_invalid_entrypoint_value_json_errors_e060() {
         // Config has entrypoint, invalid JSON in --entrypoint-value
-        let cfg = make_config(Some("Start"));
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), Some("Start"));
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, Some("not json"));
+        let result = resolve_initial_tasks(&schemas, None, Some("not json"), ep.as_ref());
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("E060"));
@@ -607,25 +625,21 @@ mod tests {
     #[test]
     fn resolve_validates_entrypoint_value_against_schema_e061() {
         // Config has entrypoint with schema, value doesn't match -> error
-        let mut cfg: Config = serde_json::from_str(
-            r#"{
-                "steps": [{
-                    "name": "Start",
-                    "value_schema": {
-                        "type": "object",
-                        "required": ["path"],
-                        "properties": {"path": {"type": "string"}}
-                    },
-                    "next": []
-                }]
-            }"#,
-        )
-        .unwrap();
-        cfg.entrypoint = Some("Start".to_string().into());
-        let schemas = make_schemas(&cfg);
+        let config_with_schema = r#"{
+            "steps": [{
+                "name": "Start",
+                "value_schema": {
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {"path": {"type": "string"}}
+                },
+                "next": []
+            }]
+        }"#;
+        let (_cfg, schemas, ep) = make_config_and_schemas(config_with_schema, Some("Start"));
 
         // Empty object doesn't satisfy required "path"
-        let result = resolve_initial_tasks(&cfg, &schemas, None, None);
+        let result = resolve_initial_tasks(&schemas, None, None, ep.as_ref());
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("E061"));
@@ -634,30 +648,25 @@ mod tests {
     #[test]
     fn resolve_allows_empty_value_when_no_schema() {
         // Config has entrypoint without schema -> {} is allowed
-        let cfg = make_config(Some("Start"));
-        let schemas = make_schemas(&cfg);
+        let (_cfg, schemas, ep) = make_config_and_schemas(simple_config(), Some("Start"));
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, None);
+        let result = resolve_initial_tasks(&schemas, None, None, ep.as_ref());
         assert!(result.is_ok());
     }
 
     #[test]
     fn resolve_allows_empty_value_when_schema_is_empty_object() {
         // Config has entrypoint with schema that accepts empty object
-        let mut cfg: Config = serde_json::from_str(
-            r#"{
-                "steps": [{
-                    "name": "Start",
-                    "value_schema": {"type": "object"},
-                    "next": []
-                }]
-            }"#,
-        )
-        .unwrap();
-        cfg.entrypoint = Some("Start".to_string().into());
-        let schemas = make_schemas(&cfg);
+        let config_with_empty_schema = r#"{
+            "steps": [{
+                "name": "Start",
+                "value_schema": {"type": "object"},
+                "next": []
+            }]
+        }"#;
+        let (_cfg, schemas, ep) = make_config_and_schemas(config_with_empty_schema, Some("Start"));
 
-        let result = resolve_initial_tasks(&cfg, &schemas, None, None);
+        let result = resolve_initial_tasks(&schemas, None, None, ep.as_ref());
         assert!(result.is_ok());
     }
 }

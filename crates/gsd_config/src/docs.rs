@@ -2,46 +2,25 @@
 //!
 //! Generates instructions that tell agents what they can do at each step.
 
-use crate::config::{Action, Config, SchemaRef, Step};
-use crate::maybe_linked::MaybeLinked;
+use crate::resolved::{Action, Config, Step};
 use std::fmt::Write;
-use std::fs;
-use std::path::Path;
 
-/// Write instructions to a doc string, handling both inline and linked variants.
-fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
-    let Some(instructions) = action.instructions() else {
-        return;
-    };
-    match instructions {
-        MaybeLinked::Inline { inline } if !inline.0.is_empty() => {
-            writeln!(doc, "{}", inline.0).ok();
+/// Write instructions to a doc string.
+fn write_instructions(doc: &mut String, action: &Action) {
+    match action {
+        Action::Pool { instructions } if !instructions.is_empty() => {
+            writeln!(doc, "{instructions}").ok();
             writeln!(doc).ok();
         }
-        MaybeLinked::Link { link } => {
-            // Resolve linked instructions by reading the file
-            let full_path = base_path.join(link);
-            match fs::read_to_string(&full_path) {
-                Ok(content) => {
-                    writeln!(doc, "{}", content.trim()).ok();
-                    writeln!(doc).ok();
-                }
-                Err(e) => {
-                    writeln!(doc, "*Error loading instructions from `{link}`: {e}*").ok();
-                    writeln!(doc).ok();
-                }
-            }
-        }
-        MaybeLinked::Inline { .. } => {}
+        _ => {}
     }
 }
 
 /// Generate markdown documentation for a specific step.
 ///
 /// This creates instructions for an agent about what responses are valid.
-/// The `base_path` is used to resolve linked instruction files.
 #[must_use]
-pub fn generate_step_docs(step: &Step, config: &Config, base_path: &Path) -> String {
+pub fn generate_step_docs(step: &Step, config: &Config) -> String {
     let mut doc = String::new();
 
     // Task isolation preamble
@@ -54,7 +33,7 @@ pub fn generate_step_docs(step: &Step, config: &Config, base_path: &Path) -> Str
     writeln!(doc).ok();
 
     // Step instructions
-    write_instructions(&mut doc, &step.action, base_path);
+    write_instructions(&mut doc, &step.action);
 
     // Valid responses section
     if step.next.is_empty() {
@@ -87,7 +66,7 @@ pub fn generate_step_docs(step: &Step, config: &Config, base_path: &Path) -> Str
                         writeln!(doc, r#"{{"kind": "{next_name}", "value": <any>}}"#).ok();
                         writeln!(doc, "```").ok();
                     }
-                    Some(SchemaRef::Inline(schema)) => {
+                    Some(schema) => {
                         writeln!(doc, "Value must match schema:").ok();
                         writeln!(doc).ok();
                         writeln!(doc, "```json").ok();
@@ -97,13 +76,6 @@ pub fn generate_step_docs(step: &Step, config: &Config, base_path: &Path) -> Str
                         writeln!(doc, "```").ok();
                         writeln!(doc).ok();
                         writeln!(doc, "Example:").ok();
-                        writeln!(doc, "```json").ok();
-                        writeln!(doc, r#"{{"kind": "{next_name}", "value": {{...}}}}"#).ok();
-                        writeln!(doc, "```").ok();
-                    }
-                    Some(SchemaRef::Link { link }) => {
-                        writeln!(doc, "Value must match schema in `{link}`.").ok();
-                        writeln!(doc).ok();
                         writeln!(doc, "```json").ok();
                         writeln!(doc, r#"{{"kind": "{next_name}", "value": {{...}}}}"#).ok();
                         writeln!(doc, "```").ok();
@@ -118,27 +90,12 @@ pub fn generate_step_docs(step: &Step, config: &Config, base_path: &Path) -> Str
 }
 
 /// Generate a complete markdown document describing all steps.
-/// The `base_path` is used to resolve linked instruction files.
 #[must_use]
-pub fn generate_full_docs(config: &Config, base_path: &Path) -> String {
+pub fn generate_full_docs(config: &Config) -> String {
     let mut doc = String::new();
 
     writeln!(doc, "# GSD Task Queue Documentation").ok();
     writeln!(doc).ok();
-
-    // Options summary
-    if config.options.timeout.is_some() || config.options.max_retries > 0 {
-        writeln!(doc, "## Options").ok();
-        writeln!(doc).ok();
-        if let Some(timeout) = config.options.timeout {
-            writeln!(doc, "- **Timeout**: {timeout} seconds").ok();
-        }
-        let max_retries = config.options.max_retries;
-        if max_retries > 0 {
-            writeln!(doc, "- **Max Retries**: {max_retries}").ok();
-        }
-        writeln!(doc).ok();
-    }
 
     // State diagram (simple text representation)
     writeln!(doc, "## State Diagram").ok();
@@ -165,7 +122,7 @@ pub fn generate_full_docs(config: &Config, base_path: &Path) -> String {
         writeln!(doc, "### {name}").ok();
         writeln!(doc).ok();
 
-        write_instructions(&mut doc, &step.action, base_path);
+        write_instructions(&mut doc, &step.action);
 
         if step.next.is_empty() {
             writeln!(doc, "**Terminal step** - no further transitions.").ok();
@@ -183,11 +140,12 @@ pub fn generate_full_docs(config: &Config, base_path: &Path) -> String {
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::ConfigFile;
+    use std::path::Path;
 
     #[test]
     fn generates_step_docs() {
-        let config: Config = serde_json::from_str(
+        let config_file: ConfigFile = serde_json::from_str(
             r#"{
             "steps": [
                 {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Begin here."}}, "next": ["End"]},
@@ -197,7 +155,8 @@ mod tests {
         )
         .unwrap();
 
-        let docs = generate_step_docs(&config.steps[0], &config, Path::new("."));
+        let config = config_file.resolve(Path::new(".")).unwrap();
+        let docs = generate_step_docs(&config.steps[0], &config);
         assert!(docs.contains("Current Step: Start"));
         assert!(docs.contains("Begin here."));
         assert!(docs.contains("### End"));
@@ -205,7 +164,7 @@ mod tests {
 
     #[test]
     fn generates_terminal_step_docs() {
-        let config: Config = serde_json::from_str(
+        let config_file: ConfigFile = serde_json::from_str(
             r#"{
             "steps": [
                 {"name": "End", "next": []}
@@ -214,16 +173,16 @@ mod tests {
         )
         .unwrap();
 
-        let docs = generate_step_docs(&config.steps[0], &config, Path::new("."));
+        let config = config_file.resolve(Path::new(".")).unwrap();
+        let docs = generate_step_docs(&config.steps[0], &config);
         assert!(docs.contains("Terminal Step"));
         assert!(docs.contains("empty array"));
     }
 
     #[test]
     fn generates_full_docs() {
-        let config: Config = serde_json::from_str(
+        let config_file: ConfigFile = serde_json::from_str(
             r#"{
-            "options": {"timeout": 60, "max_retries": 2},
             "steps": [
                 {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Begin."}}, "next": ["End"]},
                 {"name": "End", "next": []}
@@ -232,11 +191,9 @@ mod tests {
         )
         .unwrap();
 
-        let docs = generate_full_docs(&config, Path::new("."));
+        let config = config_file.resolve(Path::new(".")).unwrap();
+        let docs = generate_full_docs(&config);
         assert!(docs.contains("GSD Task Queue Documentation"));
-        assert!(docs.contains("Timeout"));
-        assert!(docs.contains("60"));
-        assert!(docs.contains("Max Retries"));
         assert!(docs.contains("State Diagram"));
         assert!(docs.contains("Start -> End"));
         assert!(docs.contains("End (terminal)"));

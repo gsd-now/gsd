@@ -2,13 +2,12 @@
 //!
 //! Loads schemas from config (inline or file) and validates task payloads.
 
-use crate::config::{Config, SchemaRef, Step};
+use crate::resolved::{Config, Step};
 use crate::types::StepName;
 use jsonschema::Validator;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
-use std::{fs, io};
+use std::io;
 
 /// Compiled schemas for all steps in a config.
 pub struct CompiledSchemas {
@@ -17,41 +16,16 @@ pub struct CompiledSchemas {
 }
 
 impl CompiledSchemas {
-    /// Compile all schemas from a config.
+    /// Compile all schemas from a resolved config.
     ///
     /// # Errors
     ///
-    /// Returns an error if a schema file can't be read or a schema is invalid.
-    pub fn compile(config: &Config, base_path: &Path) -> io::Result<Self> {
+    /// Returns an error if a schema is invalid.
+    pub fn compile(config: &Config) -> io::Result<Self> {
         let mut validators = HashMap::new();
 
         for step in &config.steps {
-            let validator = match &step.value_schema {
-                None => None,
-                Some(SchemaRef::Inline(schema)) => Some(compile_schema(schema)?),
-                Some(SchemaRef::Link { link }) => {
-                    let full_path = base_path.join(link);
-                    let content = fs::read_to_string(&full_path).map_err(|e| {
-                        io::Error::new(
-                            e.kind(),
-                            format!(
-                                "[E048] failed to read schema file {}: {e}",
-                                full_path.display()
-                            ),
-                        )
-                    })?;
-                    let schema: Value = serde_json::from_str(&content).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "[E049] invalid JSON in schema file {}: {e}",
-                                full_path.display()
-                            ),
-                        )
-                    })?;
-                    Some(compile_schema(&schema)?)
-                }
-            };
+            let validator = step.value_schema.as_ref().map(compile_schema).transpose()?;
             validators.insert(step.name.clone(), validator);
         }
 
@@ -264,10 +238,11 @@ impl std::error::Error for ResponseValidationError {}
 #[expect(clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::ConfigFile;
+    use std::path::Path;
 
     fn test_config() -> Config {
-        serde_json::from_str(
+        let config_file: ConfigFile = serde_json::from_str(
             r#"{
             "steps": [
                 {
@@ -282,13 +257,14 @@ mod tests {
             ]
         }"#,
         )
-        .expect("parse config")
+        .expect("parse config");
+        config_file.resolve(Path::new(".")).expect("resolve config")
     }
 
     #[test]
     fn validates_correct_value() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
         let value = serde_json::json!({"x": 42});
         assert!(schemas.validate(&StepName::new("Start"), &value).is_ok());
@@ -297,7 +273,7 @@ mod tests {
     #[test]
     fn rejects_invalid_value() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
         let value = serde_json::json!({"x": "not a number"});
         assert!(schemas.validate(&StepName::new("Start"), &value).is_err());
@@ -306,7 +282,7 @@ mod tests {
     #[test]
     fn accepts_any_value_without_schema() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
         // End step has no schema
         let value = serde_json::json!({"anything": "goes"});
@@ -316,7 +292,7 @@ mod tests {
     #[test]
     fn validate_response_accepts_valid_array() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
         let step = &config.steps[0]; // Start step, next = ["End"]
 
         let response = serde_json::json!([
@@ -331,7 +307,7 @@ mod tests {
     #[test]
     fn validate_response_rejects_non_array() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
         let step = &config.steps[0];
 
         let response = serde_json::json!({"kind": "End", "value": {}});
@@ -343,7 +319,7 @@ mod tests {
     #[test]
     fn validate_response_rejects_invalid_transition() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
         let step = &config.steps[0]; // Start step, next = ["End"]
 
         // Try to transition to Start (not allowed from Start)
@@ -361,7 +337,7 @@ mod tests {
     #[test]
     fn validate_response_accepts_empty_array() {
         let config = test_config();
-        let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+        let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
         let step = &config.steps[1]; // End step (terminal)
 
         let response = serde_json::json!([]);

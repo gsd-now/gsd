@@ -13,7 +13,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ fn retry_on_invalid_response_false_drops_task() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 5,
@@ -69,11 +69,12 @@ fn retry_on_invalid_response_false_drops_task() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -118,7 +119,7 @@ fn retry_on_invalid_response_true_retries() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 3,
@@ -139,11 +140,12 @@ fn retry_on_invalid_response_true_retries() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -188,7 +190,7 @@ fn malformed_json_triggers_retry() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 2,
@@ -204,11 +206,12 @@ fn malformed_json_triggers_retry() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -255,7 +258,7 @@ fn per_step_options_override_global() {
 
     // Global: retry=true, max_retries=5
     // Step: retry=false (override)
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 5,
@@ -279,11 +282,12 @@ fn per_step_options_override_global() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("NoRetryStep", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -334,7 +338,7 @@ fn recovery_on_nth_attempt() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 5,
@@ -350,11 +354,12 @@ fn recovery_on_nth_attempt() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -396,7 +401,7 @@ fn max_retries_zero_no_retries() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 0,
@@ -412,11 +417,12 @@ fn max_retries_zero_no_retries() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),

@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task, TaskRunner};
+use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, Task, TaskRunner};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ fn empty_initial_tasks_completes() {
 
     // No sleep needed - pool is ready after start() returns, and no tasks means no agent needed
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
@@ -43,11 +43,12 @@ fn empty_initial_tasks_completes() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![], // Empty!
         invoker: &create_test_invoker(),
@@ -75,13 +76,14 @@ fn empty_runner_is_empty() {
 
     // No sleep needed - pool is ready after start() returns, and no tasks means no agent needed
 
-    let config: Config =
+    let config_file: ConfigFile =
         serde_json::from_str(r#"{"steps": [{"name": "X", "next": []}]}"#).expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![],
         invoker: &create_test_invoker(),
@@ -116,7 +118,7 @@ fn unknown_initial_step_skipped() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {"name": "Known", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
@@ -124,11 +126,12 @@ fn unknown_initial_step_skipped() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![
             Task::new("Unknown", serde_json::json!({})), // Unknown step
@@ -168,7 +171,7 @@ fn invalid_value_schema_skipped() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     // Config with schema requiring "name" field
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {
@@ -185,11 +188,12 @@ fn invalid_value_schema_skipped() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![
             Task::new("Validated", serde_json::json!({})), // Missing required "name"
@@ -246,7 +250,7 @@ fn large_fan_out() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {"name": "Distribute", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": ["Worker"]},
@@ -255,11 +259,12 @@ fn large_fan_out() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Distribute", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -285,7 +290,7 @@ fn command_action_executes() {
 
     // Command action doesn't need IPC - it runs locally
     // No pool needed since we're only using Command actions
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {
@@ -302,11 +307,12 @@ fn command_action_executes() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Echo", serde_json::json!({"message": "hello"}))],
         invoker: &create_test_invoker(),
@@ -337,7 +343,7 @@ fn rapid_task_completion() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {"name": "Fast", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
@@ -345,8 +351,9 @@ fn rapid_task_completion() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     // Submit many tasks
     let initial_tasks: Vec<Task> = (0..50)
@@ -355,7 +362,7 @@ fn rapid_task_completion() {
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks,
         invoker: &create_test_invoker(),
@@ -383,13 +390,14 @@ fn pending_count_accurate() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config =
+    let config_file: ConfigFile =
         serde_json::from_str(r#"{"steps": [{"name": "Work", "next": []}]}"#).expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![
             Task::new("Work", serde_json::json!({})),

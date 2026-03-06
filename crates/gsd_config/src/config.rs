@@ -8,10 +8,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Top-level GSD configuration.
+/// Top-level GSD configuration file format.
+///
+/// This is the raw parsed format. Call `resolve()` to get the runtime `Config`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub struct ConfigFile {
     /// JSON Schema reference for editor validation (ignored at runtime).
     #[serde(rename = "$schema", default, skip_serializing)]
     pub schema_ref: Option<String>,
@@ -27,7 +29,7 @@ pub struct Config {
     pub entrypoint: Option<StepName>,
 
     /// Step definitions forming the task queue.
-    pub steps: Vec<Step>,
+    pub steps: Vec<StepFile>,
 }
 
 /// Runtime options for task execution.
@@ -71,10 +73,10 @@ const fn default_true() -> bool {
     true
 }
 
-/// A step in the task queue.
+/// A step in the config file (may have unresolved references).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Step {
+pub struct StepFile {
     /// Step name (e.g., `Analyze`, `Implement`).
     pub name: StepName,
 
@@ -93,7 +95,7 @@ pub struct Step {
 
     /// How this step processes tasks.
     #[serde(default)]
-    pub action: Action,
+    pub action: ActionFile,
 
     /// Shell command to run after the action completes.
     ///
@@ -131,10 +133,10 @@ pub struct Step {
     pub options: StepOptions,
 }
 
-/// How a step processes tasks.
+/// How a step processes tasks (config file format).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind")]
-pub enum Action {
+pub enum ActionFile {
     /// Send to the agent pool for processing.
     Pool {
         /// Markdown instructions shown to agents.
@@ -149,7 +151,7 @@ pub enum Action {
     },
 }
 
-impl Default for Action {
+impl Default for ActionFile {
     fn default() -> Self {
         Self::Pool {
             instructions: crate::maybe_linked::MaybeLinked::default(),
@@ -157,7 +159,7 @@ impl Default for Action {
     }
 }
 
-impl Action {
+impl ActionFile {
     /// Get the instructions if this is a pool action.
     #[must_use]
     pub const fn instructions(&self) -> Option<&crate::maybe_linked::MaybeLinked<Instructions>> {
@@ -239,10 +241,10 @@ pub enum SchemaRef {
 #[serde(transparent)]
 pub struct Instructions(pub String);
 
-impl Config {
+impl ConfigFile {
     /// Build a map of step name to step for efficient lookup.
     #[must_use]
-    pub fn step_map(&self) -> HashMap<&str, &Step> {
+    pub fn step_map(&self) -> HashMap<&str, &StepFile> {
         self.steps.iter().map(|s| (s.name.as_str(), s)).collect()
     }
 
@@ -251,7 +253,7 @@ impl Config {
     pub fn has_pool_actions(&self) -> bool {
         self.steps
             .iter()
-            .any(|s| matches!(s.action, Action::Pool { .. }))
+            .any(|s| matches!(s.action, ActionFile::Pool { .. }))
     }
 
     /// Validate the config for internal consistency.
@@ -305,6 +307,102 @@ impl Config {
 
         Ok(())
     }
+
+    /// Resolve all file references and compute effective options.
+    ///
+    /// Returns a fully resolved `Config` ready for runtime use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any linked file cannot be read.
+    pub fn resolve(self, base_path: &std::path::Path) -> std::io::Result<crate::resolved::Config> {
+        let global_options = &self.options;
+        let steps = self
+            .steps
+            .into_iter()
+            .map(|step| step.resolve(base_path, global_options))
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        Ok(crate::resolved::Config {
+            max_concurrency: self.options.max_concurrency,
+            steps,
+        })
+    }
+}
+
+impl StepFile {
+    /// Resolve this step's file references and compute effective options.
+    fn resolve(
+        self,
+        base_path: &std::path::Path,
+        global_options: &Options,
+    ) -> std::io::Result<crate::resolved::Step> {
+        let action = self.action.resolve(base_path)?;
+        let value_schema = self
+            .value_schema
+            .map(|s| resolve_schema(s, base_path))
+            .transpose()?;
+        let options = EffectiveOptions::resolve(global_options, &self.options);
+
+        Ok(crate::resolved::Step {
+            name: self.name,
+            value_schema,
+            pre: self.pre,
+            action,
+            post: self.post,
+            next: self.next,
+            finally_hook: self.finally_hook,
+            options: crate::resolved::Options {
+                timeout: options.timeout,
+                max_retries: options.max_retries,
+                retry_on_timeout: options.retry_on_timeout,
+                retry_on_invalid_response: options.retry_on_invalid_response,
+            },
+        })
+    }
+}
+
+impl ActionFile {
+    /// Resolve this action's file references.
+    fn resolve(self, base_path: &std::path::Path) -> std::io::Result<crate::resolved::Action> {
+        match self {
+            Self::Pool { instructions } => {
+                let resolved: Instructions = instructions.resolve(base_path, |path| {
+                    let content = std::fs::read_to_string(path)?;
+                    Ok(Instructions(content))
+                })?;
+                Ok(crate::resolved::Action::Pool {
+                    instructions: resolved.0,
+                })
+            }
+            Self::Command { script } => Ok(crate::resolved::Action::Command { script }),
+        }
+    }
+}
+
+/// Resolve a schema reference to its JSON value.
+fn resolve_schema(
+    schema: SchemaRef,
+    base_path: &std::path::Path,
+) -> std::io::Result<serde_json::Value> {
+    match schema {
+        SchemaRef::Inline(value) => Ok(value),
+        SchemaRef::Link { link } => {
+            let path = base_path.join(&link);
+            let content = std::fs::read_to_string(&path).map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!("failed to read schema '{}': {e}", path.display()),
+                )
+            })?;
+            serde_json::from_str(&content).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid JSON in schema '{}': {e}", path.display()),
+                )
+            })
+        }
+    }
 }
 
 /// Errors that can occur during config validation.
@@ -348,10 +446,10 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Generate JSON Schema for the Config type.
+/// Generate JSON Schema for the `ConfigFile` type.
 #[must_use]
 pub fn config_schema() -> schemars::schema::RootSchema {
-    schemars::schema_for!(Config)
+    schemars::schema_for!(ConfigFile)
 }
 
 #[cfg(test)]
@@ -369,7 +467,7 @@ mod tests {
             ]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert_eq!(config.steps.len(), 2);
         assert!(config.options.timeout.is_none());
     }
@@ -395,7 +493,7 @@ mod tests {
             ]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert_eq!(config.options.timeout, Some(120));
         assert_eq!(config.options.max_retries, 3);
         assert!(config.validate().is_ok());
@@ -409,7 +507,7 @@ mod tests {
             ]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(config.validate().is_err());
     }
 
@@ -417,7 +515,7 @@ mod tests {
     fn empty_steps_is_valid() {
         let json = r#"{"steps": []}"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(config.validate().is_ok());
         assert_eq!(config.steps.len(), 0);
     }
@@ -431,7 +529,7 @@ mod tests {
             ]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         let result = config.validate();
         assert!(result.is_err());
         assert!(matches!(
@@ -443,7 +541,7 @@ mod tests {
     #[test]
     fn retry_options_default_to_true() {
         let json = r#"{"steps": []}"#;
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
 
         assert!(config.options.retry_on_timeout);
         assert!(config.options.retry_on_invalid_response);
@@ -459,7 +557,7 @@ mod tests {
             "steps": []
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(!config.options.retry_on_timeout);
         assert!(!config.options.retry_on_invalid_response);
     }
@@ -483,7 +581,7 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         let step = &config.steps[0];
         let effective = EffectiveOptions::resolve(&config.options, &step.options);
 
@@ -507,7 +605,7 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         let step = &config.steps[0];
         let effective = EffectiveOptions::resolve(&config.options, &step.options);
 
@@ -527,10 +625,10 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Pool { instructions: MaybeLinked::Inline { inline: Instructions(s) } } if s == "Inline markdown here."
+            ActionFile::Pool { instructions: MaybeLinked::Inline { inline: Instructions(s) } } if s == "Inline markdown here."
         ));
     }
 
@@ -544,10 +642,10 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Pool { instructions: MaybeLinked::Link { link } } if link == "path/to/instructions.md"
+            ActionFile::Pool { instructions: MaybeLinked::Link { link } } if link == "path/to/instructions.md"
         ));
     }
 
@@ -561,10 +659,10 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Command { script } if script == "jq '.value'"
+            ActionFile::Command { script } if script == "jq '.value'"
         ));
     }
 
@@ -577,8 +675,8 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
-        assert!(matches!(&config.steps[0].action, Action::Pool { .. }));
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
+        assert!(matches!(&config.steps[0].action, ActionFile::Pool { .. }));
     }
 
     #[test]
@@ -591,7 +689,7 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].value_schema,
             Some(SchemaRef::Inline(_))
@@ -608,7 +706,7 @@ mod tests {
             }]
         }"#;
 
-        let config: Config = serde_json::from_str(json).expect("parse failed");
+        let config: ConfigFile = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].value_schema,
             Some(SchemaRef::Link { link }) if link == "schemas/test.json"

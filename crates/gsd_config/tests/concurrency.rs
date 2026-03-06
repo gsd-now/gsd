@@ -14,7 +14,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task, TaskRunner};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task, TaskRunner};
 use rstest::rstest;
 use std::collections::HashSet;
 use std::path::Path;
@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const TEST_DIR: &str = "concurrency";
 
 fn worker_config() -> Config {
-    serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {
@@ -37,7 +37,8 @@ fn worker_config() -> Config {
             ]
         }"#,
     )
-    .expect("parse config")
+    .expect("parse config");
+    config_file.resolve(Path::new(".")).expect("resolve config")
 }
 
 /// Test that multiple tasks submitted at once are processed concurrently.
@@ -64,7 +65,7 @@ fn tasks_execute_in_parallel() {
     let _agent3 = GsdTestAgent::terminator(&root, processing_delay);
 
     let config = worker_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     // Submit 6 tasks - with 3 agents and 100ms delay, parallel execution
     // should take ~200ms (2 batches of 3), sequential would take ~600ms
@@ -74,7 +75,7 @@ fn tasks_execute_in_parallel() {
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks,
         invoker: &create_test_invoker(),
@@ -135,7 +136,7 @@ fn work_distributed_across_agents() {
     });
 
     let config = worker_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let initial_tasks: Vec<Task> = (0..9)
         .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
@@ -143,7 +144,7 @@ fn work_distributed_across_agents() {
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks,
         invoker: &create_test_invoker(),
@@ -217,7 +218,7 @@ fn max_concurrency_limits_parallel_tasks() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     // Config with max_concurrency = 2
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_concurrency": 2
@@ -232,8 +233,9 @@ fn max_concurrency_limits_parallel_tasks() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let initial_tasks: Vec<Task> = (0..6)
         .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
@@ -241,7 +243,7 @@ fn max_concurrency_limits_parallel_tasks() {
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks,
         invoker: &create_test_invoker(),
@@ -278,7 +280,7 @@ fn task_runner_yields_results_incrementally() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = worker_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let initial_tasks: Vec<Task> = (0..3)
         .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
@@ -286,7 +288,7 @@ fn task_runner_yields_results_incrementally() {
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks,
         invoker: &create_test_invoker(),
@@ -323,11 +325,11 @@ fn task_runner_is_empty_status() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = worker_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Worker", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -382,7 +384,7 @@ fn nested_fan_out() {
 
     // Wait for agent to be ready (has processed initial heartbeat)
 
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {"name": "Root", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": ["Branch1", "Branch2"]},
@@ -396,12 +398,13 @@ fn nested_fan_out() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Root", serde_json::json!({}))],
         invoker: &create_test_invoker(),

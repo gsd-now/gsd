@@ -9,7 +9,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::time::Duration;
 const TEST_DIR: &str = "simple_termination";
 
 fn simple_config() -> Config {
-    serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "steps": [
                 {
@@ -28,7 +28,8 @@ fn simple_config() -> Config {
             ]
         }"#,
     )
-    .expect("parse config")
+    .expect("parse config");
+    config_file.resolve(Path::new(".")).expect("resolve config")
 }
 
 #[rstest]
@@ -48,11 +49,11 @@ fn single_step_terminates() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = simple_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &invoker,
@@ -78,11 +79,11 @@ fn empty_initial_tasks_does_nothing() {
     // No IPC needed - we're not even starting the pool
     // With no initial tasks, the runner completes immediately without connecting to the pool
     let config = simple_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![],
         invoker: &invoker,

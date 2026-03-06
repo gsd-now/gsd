@@ -31,10 +31,11 @@ Example: `/tmp/agent_pool/runs/mypool/a3f2c1/`
 Each line in `tasks.log` is a JSON object with internal tagging (`#[serde(tag = "kind")]`):
 
 ```json
-{"kind":"Completed","step":"Analyze","value":{...},"retries_remaining":3,"spawned":[{"kind":"Process","value":{}}]}
-{"kind":"Completed","step":"Process","value":{...},"retries_remaining":2,"spawned":[]}
-{"kind":"Failed","step":"Validate","value":{...},"retries_remaining":0,"reason":{"kind":"Timeout"}}
-{"kind":"Failed","step":"Validate","value":{...},"retries_remaining":0,"reason":{"kind":"Error","message":"agent crashed"}}
+{"kind":"Queued","value":{"id":1,"step":"Analyze","value":{...},"retries_remaining":3}}
+{"kind":"Queued","value":{"id":2,"step":"Analyze","value":{...},"retries_remaining":3}}
+{"kind":"Resolved","value":{"kind":"Completed","id":1,"spawned":[{"id":3,"step":"Process","value":{...},"retries_remaining":2}]}}
+{"kind":"Queued","value":{"id":3,"step":"Process","value":{...},"retries_remaining":2}}
+{"kind":"Resolved","value":{"kind":"Failed","id":2,"reason":{"kind":"Timeout"}}}
 ```
 
 ## Data Structures
@@ -42,43 +43,61 @@ Each line in `tasks.log` is a JSON object with internal tagging (`#[serde(tag = 
 ```rust
 // crates/gsd_config/src/run_log.rs
 
-use crate::types::StepName;
 use serde::{Deserialize, Serialize};
 
-/// A task input (what gets queued).
+/// Unique identifier for a task within a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LogTaskId(pub u64);
+
+/// A log entry (one line in tasks.log).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskInput {
-    pub kind: StepName,
-    pub value: serde_json::Value,
+#[serde(tag = "kind", content = "value")]
+pub enum LogEntry {
+    /// Task added to the queue.
+    Queued(TaskQueueItem),
+    /// Task resolved (completed or failed).
+    Resolved(TaskResolution),
 }
 
-/// The outcome of a task (one line in tasks.log).
+/// A task that was added to the queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum TaskOutcome {
+pub struct TaskQueueItem {
+    pub id: LogTaskId,
+    pub step: String,
+    pub value: serde_json::Value,
+    pub retries_remaining: u32,
+}
+
+/// A task that was resolved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value")]
+pub enum TaskResolution {
     /// Task completed successfully.
-    Completed {
-        step: StepName,
-        value: serde_json::Value,
-        retries_remaining: u32,
-        /// Tasks spawned by this completion.
-        spawned: Vec<TaskInput>,
-    },
+    Completed(TaskCompletion),
     /// Task failed.
-    Failed {
-        step: StepName,
-        value: serde_json::Value,
-        retries_remaining: u32,
-        reason: FailureReason,
-    },
+    Failed(TaskFailure),
+}
+
+/// A successful task completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCompletion {
+    pub id: LogTaskId,
+    /// Tasks spawned by this completion.
+    pub spawned: Vec<TaskQueueItem>,
+}
+
+/// A task failure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskFailure {
+    pub id: LogTaskId,
+    pub reason: FailureReason,
 }
 
 /// Why a task failed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum FailureReason {
-    /// Agent returned an error response.
-    Error { message: String },
     /// Task timed out waiting for agent response.
     Timeout,
     /// Agent disconnected/crashed during task execution.
@@ -91,25 +110,25 @@ pub enum FailureReason {
 ## Reconstructing State on Resume
 
 ```rust
-fn reconstruct_pending(
-    initial: Vec<TaskInput>,
-    outcomes: &[TaskOutcome],
-) -> Vec<TaskInput> {
-    // Start with initial tasks
-    let mut all_queued: Vec<TaskInput> = initial;
-    let mut completed_count = 0;
+fn reconstruct_pending(entries: &[LogEntry]) -> Vec<TaskQueueItem> {
+    let mut pending: HashMap<LogTaskId, TaskQueueItem> = HashMap::new();
 
-    // For each outcome, track what was spawned
-    for outcome in outcomes {
-        completed_count += 1;
-        if let TaskOutcome::Completed { spawned, .. } = outcome {
-            all_queued.extend(spawned.iter().cloned());
+    for entry in entries {
+        match entry {
+            LogEntry::Queued(item) => {
+                pending.insert(item.id, item.clone());
+            }
+            LogEntry::Resolved(resolution) => {
+                let id = match resolution {
+                    TaskResolution::Completed(c) => c.id,
+                    TaskResolution::Failed(f) => f.id,
+                };
+                pending.remove(&id);
+            }
         }
     }
 
-    // Pending = everything queued minus everything completed
-    // (outcomes are in order, so skip first N)
-    all_queued.into_iter().skip(completed_count).collect()
+    pending.into_values().collect()
 }
 ```
 

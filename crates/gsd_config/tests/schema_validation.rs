@@ -9,7 +9,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::time::Duration;
 const TEST_DIR: &str = "schema_validation";
 
 fn config_with_schema() -> Config {
-    serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 0
@@ -48,7 +48,8 @@ fn config_with_schema() -> Config {
             ]
         }"#,
     )
-    .expect("parse config")
+    .expect("parse config");
+    config_file.resolve(Path::new(".")).expect("resolve config")
 }
 
 #[rstest]
@@ -77,10 +78,10 @@ fn valid_schema_passes() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = config_with_schema();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Input", serde_json::json!({"count": 5}))],
         invoker: &create_test_invoker(),
@@ -112,10 +113,10 @@ fn invalid_initial_task_skipped() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = config_with_schema();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         // Missing required "count" field
         initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
@@ -152,7 +153,7 @@ fn invalid_response_causes_retry() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     // Config allows 2 retries
-    let config: Config = serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 2
@@ -176,11 +177,12 @@ fn invalid_response_causes_retry() {
         }"#,
     )
     .expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
         invoker: &create_test_invoker(),

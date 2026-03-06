@@ -28,7 +28,7 @@ fn schema_outputs_valid_json() {
 
     // Verify key schema properties
     assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
-    assert_eq!(schema["title"], "Config");
+    assert_eq!(schema["title"], "ConfigFile");
     assert_eq!(schema["type"], "object");
 }
 
@@ -58,12 +58,12 @@ fn schema_defines_step_type() {
     let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
     assert!(
-        schema["definitions"]["Step"].is_object(),
-        "Should define Step type"
+        schema["definitions"]["StepFile"].is_object(),
+        "Should define StepFile type"
     );
     assert!(
-        schema["definitions"]["Action"].is_object(),
-        "Should define Action type"
+        schema["definitions"]["ActionFile"].is_object(),
+        "Should define ActionFile type"
     );
     assert!(
         schema["definitions"]["Options"].is_object(),
@@ -79,10 +79,10 @@ fn schema_action_has_pool_and_command_variants() {
     let stdout = String::from_utf8_lossy(&result.stdout);
     let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    let action = &schema["definitions"]["Action"];
+    let action = &schema["definitions"]["ActionFile"];
     let variants = action["oneOf"]
         .as_array()
-        .expect("Action should have oneOf");
+        .expect("ActionFile should have oneOf");
 
     // Find Pool variant
     let has_pool = variants.iter().any(|v| {

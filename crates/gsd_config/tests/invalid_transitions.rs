@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use std::time::Duration;
 const TEST_DIR: &str = "invalid_transitions";
 
 fn strict_config() -> Config {
-    serde_json::from_str(
+    let config_file: ConfigFile = serde_json::from_str(
         r#"{
             "options": {
                 "max_retries": 1
@@ -44,7 +44,8 @@ fn strict_config() -> Config {
             ]
         }"#,
     )
-    .expect("parse config")
+    .expect("parse config");
+    config_file.resolve(Path::new(".")).expect("resolve config")
 }
 
 #[rstest]
@@ -68,10 +69,10 @@ fn invalid_transition_causes_retry() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = strict_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -109,10 +110,10 @@ fn unknown_step_causes_retry() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = strict_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
@@ -169,10 +170,10 @@ fn recovery_after_invalid_then_valid() {
     // Wait for agent to be ready (has processed initial heartbeat)
 
     let config = strict_config();
-    let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
-        config_base_path: Path::new("."),
+        working_dir: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
