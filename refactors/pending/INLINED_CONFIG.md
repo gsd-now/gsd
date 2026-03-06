@@ -291,12 +291,12 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeLinked<T> {
 
   // Inline schema
   "value_schema": {"type": "object", "properties": {...}},
-  // Or link (NOW uses {"link": ...} instead of bare string)
+  // Or link
   "value_schema": {"link": "schemas/step.json"}
 }
 ```
 
-**Breaking change:** Schema links change from `"path"` to `{"link": "path"}`. Worth it for consistency.
+Both `Instructions` and `SchemaRef` already use the `{"link": "path"}` format (see UNIFIED_LINK_FORMAT in past/).
 
 #### Resolution
 
