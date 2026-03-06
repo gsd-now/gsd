@@ -56,14 +56,27 @@ pub enum TaskOutcome {
         /// IDs of tasks spawned by this task's completion.
         spawned: Vec<TaskId>,
     },
-    /// Task failed after exhausting retries.
+    /// Task failed.
     Failed {
         id: TaskId,
         step: StepName,
         value: serde_json::Value,
         retries_remaining: u32,
-        error: String,
+        reason: FailureReason,
     },
+}
+
+/// Why a task failed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FailureReason {
+    /// Agent returned an error response.
+    Error(String),
+    /// Task timed out waiting for agent response.
+    Timeout,
+    /// Agent disconnected/crashed during task execution.
+    AgentLost,
+    /// Invalid response from agent (couldn't parse).
+    InvalidResponse(String),
 }
 
 impl QueueState {
@@ -122,7 +135,7 @@ impl QueueState {
     }
 
     /// Mark a task as failed.
-    pub fn fail(&mut self, id: &TaskId, error: String) {
+    pub fn fail(&mut self, id: &TaskId, reason: FailureReason) {
         if let Some(pos) = self.pending.iter().position(|t| &t.id == id) {
             let task = self.pending.remove(pos);
             self.outcomes.push(TaskOutcome::Failed {
@@ -130,7 +143,7 @@ impl QueueState {
                 step: task.step,
                 value: task.value,
                 retries_remaining: task.retries_remaining,
-                error,
+                reason,
             });
         }
     }
@@ -152,7 +165,7 @@ The run ID is generated at start (short UUID). Multiple runs for the same pool t
 Change `TaskRunner` to use `QueueState` internally.
 
 **Changes:**
-- Add `QueueState`, `PendingTask`, `TaskOutcome`, `TaskId` types
+- Add `QueueState`, `PendingTask`, `TaskOutcome`, `FailureReason`, `TaskId` types
 - Modify `TaskRunner` to own a `QueueState`
 - Replace `VecDeque<QueuedTask>` with iteration over `state.pending`
 - When task completes: call `state.complete(id, spawned_ids)`
