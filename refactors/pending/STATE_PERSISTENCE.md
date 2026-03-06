@@ -35,7 +35,7 @@ Newline-delimited JSON. First entry MUST be `Config`, which MUST NOT appear agai
 {"kind":"TaskCompleted","task_id":1,"new_task_ids":[3]}
 {"kind":"TaskSubmitted","task_id":3,"step":"Process","value":{...},"origin_id":1}
 {"kind":"TaskRequeued","task_id":2,"reason":"timeout","retry_count":1}
-{"kind":"TaskDropped","task_id":2,"reason":"max retries exceeded"}
+{"kind":"TaskCompleted","task_id":2,"new_task_ids":[]}
 ```
 
 ## Data Structures
@@ -51,37 +51,43 @@ use crate::resolved::Config;
 #[serde(tag = "kind")]
 pub enum StateLogEntry {
     /// The resolved config. Must be first entry, must appear exactly once.
-    Config { config: Config },
+    Config(StateLogConfig),
     /// Task submitted to the queue.
-    TaskSubmitted {
-        task_id: u64,
-        step: String,
-        value: serde_json::Value,
-        /// ID of the task that spawned this one (None for initial tasks).
-        origin_id: Option<u64>,
-    },
+    TaskSubmitted(TaskSubmitted),
     /// Task completed successfully.
-    TaskCompleted {
-        task_id: u64,
-        /// IDs of newly spawned tasks.
-        new_task_ids: Vec<u64>,
-    },
-    /// Task requeued for retry.
-    TaskRequeued {
-        task_id: u64,
-        reason: String,
-        retry_count: u32,
-    },
-    /// Task dropped (no more retries).
-    TaskDropped {
-        task_id: u64,
-        reason: String,
-    },
-    /// Task skipped (e.g., step not found).
-    TaskSkipped {
-        task_id: u64,
-        reason: String,
-    },
+    TaskCompleted(TaskCompleted),
+    /// Task failed, will be retried.
+    TaskRequeued(TaskRequeued),
+}
+
+// Note: No TaskDropped/TaskSkipped. If retries exhausted, the run fails.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateLogConfig {
+    pub config: Config,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSubmitted {
+    pub task_id: u64,
+    pub step: String,
+    pub value: serde_json::Value,
+    /// ID of the task that spawned this one (None for initial tasks).
+    pub origin_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCompleted {
+    pub task_id: u64,
+    /// IDs of newly spawned tasks.
+    pub new_task_ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRequeued {
+    pub task_id: u64,
+    pub reason: String,
+    pub retry_count: u32,
 }
 ```
 
@@ -101,7 +107,7 @@ impl<W: Write> StateLogWriter<W> {
 
     pub fn write(&mut self, entry: &StateLogEntry) -> io::Result<()> {
         match entry {
-            StateLogEntry::Config { .. } => {
+            StateLogEntry::Config(_) => {
                 if self.config_written {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -157,7 +163,7 @@ impl<R: Read> Iterator for StateLogReader<R> {
 
         // Validate config constraints
         match &entry {
-            StateLogEntry::Config { .. } => {
+            StateLogEntry::Config(_) => {
                 if self.config_read {
                     return Some(Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -184,26 +190,20 @@ impl<R: Read> Iterator for StateLogReader<R> {
 ## Reconstructing State on Resume
 
 ```rust
-fn reconstruct_pending(entries: &[StateLogEntry]) -> HashMap<u64, PendingTask> {
-    let mut pending: HashMap<u64, PendingTask> = HashMap::new();
+fn reconstruct_pending(entries: &[StateLogEntry]) -> HashMap<u64, TaskSubmitted> {
+    let mut pending: HashMap<u64, TaskSubmitted> = HashMap::new();
 
     for entry in entries {
         match entry {
-            StateLogEntry::Config { .. } => {}
-            StateLogEntry::TaskSubmitted { task_id, step, value, origin_id } => {
-                pending.insert(*task_id, PendingTask {
-                    step: step.clone(),
-                    value: value.clone(),
-                    origin_id: *origin_id,
-                });
+            StateLogEntry::Config(_) => {}
+            StateLogEntry::TaskSubmitted(task) => {
+                pending.insert(task.task_id, task.clone());
             }
-            StateLogEntry::TaskCompleted { task_id, .. }
-            | StateLogEntry::TaskDropped { task_id, .. }
-            | StateLogEntry::TaskSkipped { task_id, .. } => {
-                pending.remove(task_id);
+            StateLogEntry::TaskCompleted(completed) => {
+                pending.remove(&completed.task_id);
             }
-            StateLogEntry::TaskRequeued { .. } => {
-                // Task stays pending
+            StateLogEntry::TaskRequeued(_) => {
+                // Task stays pending, will be retried
             }
         }
     }
