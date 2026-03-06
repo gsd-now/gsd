@@ -2,7 +2,8 @@
 //!
 //! Generates instructions that tell agents what they can do at each step.
 
-use crate::config::{Action, Config, Instructions, SchemaRef, Step};
+use crate::config::{Action, Config, SchemaRef, Step};
+use crate::maybe_linked::MaybeLinked;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
@@ -13,11 +14,11 @@ fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
         return;
     };
     match instructions {
-        Instructions::Inline { inline } if !inline.is_empty() => {
-            writeln!(doc, "{inline}").ok();
+        MaybeLinked::Inline { inline } if !inline.0.is_empty() => {
+            writeln!(doc, "{}", inline.0).ok();
             writeln!(doc).ok();
         }
-        Instructions::Link { link } => {
+        MaybeLinked::Link { link } => {
             // Resolve linked instructions by reading the file
             let full_path = base_path.join(link);
             match fs::read_to_string(&full_path) {
@@ -31,7 +32,7 @@ fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
                 }
             }
         }
-        Instructions::Inline { .. } => {}
+        MaybeLinked::Inline { .. } => {}
     }
 }
 

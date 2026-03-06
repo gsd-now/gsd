@@ -139,7 +139,7 @@ pub enum Action {
     Pool {
         /// Markdown instructions shown to agents.
         #[serde(default)]
-        instructions: Instructions,
+        instructions: crate::maybe_linked::MaybeLinked<Instructions>,
     },
     /// Run a local command.
     Command {
@@ -152,7 +152,7 @@ pub enum Action {
 impl Default for Action {
     fn default() -> Self {
         Self::Pool {
-            instructions: Instructions::default(),
+            instructions: crate::maybe_linked::MaybeLinked::default(),
         }
     }
 }
@@ -160,7 +160,7 @@ impl Default for Action {
 impl Action {
     /// Get the instructions if this is a pool action.
     #[must_use]
-    pub const fn instructions(&self) -> Option<&Instructions> {
+    pub const fn instructions(&self) -> Option<&crate::maybe_linked::MaybeLinked<Instructions>> {
         match self {
             Self::Pool { instructions } => Some(instructions),
             Self::Command { .. } => None,
@@ -234,12 +234,10 @@ pub enum SchemaRef {
     Inline(serde_json::Value),
 }
 
-/// Markdown instructions (inline or external file).
-///
-/// In config files:
-/// - `{"inline": "text"}` → inline markdown
-/// - `{"link": "path"}` → link to markdown file
-pub type Instructions = crate::maybe_linked::MaybeLinked<String>;
+/// Markdown instructions content.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Instructions(pub String);
 
 impl Config {
     /// Build a map of step name to step for efficient lookup.
@@ -360,6 +358,7 @@ pub fn config_schema() -> schemars::schema::RootSchema {
 #[expect(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::maybe_linked::MaybeLinked;
 
     #[test]
     fn parse_minimal_config() {
@@ -531,7 +530,7 @@ mod tests {
         let config: Config = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Pool { instructions: Instructions::Inline { inline } } if inline == "Inline markdown here."
+            Action::Pool { instructions: MaybeLinked::Inline { inline: Instructions(s) } } if s == "Inline markdown here."
         ));
     }
 
@@ -548,7 +547,7 @@ mod tests {
         let config: Config = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Pool { instructions: Instructions::Link { link } } if link == "path/to/instructions.md"
+            Action::Pool { instructions: MaybeLinked::Link { link } } if link == "path/to/instructions.md"
         ));
     }
 
