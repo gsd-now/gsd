@@ -222,6 +222,164 @@ impl TaskRunner {
 
 ## Implementation Phases
 
+### Phase 0: Generic MaybeLinked / Inlined Types
+
+First, introduce generic types to handle the inline-vs-linked pattern.
+
+#### Core Types
+
+```rust
+// crates/gsd_config/src/maybe_linked.rs
+
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::io;
+
+/// Content that may be inline or linked to a file.
+///
+/// Used during config parsing - before resolution.
+#[derive(Debug, Clone)]
+pub enum MaybeLinked<T> {
+    Inline(T),
+    Link(String),
+}
+
+/// Fully resolved content (no link variant).
+///
+/// Used after resolution - ready for execution/serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Inlined<T>(pub T);
+
+impl<T> Inlined<T> {
+    pub fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> std::ops::Deref for Inlined<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+```
+
+#### Serde Strategies
+
+Different `MaybeLinked<T>` need different serde implementations:
+
+**1. String-or-object (for Instructions):**
+```rust
+// "some text" OR {"link": "path/to/file.md"}
+
+impl<'de> Deserialize<'de> for MaybeLinked<String> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrLink {
+            Inline(String),
+            Link { link: String },
+        }
+
+        match StringOrLink::deserialize(deserializer)? {
+            StringOrLink::Inline(s) => Ok(MaybeLinked::Inline(s)),
+            StringOrLink::Link { link } => Ok(MaybeLinked::Link(link)),
+        }
+    }
+}
+```
+
+**2. Value-or-string (for Schema):**
+```rust
+// {"type": "object", ...} OR "path/to/schema.json"
+
+impl<'de> Deserialize<'de> for MaybeLinked<serde_json::Value> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(path) => Ok(MaybeLinked::Link(path)),
+            other => Ok(MaybeLinked::Inline(other)),
+        }
+    }
+}
+```
+
+#### Resolution Trait
+
+```rust
+/// Types that can be resolved from a file path.
+pub trait FromFile: Sized {
+    fn from_file(path: &Path) -> io::Result<Self>;
+}
+
+impl FromFile for String {
+    fn from_file(path: &Path) -> io::Result<Self> {
+        std::fs::read_to_string(path)
+    }
+}
+
+impl FromFile for serde_json::Value {
+    fn from_file(path: &Path) -> io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        })
+    }
+}
+
+impl<T: FromFile> MaybeLinked<T> {
+    /// Resolve a link to inline content.
+    pub fn resolve(self, base_path: &Path) -> io::Result<Inlined<T>> {
+        match self {
+            MaybeLinked::Inline(value) => Ok(Inlined(value)),
+            MaybeLinked::Link(link) => {
+                let full_path = base_path.join(&link);
+                let value = T::from_file(&full_path).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("failed to read '{}': {e}", full_path.display())
+                    )
+                })?;
+                Ok(Inlined(value))
+            }
+        }
+    }
+}
+```
+
+#### Usage in Config Types
+
+```rust
+// Before resolution (ConfigFile)
+pub struct StepFile {
+    pub name: StepName,
+    pub instructions: MaybeLinked<String>,
+    pub value_schema: Option<MaybeLinked<serde_json::Value>>,
+    // ...
+}
+
+// After resolution (Config)
+pub struct Step {
+    pub name: StepName,
+    pub instructions: Inlined<String>,
+    pub value_schema: Option<Inlined<serde_json::Value>>,
+    // ...
+}
+```
+
+**This phase is pure addition** - doesn't change existing code. Just adds the new types to use in later phases.
+
 ### Phase 1: Add ConfigFile type
 
 1. Rename current `Config` to `ConfigFile`
