@@ -144,8 +144,8 @@ impl StepFile {
     pub fn resolve(self, base_path: &Path) -> io::Result<Step> {
         Ok(Step {
             name: self.name,
-            instructions: self.instructions.resolve(base_path)?,
-            value_schema: self.value_schema.map(|s| s.resolve(base_path)).transpose()?,
+            instructions: self.instructions.resolve_text(base_path)?,  // markdown = raw text
+            value_schema: self.value_schema.map(|s| s.resolve_json(base_path)).transpose()?,  // JSON
             next: self.next,
         })
     }
@@ -301,25 +301,14 @@ impl<'de> Deserialize<'de> for MaybeLinked<serde_json::Value> {
 }
 ```
 
-#### Resolution (concrete impls, no trait)
+#### Resolution
 
 ```rust
-impl MaybeLinked<String> {
-    pub fn resolve(self, base_path: &Path) -> io::Result<String> {
-        match self {
-            MaybeLinked::Inline(s) => Ok(s),
-            MaybeLinked::Link(link) => {
-                let path = base_path.join(&link);
-                std::fs::read_to_string(&path).map_err(|e| {
-                    io::Error::new(e.kind(), format!("failed to read '{}': {e}", path.display()))
-                })
-            }
-        }
-    }
-}
+use serde::de::DeserializeOwned;
 
-impl MaybeLinked<serde_json::Value> {
-    pub fn resolve(self, base_path: &Path) -> io::Result<serde_json::Value> {
+// Generic: for JSON files (schemas, etc.) - deserialize the content
+impl<T: DeserializeOwned> MaybeLinked<T> {
+    pub fn resolve_json(self, base_path: &Path) -> io::Result<T> {
         match self {
             MaybeLinked::Inline(v) => Ok(v),
             MaybeLinked::Link(link) => {
@@ -334,7 +323,26 @@ impl MaybeLinked<serde_json::Value> {
         }
     }
 }
+
+// Special case: for raw text files (markdown instructions) - just read as-is
+impl MaybeLinked<String> {
+    pub fn resolve_text(self, base_path: &Path) -> io::Result<String> {
+        match self {
+            MaybeLinked::Inline(s) => Ok(s),
+            MaybeLinked::Link(link) => {
+                let path = base_path.join(&link);
+                std::fs::read_to_string(&path).map_err(|e| {
+                    io::Error::new(e.kind(), format!("failed to read '{}': {e}", path.display()))
+                })
+            }
+        }
+    }
+}
 ```
+
+Two methods:
+- `resolve_json()` - for JSON files, uses `serde_json::from_str`
+- `resolve_text()` - for raw text files (markdown), just reads content
 
 #### Usage in Config Types
 
