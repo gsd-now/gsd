@@ -6,133 +6,127 @@
 
 Long-running GSD jobs can be interrupted (crash, Ctrl+C, OOM). State persistence enables resuming from where you left off.
 
-## CLI Changes
+## Core Idea
 
-### Output state: `--state-output <path>`
+The state file IS the internal task queue state. No separate "persisted" types - we serialize the actual data structure we use at runtime.
 
-```bash
-gsd run config.jsonc --pool mypool --state-output /tmp/myrun.state.json
-```
+## State Structure
 
-Writes state after each task completion. Simple, explicit, no magic.
-
-### Input state: `--initial-state <path-or-json>`
-
-Already works! The existing `--initial-state` flag detects whether the argument is a file path or inline JSON by checking if the file exists. So this already works:
-
-```bash
-# Inline JSON (starts with '[')
-gsd run config.jsonc --pool mypool --initial-state '[{"kind": "Start", "value": {}}]'
-
-# File path (file exists)
-gsd run config.jsonc --pool mypool --initial-state /tmp/myrun.state.json
-```
-
-No new flags needed for input.
-
-## State File Format
+This is the runtime state we track and serialize:
 
 ```rust
-// crates/gsd_config/src/state.rs
+// crates/gsd_config/src/queue_state.rs
 
-use crate::types::StepName;
+use crate::value_schema::Task;
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for a task instance.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct TaskId(u64);
-
-/// Unique identifier for finally-hook tracking (the origin task that spawned descendants).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct OriginId(u64);
-
-/// Number of retry attempts for a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RetryCount(u32);
-
-/// Count of pending descendants for finally-hook tracking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PendingCount(usize);
-
-/// Persistent state for a GSD run.
+/// The task queue state. This is both the runtime state AND the serialization format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunState {
-    /// GSD version that created this state (e.g., "0.1.0").
-    pub gsd_version: String,
-
-    /// Next task ID to assign (ensures unique IDs across resume).
-    pub next_task_id: TaskId,
-
+pub struct QueueState {
     /// Tasks waiting to be processed.
-    pub pending: Vec<PersistedTask>,
-
-    /// Finally tracking state (for resuming mid-fan-out).
-    pub finally_tracking: Vec<PersistedFinallyState>,
+    pub pending: Vec<Task>,
+    /// Tasks that completed successfully (step name + value for debugging).
+    pub completed: Vec<Task>,
 }
 
-/// A task waiting to be processed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedTask {
-    pub id: TaskId,
-    pub step: StepName,
-    pub value: serde_json::Value,
-    pub retries: RetryCount,
-    pub origin_id: Option<OriginId>,
-}
-
-/// State for tracking when a finally hook should run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedFinallyState {
-    pub origin_id: OriginId,
-    pub pending_count: PendingCount,
-    pub original_value: serde_json::Value,
-    pub finally_command: String,
-}
-
-impl RunState {
+impl QueueState {
     pub fn new() -> Self {
         Self {
-            gsd_version: env!("GSD_VERSION").to_string(),
-            next_task_id: TaskId(0),
             pending: Vec::new(),
-            finally_tracking: Vec::new(),
+            completed: Vec::new(),
+        }
+    }
+
+    pub fn from_initial_tasks(tasks: Vec<Task>) -> Self {
+        Self {
+            pending: tasks,
+            completed: Vec::new(),
         }
     }
 }
 ```
 
-The `gsd_version` uses the same `GSD_VERSION` env var that's already set in `build.rs`.
+The existing `Task` type already has everything we need:
+```rust
+pub struct Task {
+    pub step: StepName,
+    pub value: serde_json::Value,
+    pub retries: u32,
+}
+```
+
+## Flow
+
+### Current flow (without persistence)
+
+```
+--initial-state '[...]' or --entrypoint-value '{...}'
+        ↓
+    Vec<Task>
+        ↓
+    TaskRunner::new(initial_tasks)
+        ↓
+    run loop
+```
+
+### New flow (with persistence)
+
+```
+--initial-state '[...]' or --entrypoint-value '{...}' or state.json
+        ↓
+    QueueState { pending: [...], completed: [] }
+        ↓
+    TaskRunner::new(state)
+        ↓
+    run loop (updates state.pending, state.completed)
+        ↓
+    if --state-output: serialize QueueState to file
+```
+
+The key insight: `--initial-state` and `--entrypoint-value` are just ways to construct an initial `QueueState`. A state file is another way. They all produce the same data structure.
+
+## CLI
+
+```bash
+# Normal run - constructs QueueState from initial tasks
+gsd run config.jsonc --pool mypool --initial-state '[{"kind": "Start", "value": {}}]'
+
+# Run with state output - saves QueueState to file on each completion
+gsd run config.jsonc --pool mypool --initial-state '[...]' --state-output /tmp/run.state.json
+
+# Resume from state file - loads QueueState from file
+gsd run config.jsonc --pool mypool --initial-state /tmp/run.state.json
+```
+
+`--initial-state` already detects file vs inline JSON by checking if the path exists.
 
 ## Code Changes
 
-### 1. Add `--state-output` flag to CLI
+### 1. Add QueueState type
 
-**File:** `crates/gsd_cli/src/main.rs`
+**File:** `crates/gsd_config/src/queue_state.rs` (new)
 
 ```rust
-Run {
-    config: String,
-    #[arg(long)]
-    initial_state: Option<String>,
-    #[arg(long)]
-    entrypoint_value: Option<String>,
-    #[arg(long)]
-    pool: Option<String>,
-    #[arg(long)]
-    wake: Option<String>,
-    #[arg(long)]
-    log_file: Option<PathBuf>,
-    /// Write state to this file after each task completion.
-    #[arg(long)]
-    state_output: Option<PathBuf>,
-},
+use crate::value_schema::Task;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueueState {
+    pub pending: Vec<Task>,
+    pub completed: Vec<Task>,
+}
+
+impl QueueState {
+    pub fn from_tasks(tasks: Vec<Task>) -> Self {
+        Self {
+            pending: tasks,
+            completed: Vec::new(),
+        }
+    }
+}
 ```
 
-### 2. Add `state_output` to `RunnerConfig`
+### 2. Modify TaskRunner to use QueueState
 
 **File:** `crates/gsd_config/src/runner.rs`
 
@@ -141,79 +135,22 @@ pub struct RunnerConfig<'a> {
     pub agent_pool_root: &'a Path,
     pub config_base_path: &'a Path,
     pub wake_script: Option<&'a str>,
-    pub initial_tasks: Vec<Task>,
+    pub state: QueueState,  // Changed from initial_tasks: Vec<Task>
     pub invoker: &'a Invoker<AgentPoolCli>,
-    /// If set, write state to this file after each task completion.
     pub state_output: Option<&'a Path>,
 }
 ```
 
-### 3. Add `snapshot()` method to `TaskRunner`
+TaskRunner holds a reference to the state and updates it:
+- When task completes: remove from pending, add to completed
+- `snapshot()` returns clone of current state for serialization
 
-**File:** `crates/gsd_config/src/runner.rs`
-
-```rust
-impl<'a> TaskRunner<'a> {
-    /// Snapshot current state for persistence.
-    pub fn snapshot(&self) -> RunState {
-        RunState {
-            gsd_version: env!("GSD_VERSION").to_string(),
-            next_task_id: TaskId(self.next_task_id),
-            pending: self.queue.iter().map(|q| PersistedTask {
-                id: TaskId(q.id),
-                step: q.task.step.clone(),
-                value: q.task.value.clone(),
-                retries: RetryCount(q.task.retries),
-                origin_id: q.origin_id.map(OriginId),
-            }).collect(),
-            finally_tracking: self.finally_tracking.iter().map(|(id, s)| {
-                PersistedFinallyState {
-                    origin_id: OriginId(*id),
-                    pending_count: PendingCount(s.pending_count),
-                    original_value: s.original_value.clone(),
-                    finally_command: s.finally_command.clone(),
-                }
-            }).collect(),
-        }
-    }
-}
-```
-
-### 4. Write state in `run()` loop
-
-**File:** `crates/gsd_config/src/runner.rs`
-
-```rust
-pub fn run(config: &Config, schemas: &CompiledSchemas, runner_config: RunnerConfig<'_>) -> io::Result<()> {
-    let state_output = runner_config.state_output.map(|p| p.to_path_buf());
-    let mut runner = TaskRunner::new(config, schemas, runner_config)?;
-
-    while let Some(outcome) = runner.next() {
-        // ... existing logging ...
-
-        // Persist state if output path configured
-        if let Some(ref path) = state_output {
-            let state = runner.snapshot();
-            let json = serde_json::to_vec_pretty(&state)?;
-            std::fs::write(path, json)?;
-        }
-    }
-
-    // Delete state file on successful completion
-    if let Some(ref path) = state_output {
-        let _ = std::fs::remove_file(path);
-    }
-
-    // ... rest of function ...
-}
-```
-
-### 5. Modify `parse_initial_tasks` to handle state files
+### 3. Modify parse_initial_tasks to return QueueState
 
 **File:** `crates/gsd_cli/src/main.rs`
 
 ```rust
-fn parse_initial_tasks(initial: &str) -> io::Result<Vec<Task>> {
+fn parse_initial_state(initial: &str) -> io::Result<QueueState> {
     let path = PathBuf::from(initial);
     let content = if path.exists() {
         std::fs::read_to_string(&path)?
@@ -221,57 +158,67 @@ fn parse_initial_tasks(initial: &str) -> io::Result<Vec<Task>> {
         initial.to_string()
     };
 
-    // Try parsing as RunState first (resuming from state file)
-    if let Ok(state) = serde_json::from_str::<RunState>(&content) {
-        return Ok(state.pending.into_iter().map(|p| Task {
-            step: p.step,
-            value: p.value,
-            retries: p.retries.0,
-        }).collect());
+    // Try parsing as QueueState first (resuming from state file)
+    if let Ok(state) = serde_json::from_str::<QueueState>(&content) {
+        return Ok(state);
     }
 
     // Fall back to parsing as Vec<Task> (normal initial state)
-    json5::from_str(&content).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("[E057] invalid initial tasks JSON: {e}"),
-        )
-    })
+    let tasks: Vec<Task> = json5::from_str(&content).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("[E057] invalid JSON: {e}"))
+    })?;
+
+    Ok(QueueState::from_tasks(tasks))
 }
 ```
+
+### 4. Write state in run loop
+
+**File:** `crates/gsd_config/src/runner.rs`
+
+```rust
+pub fn run(...) -> io::Result<()> {
+    let mut runner = TaskRunner::new(config, schemas, runner_config)?;
+
+    while let Some(outcome) = runner.next() {
+        // ... logging ...
+
+        if let Some(path) = runner_config.state_output {
+            let state = runner.state();
+            std::fs::write(path, serde_json::to_vec_pretty(&state)?)?;
+        }
+    }
+
+    // Delete state file on successful completion
+    if let Some(path) = runner_config.state_output {
+        let _ = std::fs::remove_file(path);
+    }
+
+    Ok(())
+}
+```
+
+## What We Don't Track
+
+- **In-flight tasks**: Tasks currently being processed by agents. On resume, these are lost. The agent might complete them, but we'll treat them as not started. This can cause duplicate work but is simpler than tracking in-flight state.
+
+- **Finally hook state**: The `finally_tracking` HashMap. On resume, finally hooks won't fire correctly if we were mid-fan-out. This is a known limitation for v1.
 
 ## Files to Change
 
 | File | Changes |
 |------|---------|
-| `crates/gsd_config/src/state.rs` | **New file** - state types with newtypes |
-| `crates/gsd_config/src/lib.rs` | Export `state` module |
-| `crates/gsd_config/src/runner.rs` | Add `state_output` to config, `snapshot()` method, write in loop |
-| `crates/gsd_cli/src/main.rs` | Add `--state-output` flag, modify `parse_initial_tasks` |
+| `crates/gsd_config/src/queue_state.rs` | **New file** - QueueState type |
+| `crates/gsd_config/src/lib.rs` | Export queue_state module |
+| `crates/gsd_config/src/runner.rs` | Use QueueState in RunnerConfig, track completed |
+| `crates/gsd_cli/src/main.rs` | Add --state-output, modify parsing to return QueueState |
 
 ## Implementation Plan
 
-1. **Add state types** - Create `state.rs` with newtypes
-2. **Add snapshot** - Add `TaskRunner::snapshot()` method
-3. **Add CLI flag** - Add `--state-output` to CLI
-4. **Write state** - Persist after each task in `run()` loop
-5. **Parse state** - Modify `parse_initial_tasks` to handle state files
-6. **Tests** - Integration test: run partially, resume, verify completion
-
-## Future Work (TODO)
-
-Add to `todos.md`:
-
-### Config Hash for Resume Validation
-
-When resuming from a state file, we should validate that the config hasn't changed. This requires:
-
-1. Hash the config content (SHA-256 of normalized JSON)
-2. Store hash in state file
-3. On resume, compare stored hash with current config hash
-4. If mismatch, error with "[E070] config has changed since state was saved"
-
-This is deferred because:
-- Initial implementation works without it
-- Users can manually manage state files
-- Hash calculation needs careful normalization (ignore whitespace, sort keys)
+1. Add `QueueState` type
+2. Modify `RunnerConfig` to take `QueueState` instead of `Vec<Task>`
+3. Update `TaskRunner` to track completed tasks
+4. Add `--state-output` CLI flag
+5. Write state on each completion, delete on success
+6. Modify `parse_initial_state` to handle both formats
+7. Integration test: run partially, resume, verify completion
