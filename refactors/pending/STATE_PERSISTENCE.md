@@ -10,55 +10,60 @@ Long-running GSD jobs can be interrupted (crash, Ctrl+C, OOM). State persistence
 
 ## Core Idea
 
-The state file IS the internal task queue state. Completed tasks are append-only with unique IDs for debugging/tracking.
+A run creates a folder with two files:
+- `config.json` - the fully inlined config (everything needed to run)
+- `tasks.log` - append-only stream of task outcomes
 
-## State Structure
+On resume, replay the log to reconstruct pending tasks. No explicit pending state needed.
+
+## Run Folder Structure
+
+```
+<root>/runs/<pool>/<run-id>/
+├── config.json    # Fully inlined config
+└── tasks.log      # Newline-delimited JSON stream of outcomes
+```
+
+Example: `/tmp/agent_pool/runs/mypool/a3f2c1/`
+
+## Task Log Format
+
+Each line in `tasks.log` is a JSON object with external tagging (serde default):
+
+```json
+{"Completed":{"step":"Analyze","value":{...},"retries_remaining":3,"spawned":[{"kind":"Process","value":{}}]}}
+{"Completed":{"step":"Process","value":{...},"retries_remaining":2,"spawned":[]}}
+{"Failed":{"step":"Validate","value":{...},"retries_remaining":0,"reason":{"Timeout":null}}}
+```
+
+## Data Structures
 
 ```rust
-// crates/gsd_config/src/queue_state.rs
+// crates/gsd_config/src/run_log.rs
 
 use crate::types::StepName;
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for a task instance.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaskId(u64);
-
-/// The task queue state. This is both the runtime state AND the serialization format.
+/// A task input (what gets queued).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueState {
-    /// Counter for generating unique task IDs.
-    next_id: u64,
-    /// Tasks waiting to be processed.
-    pub pending: Vec<PendingTask>,
-    /// Task outcomes (append-only log).
-    pub outcomes: Vec<TaskOutcome>,
-}
-
-/// A task waiting to be processed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingTask {
-    pub id: TaskId,
-    pub step: StepName,
+pub struct TaskInput {
+    pub kind: StepName,
     pub value: serde_json::Value,
-    pub retries_remaining: u32,
 }
 
-/// The outcome of a task (append-only log entry).
+/// The outcome of a task (one line in tasks.log).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskOutcome {
-    /// Task completed successfully and returned next tasks.
+    /// Task completed successfully.
     Completed {
-        id: TaskId,
         step: StepName,
         value: serde_json::Value,
         retries_remaining: u32,
-        /// IDs of tasks spawned by this task's completion.
-        spawned: Vec<TaskId>,
+        /// Tasks spawned by this completion.
+        spawned: Vec<TaskInput>,
     },
     /// Task failed.
     Failed {
-        id: TaskId,
         step: StepName,
         value: serde_json::Value,
         retries_remaining: u32,
@@ -78,138 +83,62 @@ pub enum FailureReason {
     /// Invalid response from agent (couldn't parse).
     InvalidResponse(String),
 }
+```
 
-impl QueueState {
-    pub fn new() -> Self {
-        Self {
-            next_id: 0,
-            pending: Vec::new(),
-            outcomes: Vec::new(),
+## Reconstructing State on Resume
+
+```rust
+fn reconstruct_pending(
+    initial: Vec<TaskInput>,
+    outcomes: &[TaskOutcome],
+) -> Vec<TaskInput> {
+    // Start with initial tasks
+    let mut all_queued: Vec<TaskInput> = initial;
+    let mut completed_count = 0;
+
+    // For each outcome, track what was spawned
+    for outcome in outcomes {
+        completed_count += 1;
+        if let TaskOutcome::Completed { spawned, .. } = outcome {
+            all_queued.extend(spawned.iter().cloned());
         }
     }
 
-    fn next_id(&mut self) -> TaskId {
-        let id = TaskId(self.next_id);
-        self.next_id += 1;
-        id
-    }
-
-    /// Add a task to the pending queue.
-    pub fn enqueue(&mut self, step: StepName, value: serde_json::Value, retries: u32) -> TaskId {
-        let id = self.next_id();
-        self.pending.push(PendingTask {
-            id: id.clone(),
-            step,
-            value,
-            retries_remaining: retries,
-        });
-        id
-    }
-
-    /// Remove a task from pending by ID.
-    fn take(&mut self, id: &TaskId) -> Option<PendingTask> {
-        let pos = self.pending.iter().position(|t| &t.id == id)?;
-        Some(self.pending.remove(pos))
-    }
-
-    /// Mark a task as completed successfully.
-    pub fn complete(&mut self, id: &TaskId, spawned: Vec<TaskId>) {
-        if let Some(task) = self.take(id) {
-            self.outcomes.push(TaskOutcome::Completed {
-                id: task.id,
-                step: task.step,
-                value: task.value,
-                retries_remaining: task.retries_remaining,
-                spawned,
-            });
-        }
-    }
-
-    /// Mark a task as failed.
-    pub fn fail(&mut self, id: &TaskId, reason: FailureReason) {
-        if let Some(task) = self.take(id) {
-            self.outcomes.push(TaskOutcome::Failed {
-                id: task.id,
-                step: task.step,
-                value: task.value,
-                retries_remaining: task.retries_remaining,
-                reason,
-            });
-        }
-    }
+    // Pending = everything queued minus everything completed
+    // (outcomes are in order, so skip first N)
+    all_queued.into_iter().skip(completed_count).collect()
 }
 ```
 
-## State File Location
-
-Default: `<root>/runs/<pool>.<run-id>.json`
-
-Example: `/tmp/agent_pool/runs/mypool.a3f2c1.json`
-
-The run ID is generated at start (short UUID). Multiple runs for the same pool tracked separately.
-
 ## Implementation Phases
 
-### Phase 1: Internal State Representation
-
-Change `TaskRunner` to use `QueueState` internally.
+### Phase 1: Run Folder Creation
 
 **Changes:**
-- Add `QueueState`, `PendingTask`, `TaskOutcome`, `FailureReason`, `TaskId` types
-- Modify `TaskRunner` to own a `QueueState`
-- Replace `VecDeque<QueuedTask>` with iteration over `state.pending`
-- When task completes: call `state.complete(id, spawned_ids)`
-- When task fails: call `state.fail(id, error)`
-- When new tasks spawn: call `state.enqueue(step, value, retries)` for each
+- Add `--log <name>` CLI flag (creates `<root>/runs/<pool>/<name>/`)
+- On startup with `--log`:
+  - Create run folder
+  - Write `config.json` (serialize the parsed config)
+  - Print: `Creating run at <path>. Resume with: gsd run --log <path>`
+- Run folder is deleted on successful completion
 
-**No CLI changes** - internal refactor only. Tests should pass unchanged.
-
-### Phase 2: Deserialize Initial State into QueueState
-
-Make `--initial-state` and `--entrypoint-value` flow through `QueueState`.
+### Phase 2: Task Logging
 
 **Changes:**
-- `RunnerConfig.initial_tasks: Vec<Task>` → `RunnerConfig.state: QueueState`
-- `resolve_initial_tasks()` → `resolve_initial_state()` returning `QueueState`
-- Parse inputs as `Vec<TaskInput>` where `TaskInput = {kind, value}`
-- For each input, look up step config to get retries, call `state.enqueue(step, value, retries)`
+- After each task completes/fails, append `TaskOutcome` to `tasks.log`
+- Use newline-delimited JSON (one object per line)
+- Flush after each write for durability
 
-**Flow:**
-```
---initial-state '[...]' or --entrypoint-value '{...}'
-        ↓
-    Vec<TaskInput>  (just {kind, value})
-        ↓
-    for each: look up step config, call state.enqueue(step, value, retries)
-        ↓
-    TaskRunner::new(state)
-```
-
-### Phase 3: State Serialization/Deserialization
-
-Add `--log` flag and ability to resume from log file.
+### Phase 3: Resume from Log
 
 **Changes:**
-- Add `--log <path>` CLI flag (path to log file in `<root>/runs/`)
-- On startup, print: `Creating log at <path>. Resume with: gsd run config.jsonc --log <path>`
-- After each task completion, serialize `QueueState` to log file
-- Delete log file on successful completion
-- Modify `resolve_initial_state()` to detect and parse `QueueState` directly from log file
+- `--log <path>` can point to existing run folder
+- If `tasks.log` exists, parse and reconstruct pending tasks
+- Continue from where we left off
 
-**Detecting log file vs task array:**
-- If file contains `{"pending": [...], "outcomes": [...]}` → it's a `QueueState` (resume)
-- If file contains `[{"kind": ..., "value": ...}]` → it's a `Vec<TaskInput>` (fresh start)
-
-**Flow for resume:**
-```
---log /tmp/agent_pool/runs/mypool.abc123.json
-        ↓
-    parse file → detect QueueState format
-        ↓
-    TaskRunner::new(state)
-        ↓
-    continue from where we left off
-```
+**Detection:**
+- If `<path>/config.json` exists → it's a run folder (resume)
+- Otherwise → create new run folder
 
 ## CLI
 
@@ -217,12 +146,13 @@ Add `--log` flag and ability to resume from log file.
 # Normal run (no persistence)
 gsd run config.jsonc --pool mypool --initial-state '[{"kind": "Start", "value": {}}]'
 
-# Run with log file for resume capability
-gsd run config.jsonc --pool mypool --initial-state '[...]' --log /tmp/agent_pool/runs/myrun.json
-# Prints: Creating log at /tmp/agent_pool/runs/myrun.json. Resume with: gsd run config.jsonc --log /tmp/agent_pool/runs/myrun.json
+# Run with logging for resume capability
+gsd run config.jsonc --pool mypool --initial-state '[...]' --log myrun
+# Creates: /tmp/agent_pool/runs/mypool/myrun/
+# Prints: Creating run at /tmp/agent_pool/runs/mypool/myrun/. Resume with: gsd run --log /tmp/agent_pool/runs/mypool/myrun/
 
-# Resume from log file
-gsd run config.jsonc --pool mypool --log /tmp/agent_pool/runs/myrun.json
+# Resume from run folder (config is in the folder, no config.jsonc needed)
+gsd run --log /tmp/agent_pool/runs/mypool/myrun/
 ```
 
 ## What We Don't Track (v1)
@@ -234,9 +164,11 @@ gsd run config.jsonc --pool mypool --log /tmp/agent_pool/runs/myrun.json
 
 Add to todos.md:
 
-### List Resume Files
+### List Runs
 
 ```bash
 gsd runs list --root /tmp/agent_pool
-# Shows: mypool.a3f2c1.json (3 pending, 5 completed, 2 failed)
+# Shows:
+# mypool/a3f2c1 (3 pending, 5 completed, 2 failed)
+# mypool/b7d4e2 (0 pending, 12 completed, 0 failed) [complete]
 ```
