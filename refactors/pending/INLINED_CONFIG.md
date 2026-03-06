@@ -1,8 +1,8 @@
 # Inlined Config
 
-**Status:** Not started
+**Status:** Phase 0 complete
 
-**Depends on:** UNIFIED_LINK_FORMAT (complete)
+**Depends on:** UNIFIED_LINK_FORMAT (complete), EXPLICIT_INLINE_FORMAT (complete)
 
 **Blocks:** STATE_PERSISTENCE (config must be fully resolved before serializing)
 
@@ -70,18 +70,23 @@ The main issue is `Instructions::Link` - linked markdown files are read every ti
 
 ## Before/After: Rust Types
 
-### Current (after UNIFIED_LINK_FORMAT)
+### Current (after EXPLICIT_INLINE_FORMAT)
 
 ```rust
+// crates/gsd_config/src/maybe_linked.rs
+
+/// Content that can be inline or linked to a file.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MaybeLinked<T> {
+    Inline { inline: T },
+    Link { link: String },
+}
+
 // crates/gsd_config/src/config.rs
 
-/// Instructions can be inline or linked to a file
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Instructions {
-    Inline(String),
-    Link { link: String },  // Stores path, read at runtime in docs.rs
-}
+/// Instructions - type alias to MaybeLinked<String>
+pub type Instructions = MaybeLinked<String>;
 
 /// Schema can be inline or linked to a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,72 +238,46 @@ impl TaskRunner {
 
 ## Implementation Phases
 
-### Phase 0: Generic MaybeLinked / Inlined Types
+### Phase 0: Generic MaybeLinked Type ✓ COMPLETE
 
-First, introduce generic types to handle the inline-vs-linked pattern.
-
-#### Core Type
+Introduced `MaybeLinked<T>` in EXPLICIT_INLINE_FORMAT refactor.
 
 ```rust
 // crates/gsd_config/src/maybe_linked.rs
 
-use std::path::Path;
-use std::io;
-
-/// Content that may be inline or linked to a file.
-///
-/// Used during config parsing. Call `resolve()` to get the actual value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
 pub enum MaybeLinked<T> {
-    Inline(T),
-    Link(String),
+    Inline { inline: T },
+    Link { link: String },
 }
 ```
+
+`Instructions` is now `type Instructions = MaybeLinked<String>`.
 
 No wrapper type needed - `resolve()` returns `T` directly, and the final config just stores `T`.
 
-#### Serde: Unified Format
+#### Serde: Unified Format ✓ COMPLETE
 
-Standardize: links are always `{"link": "path"}`. This lets us use one generic implementation:
+Using `#[serde(untagged)]` on the enum handles deserialization automatically - no manual impl needed.
 
-```rust
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeLinked<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Helper to check for {"link": "..."}
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum MaybeLink<T> {
-            Link { link: String },
-            Inline(T),
-        }
-
-        match MaybeLink::deserialize(deserializer)? {
-            MaybeLink::Link { link } => Ok(MaybeLinked::Link(link)),
-            MaybeLink::Inline(value) => Ok(MaybeLinked::Inline(value)),
-        }
-    }
-}
-```
-
-**Config format (both Instructions and Schema use same pattern):**
+**Config format (Instructions and Schema):**
 ```jsonc
 {
-  // Inline string
-  "instructions": "Do the thing",
+  // Inline instructions (always explicit object)
+  "instructions": {"inline": "Do the thing"},
   // Or link
   "instructions": {"link": "instructions/step.md"},
 
-  // Inline schema
+  // Inline schema (still accepts bare JSON)
   "value_schema": {"type": "object", "properties": {...}},
   // Or link
   "value_schema": {"link": "schemas/step.json"}
 }
 ```
 
-Both `Instructions` and `SchemaRef` use the `{"link": "path"}` format for links (see UNIFIED_LINK_FORMAT in past/).
+Instructions now require explicit `{"inline": "..."}` (see EXPLICIT_INLINE_FORMAT in past/).
+SchemaRef still accepts bare JSON objects for inline schemas.
 
 #### Resolution
 
