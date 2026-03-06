@@ -8,6 +8,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Default directory name for the pool root.
+const DEFAULT_ROOT_DIR: &str = "agent_pool";
+
 /// Get the default base directory for all pools.
 ///
 /// Uses /tmp explicitly on Unix to ensure atomic writes (which also use /tmp)
@@ -16,11 +19,11 @@ use std::path::{Path, PathBuf};
 pub fn default_pool_root() -> PathBuf {
     #[cfg(unix)]
     {
-        PathBuf::from("/tmp/agent_pool")
+        PathBuf::from("/tmp").join(DEFAULT_ROOT_DIR)
     }
     #[cfg(not(unix))]
     {
-        std::env::temp_dir().join("agent_pool")
+        std::env::temp_dir().join(DEFAULT_ROOT_DIR)
     }
 }
 
