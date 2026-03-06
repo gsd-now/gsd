@@ -28,12 +28,13 @@ Example: `/tmp/agent_pool/runs/mypool/a3f2c1/`
 
 ## Task Log Format
 
-Each line in `tasks.log` is a JSON object with external tagging (serde default):
+Each line in `tasks.log` is a JSON object with internal tagging (`#[serde(tag = "kind")]`):
 
 ```json
-{"Completed":{"step":"Analyze","value":{...},"retries_remaining":3,"spawned":[{"kind":"Process","value":{}}]}}
-{"Completed":{"step":"Process","value":{...},"retries_remaining":2,"spawned":[]}}
-{"Failed":{"step":"Validate","value":{...},"retries_remaining":0,"reason":{"Timeout":null}}}
+{"kind":"Completed","step":"Analyze","value":{...},"retries_remaining":3,"spawned":[{"kind":"Process","value":{}}]}
+{"kind":"Completed","step":"Process","value":{...},"retries_remaining":2,"spawned":[]}
+{"kind":"Failed","step":"Validate","value":{...},"retries_remaining":0,"reason":{"kind":"Timeout"}}
+{"kind":"Failed","step":"Validate","value":{...},"retries_remaining":0,"reason":{"kind":"Error","message":"agent crashed"}}
 ```
 
 ## Data Structures
@@ -53,6 +54,7 @@ pub struct TaskInput {
 
 /// The outcome of a task (one line in tasks.log).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum TaskOutcome {
     /// Task completed successfully.
     Completed {
@@ -73,15 +75,16 @@ pub enum TaskOutcome {
 
 /// Why a task failed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum FailureReason {
     /// Agent returned an error response.
-    Error(String),
+    Error { message: String },
     /// Task timed out waiting for agent response.
     Timeout,
     /// Agent disconnected/crashed during task execution.
     AgentLost,
     /// Invalid response from agent (couldn't parse).
-    InvalidResponse(String),
+    InvalidResponse { message: String },
 }
 ```
 
