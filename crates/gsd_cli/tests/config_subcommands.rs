@@ -494,3 +494,67 @@ fn validate_cycle_is_allowed() {
 
     assert!(result.status.success(), "Self-loop should be valid");
 }
+
+// =============================================================================
+// Entrypoint validation
+// =============================================================================
+
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+fn validate_valid_entrypoint() {
+    let config = r#"{
+        "entrypoint": "Start",
+        "steps": [{"name": "Start", "next": []}]
+    }"#;
+
+    let gsd = GsdRunner::new();
+    let result = gsd.validate(config).expect("validate");
+
+    assert!(result.status.success(), "Valid entrypoint should pass");
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+fn validate_invalid_entrypoint_fails() {
+    let config = r#"{
+        "entrypoint": "NonExistent",
+        "steps": [{"name": "Start", "next": []}]
+    }"#;
+
+    let gsd = GsdRunner::new();
+    let result = gsd.validate(config).expect("validate");
+
+    assert!(
+        !result.status.success(),
+        "Invalid entrypoint should fail validation"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("NonExistent") || stderr.contains("entrypoint"),
+        "Error should mention invalid entrypoint"
+    );
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(5))]
+fn validate_entrypoint_with_schema() {
+    let config = r#"{
+        "entrypoint": "Start",
+        "steps": [{
+            "name": "Start",
+            "value_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}}
+            },
+            "next": []
+        }]
+    }"#;
+
+    let gsd = GsdRunner::new();
+    let result = gsd.validate(config).expect("validate");
+
+    assert!(
+        result.status.success(),
+        "Entrypoint with schema should be valid"
+    );
+}
