@@ -26,8 +26,8 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 {"kind":"TaskSubmitted","task_id":2,"step":"Analyze","value":{...},"origin_id":null}
 {"kind":"TaskCompleted","task_id":1,"outcome":{"kind":"Success","new_task_ids":[3]}}
 {"kind":"TaskSubmitted","task_id":3,"step":"Process","value":{...},"origin_id":1}
-{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed"}}
-{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed"}}
+{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","reason":{"kind":"Timeout"}}}
+{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","reason":{"kind":"InvalidResponse","message":"parse error"}}}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Success","new_task_ids":[]}}
 ```
 
@@ -37,7 +37,11 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 use serde::{Deserialize, Serialize};
 use crate::resolved::Config;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LogTaskId(pub u64);
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StateLogEntry {
     Config(StateLogConfig),
@@ -45,44 +49,52 @@ pub enum StateLogEntry {
     TaskCompleted(TaskCompleted),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StateLogConfig {
     pub config: Config,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSubmitted {
-    pub task_id: u64,
+    pub task_id: LogTaskId,
     pub step: String,
     pub value: serde_json::Value,
-    pub origin_id: Option<u64>,
+    pub origin_id: Option<LogTaskId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskCompleted {
-    pub task_id: u64,
+    pub task_id: LogTaskId,
     pub outcome: TaskOutcome,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum TaskOutcome {
     Success(TaskSuccess),
     Failed(TaskFailed),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSuccess {
-    pub new_task_ids: Vec<u64>,
+    pub new_task_ids: Vec<LogTaskId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskFailed {}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskFailed {
+    pub reason: FailureReason,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum FailureReason {
+    Timeout,
+    AgentLost,
+    InvalidResponse { message: String },
+}
 ```
 
 ## Writing/Reading
-
-Just functions, no wrapper classes:
 
 ```rust
 fn write_entry(file: &mut File, entry: &StateLogEntry) -> io::Result<()> {
@@ -99,7 +111,7 @@ fn read_entries(file: File) -> impl Iterator<Item = io::Result<StateLogEntry>> {
 }
 ```
 
-Validation (config first, config once) happens at the call site, not baked into read/write.
+Validation (config first, config once) happens at the call site.
 
 ## Reconstructing State on Resume
 
@@ -109,9 +121,9 @@ struct PendingTask {
     failure_count: u32,
 }
 
-fn reconstruct(entries: Vec<StateLogEntry>) -> Result<(Config, HashMap<u64, PendingTask>), Error> {
+fn reconstruct(entries: Vec<StateLogEntry>) -> Result<(Config, HashMap<LogTaskId, PendingTask>), Error> {
     let mut config: Option<Config> = None;
-    let mut pending: HashMap<u64, PendingTask> = HashMap::new();
+    let mut pending: HashMap<LogTaskId, PendingTask> = HashMap::new();
 
     for entry in entries {
         match entry {
