@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level GSD configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// JSON Schema reference for editor validation (ignored at runtime).
@@ -72,7 +72,7 @@ const fn default_true() -> bool {
 }
 
 /// A step in the task queue.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
     /// Step name (e.g., `Analyze`, `Implement`).
@@ -132,7 +132,7 @@ pub struct Step {
 }
 
 /// How a step processes tasks.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind")]
 pub enum Action {
     /// Send to the agent pool for processing.
@@ -235,7 +235,7 @@ pub enum SchemaRef {
 }
 
 /// Markdown instructions content.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct Instructions(pub String);
 

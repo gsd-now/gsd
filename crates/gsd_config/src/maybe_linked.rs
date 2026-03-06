@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// In config files:
 /// - `{"inline": <value>}` → inline content
 /// - `{"link": "path"}` → link to file
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum MaybeLinked<T> {
     /// Inline content.
