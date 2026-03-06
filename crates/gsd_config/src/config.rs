@@ -237,45 +237,9 @@ pub enum SchemaRef {
 /// Markdown instructions (inline or external file).
 ///
 /// In config files:
-/// - String → inline markdown
+/// - `{"inline": "text"}` → inline markdown
 /// - `{"link": "path"}` → link to markdown file
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Instructions {
-    /// Inline markdown text.
-    Inline(String),
-    /// Link to a markdown file.
-    Link {
-        /// Path to the markdown file.
-        link: String,
-    },
-}
-
-impl Default for Instructions {
-    fn default() -> Self {
-        Self::Inline(String::new())
-    }
-}
-
-impl Instructions {
-    /// Get the inline string if this is inline instructions.
-    #[must_use]
-    pub fn as_inline(&self) -> Option<&str> {
-        match self {
-            Self::Inline(s) => Some(s),
-            Self::Link { .. } => None,
-        }
-    }
-
-    /// Get the link path if this is a link.
-    #[must_use]
-    pub fn as_link(&self) -> Option<&str> {
-        match self {
-            Self::Inline(_) => None,
-            Self::Link { link } => Some(link),
-        }
-    }
-}
+pub type Instructions = crate::maybe_linked::MaybeLinked<String>;
 
 impl Config {
     /// Build a map of step name to step for efficient lookup.
@@ -422,7 +386,7 @@ mod tests {
                 {
                     "name": "Analyze",
                     "value_schema": {"type": "object"},
-                    "action": {"kind": "Pool", "instructions": "Analyze the input."},
+                    "action": {"kind": "Pool", "instructions": {"inline": "Analyze the input."}},
                     "next": ["Done"]
                 },
                 {
@@ -559,7 +523,7 @@ mod tests {
         let json = r#"{
             "steps": [{
                 "name": "Test",
-                "action": {"kind": "Pool", "instructions": "Inline markdown here."},
+                "action": {"kind": "Pool", "instructions": {"inline": "Inline markdown here."}},
                 "next": []
             }]
         }"#;
@@ -567,7 +531,7 @@ mod tests {
         let config: Config = serde_json::from_str(json).expect("parse failed");
         assert!(matches!(
             &config.steps[0].action,
-            Action::Pool { instructions: Instructions::Inline(s) } if s == "Inline markdown here."
+            Action::Pool { instructions: Instructions::Inline { inline } } if inline == "Inline markdown here."
         ));
     }
 

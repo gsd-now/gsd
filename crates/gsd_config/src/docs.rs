@@ -13,8 +13,8 @@ fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
         return;
     };
     match instructions {
-        Instructions::Inline(text) if !text.is_empty() => {
-            writeln!(doc, "{text}").ok();
+        Instructions::Inline { inline } if !inline.is_empty() => {
+            writeln!(doc, "{inline}").ok();
             writeln!(doc).ok();
         }
         Instructions::Link { link } => {
@@ -31,7 +31,7 @@ fn write_instructions(doc: &mut String, action: &Action, base_path: &Path) {
                 }
             }
         }
-        Instructions::Inline(_) => {}
+        Instructions::Inline { .. } => {}
     }
 }
 
@@ -189,7 +189,7 @@ mod tests {
         let config: Config = serde_json::from_str(
             r#"{
             "steps": [
-                {"name": "Start", "action": {"kind": "Pool", "instructions": "Begin here."}, "next": ["End"]},
+                {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Begin here."}}, "next": ["End"]},
                 {"name": "End", "next": []}
             ]
         }"#,
@@ -224,7 +224,7 @@ mod tests {
             r#"{
             "options": {"timeout": 60, "max_retries": 2},
             "steps": [
-                {"name": "Start", "action": {"kind": "Pool", "instructions": "Begin."}, "next": ["End"]},
+                {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Begin."}}, "next": ["End"]},
                 {"name": "End", "next": []}
             ]
         }"#,

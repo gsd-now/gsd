@@ -14,7 +14,7 @@
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Make a decision. Choose either PathA or PathB.\n\nReturn one of:\n- `[{\"kind\": \"PathA\", \"value\": {}}]`\n- `[{\"kind\": \"PathB\", \"value\": {}}]`"
+        "instructions": {"inline": "Make a decision. Choose either PathA or PathB.\n\nReturn one of:\n- `[{\"kind\": \"PathA\", \"value\": {}}]`\n- `[{\"kind\": \"PathB\", \"value\": {}}]`"}
       },
       "next": ["PathA", "PathB"]
     },
@@ -27,7 +27,7 @@
       },
       "action": {
         "kind": "Pool",
-        "instructions": "You chose path A. Proceed to Done.\n\nReturn: `[{\"kind\": \"Done\", \"value\": {}}]`"
+        "instructions": {"inline": "You chose path A. Proceed to Done.\n\nReturn: `[{\"kind\": \"Done\", \"value\": {}}]`"}
       },
       "next": ["Done"]
     },
@@ -40,7 +40,7 @@
       },
       "action": {
         "kind": "Pool",
-        "instructions": "You chose path B. Proceed to Done.\n\nReturn: `[{\"kind\": \"Done\", \"value\": {}}]`"
+        "instructions": {"inline": "You chose path B. Proceed to Done.\n\nReturn: `[{\"kind\": \"Done\", \"value\": {}}]`"}
       },
       "next": ["Done"]
     },
@@ -53,7 +53,7 @@
       },
       "action": {
         "kind": "Pool",
-        "instructions": "All done. Return an empty array.\n\nReturn: `[]`"
+        "instructions": {"inline": "All done. Return an empty array.\n\nReturn: `[]`"}
       },
       "next": []
     }

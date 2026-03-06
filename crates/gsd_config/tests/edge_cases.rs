@@ -38,7 +38,7 @@ fn empty_initial_tasks_completes() {
     let config: Config = serde_json::from_str(
         r#"{
             "steps": [
-                {"name": "Start", "action": {"kind": "Pool", "instructions": ""}, "next": []}
+                {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
             ]
         }"#,
     )
@@ -119,7 +119,7 @@ fn unknown_initial_step_skipped() {
     let config: Config = serde_json::from_str(
         r#"{
             "steps": [
-                {"name": "Known", "action": {"kind": "Pool", "instructions": ""}, "next": []}
+                {"name": "Known", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
             ]
         }"#,
     )
@@ -178,7 +178,7 @@ fn invalid_value_schema_skipped() {
                         "required": ["name"],
                         "properties": {"name": {"type": "string"}}
                     },
-                    "action": {"kind": "Pool", "instructions": ""},
+                    "action": {"kind": "Pool", "instructions": {"inline": ""}},
                     "next": []
                 }
             ]
@@ -249,8 +249,8 @@ fn large_fan_out() {
     let config: Config = serde_json::from_str(
         r#"{
             "steps": [
-                {"name": "Distribute", "action": {"kind": "Pool", "instructions": ""}, "next": ["Worker"]},
-                {"name": "Worker", "action": {"kind": "Pool", "instructions": ""}, "next": []}
+                {"name": "Distribute", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": ["Worker"]},
+                {"name": "Worker", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
             ]
         }"#,
     )
@@ -340,7 +340,7 @@ fn rapid_task_completion() {
     let config: Config = serde_json::from_str(
         r#"{
             "steps": [
-                {"name": "Fast", "action": {"kind": "Pool", "instructions": ""}, "next": []}
+                {"name": "Fast", "action": {"kind": "Pool", "instructions": {"inline": ""}}, "next": []}
             ]
         }"#,
     )

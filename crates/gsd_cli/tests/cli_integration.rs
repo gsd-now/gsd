@@ -48,7 +48,7 @@ fn single_step_terminates() {
     let config = r#"{
         "steps": [{
             "name": "Start",
-            "action": {"kind": "Pool", "instructions": "Start step"},
+            "action": {"kind": "Pool", "instructions": {"inline": "Start step"}},
             "next": []
         }]
     }"#;
@@ -103,9 +103,9 @@ fn multi_stage_linear() {
 
     let config = r#"{
         "steps": [
-            {"name": "Start", "action": {"kind": "Pool", "instructions": "Start"}, "next": ["Middle"]},
-            {"name": "Middle", "action": {"kind": "Pool", "instructions": "Middle"}, "next": ["End"]},
-            {"name": "End", "action": {"kind": "Pool", "instructions": "End"}, "next": []}
+            {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Start"}}, "next": ["Middle"]},
+            {"name": "Middle", "action": {"kind": "Pool", "instructions": {"inline": "Middle"}}, "next": ["End"]},
+            {"name": "End", "action": {"kind": "Pool", "instructions": {"inline": "End"}}, "next": []}
         ]
     }"#;
 
@@ -152,7 +152,7 @@ fn empty_initial_tasks_succeeds() {
     let config = r#"{
         "steps": [{
             "name": "Start",
-            "action": {"kind": "Pool", "instructions": "Start"},
+            "action": {"kind": "Pool", "instructions": {"inline": "Start"}},
             "next": []
         }]
     }"#;
@@ -177,8 +177,8 @@ fn empty_initial_tasks_succeeds() {
 fn validate_valid_config() {
     let config = r#"{
         "steps": [
-            {"name": "A", "action": {"kind": "Pool", "instructions": "A"}, "next": ["B"]},
-            {"name": "B", "action": {"kind": "Pool", "instructions": "B"}, "next": []}
+            {"name": "A", "action": {"kind": "Pool", "instructions": {"inline": "A"}}, "next": ["B"]},
+            {"name": "B", "action": {"kind": "Pool", "instructions": {"inline": "B"}}, "next": []}
         ]
     }"#;
 
@@ -195,7 +195,7 @@ fn validate_valid_config() {
 fn validate_invalid_config_missing_step() {
     let config = r#"{
         "steps": [
-            {"name": "A", "action": {"kind": "Pool", "instructions": "A"}, "next": ["NonExistent"]}
+            {"name": "A", "action": {"kind": "Pool", "instructions": {"inline": "A"}}, "next": ["NonExistent"]}
         ]
     }"#;
 
@@ -210,7 +210,7 @@ fn validate_invalid_config_missing_step() {
 fn docs_generates_markdown() {
     let config = r#"{
         "steps": [
-            {"name": "Start", "action": {"kind": "Pool", "instructions": "Do something"}, "next": []}
+            {"name": "Start", "action": {"kind": "Pool", "instructions": {"inline": "Do something"}}, "next": []}
         ]
     }"#;
 
@@ -227,8 +227,8 @@ fn docs_generates_markdown() {
 fn graph_generates_dot() {
     let config = r#"{
         "steps": [
-            {"name": "A", "action": {"kind": "Pool", "instructions": "A"}, "next": ["B"]},
-            {"name": "B", "action": {"kind": "Pool", "instructions": "B"}, "next": []}
+            {"name": "A", "action": {"kind": "Pool", "instructions": {"inline": "A"}}, "next": ["B"]},
+            {"name": "B", "action": {"kind": "Pool", "instructions": {"inline": "B"}}, "next": []}
         ]
     }"#;
 
@@ -268,7 +268,7 @@ fn config_from_file() {
         r#"{
             "steps": [{
                 "name": "FileStep",
-                "action": {"kind": "Pool", "instructions": "From file"},
+                "action": {"kind": "Pool", "instructions": {"inline": "From file"}},
                 "next": []
             }]
         }"#,

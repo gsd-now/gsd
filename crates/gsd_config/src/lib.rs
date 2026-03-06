@@ -19,13 +19,15 @@
 
 pub mod config;
 mod docs;
+pub mod maybe_linked;
 mod runner;
 mod types;
 mod value_schema;
 
 // Public API - only what external users need
-pub use config::{Action, Config, config_schema};
+pub use config::{Action, Config, Instructions, config_schema};
 pub use docs::generate_full_docs;
+pub use maybe_linked::MaybeLinked;
 pub use runner::{RunnerConfig, TaskOutcome, TaskResult, TaskRunner, run};
 pub use types::StepName;
 pub use value_schema::{CompiledSchemas, Task};
