@@ -989,16 +989,22 @@ fn submit_via_cli(
     payload: &str,
     invoker: &Invoker<AgentPoolCli>,
 ) -> io::Result<Response> {
-    // Extract pool_root (parent) and pool_id (basename) from full path
-    let pool_root = pool_path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "[E014] invalid pool path (no parent): {}",
-                pool_path.display()
-            ),
-        )
-    })?;
+    // Extract root (grandparent) and pool_id (basename) from full path
+    // pool_path is like /tmp/root/pools/demo
+    // We need root=/tmp/root (grandparent) and pool_id=demo (basename)
+    // because --root expects the root without pools/, and adds pools/ internally
+    let root = pool_path
+        .parent() // /tmp/root/pools
+        .and_then(|p| p.parent()) // /tmp/root
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "[E014] invalid pool path (need grandparent): {}",
+                    pool_path.display()
+                ),
+            )
+        })?;
     let pool_id = pool_path
         .file_name()
         .and_then(|s| s.to_str())
@@ -1016,7 +1022,7 @@ fn submit_via_cli(
     let output = invoker.run([
         "submit_task",
         "--root",
-        pool_root.to_str().unwrap_or("."),
+        root.to_str().unwrap_or("."),
         "--pool",
         pool_id,
         "--notify",
@@ -1030,9 +1036,9 @@ fn submit_via_cli(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!(
-            "[E016] agent_pool submit_task failed\n  invoker: {}\n  pool_root: {}\n  pool: {}\n  error: {}",
+            "[E016] agent_pool submit_task failed\n  invoker: {}\n  root: {}\n  pool: {}\n  error: {}",
             invoker.description(),
-            pool_root.display(),
+            root.display(),
             pool_id,
             stderr.trim()
         )));
