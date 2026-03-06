@@ -2,6 +2,8 @@
 
 **Status:** Not started
 
+**Depends on:** ROOT_FLAG_REFACTOR (state files will live under `--root/state/`)
+
 ## Motivation
 
 Long-running GSD jobs can be interrupted (crash, Ctrl+C, OOM). State persistence enables resuming from where you left off.
