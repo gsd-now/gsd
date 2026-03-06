@@ -313,10 +313,18 @@ pub fn create_test_invoker() -> Invoker<AgentPoolCli> {
 ///
 /// Automatically shuts down the daemon when dropped.
 pub struct AgentPoolHandle {
+    /// The actual pool path (includes pools/ subdirectory)
     root: PathBuf,
     process: Option<Child>,
     /// Handles for threads forwarding stdout/stderr (so they get captured by tests)
     _output_threads: Vec<thread::JoinHandle<()>>,
+}
+
+impl AgentPoolHandle {
+    /// Get the actual pool path (includes pools/ subdirectory).
+    pub fn pool_path(&self) -> &Path {
+        &self.root
+    }
 }
 
 impl AgentPoolHandle {

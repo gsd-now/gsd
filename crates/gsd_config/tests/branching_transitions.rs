@@ -60,7 +60,7 @@ fn branch_to_path_a() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
         Duration::from_millis(10),
@@ -72,7 +72,7 @@ fn branch_to_path_a() {
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],
@@ -106,7 +106,7 @@ fn branch_to_path_b() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
         Duration::from_millis(10),
@@ -118,7 +118,7 @@ fn branch_to_path_b() {
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],
@@ -152,7 +152,7 @@ fn fan_out_multiple_tasks() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent that fans out: Decide -> [PathA, PathB]
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -178,7 +178,7 @@ fn fan_out_multiple_tasks() {
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Decide", serde_json::json!({}))],

@@ -31,7 +31,7 @@ fn empty_initial_tasks_completes() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // No sleep needed - pool is ready after start() returns, and no tasks means no agent needed
 
@@ -46,7 +46,7 @@ fn empty_initial_tasks_completes() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![], // Empty!
@@ -71,7 +71,7 @@ fn empty_runner_is_empty() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // No sleep needed - pool is ready after start() returns, and no tasks means no agent needed
 
@@ -80,7 +80,7 @@ fn empty_runner_is_empty() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![],
@@ -111,7 +111,7 @@ fn unknown_initial_step_skipped() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -127,7 +127,7 @@ fn unknown_initial_step_skipped() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![
@@ -155,7 +155,7 @@ fn invalid_value_schema_skipped() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -188,7 +188,7 @@ fn invalid_value_schema_skipped() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![
@@ -222,7 +222,7 @@ fn large_fan_out() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let task_count = Arc::new(AtomicUsize::new(0));
     let count_clone = task_count.clone();
@@ -258,7 +258,7 @@ fn large_fan_out() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Distribute", serde_json::json!({}))],
@@ -284,6 +284,7 @@ fn command_action_executes() {
     let root = setup_test_dir(&format!("{TEST_DIR}_command"));
 
     // Command action doesn't need IPC - it runs locally
+    // No pool needed since we're only using Command actions
     let config: Config = serde_json::from_str(
         r#"{
             "steps": [
@@ -329,7 +330,7 @@ fn rapid_task_completion() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent with minimal delay (zero can cause races)
     let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(1));
@@ -353,7 +354,7 @@ fn rapid_task_completion() {
         .collect();
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks,
@@ -377,7 +378,7 @@ fn pending_count_accurate() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(50));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -387,7 +388,7 @@ fn pending_count_accurate() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![

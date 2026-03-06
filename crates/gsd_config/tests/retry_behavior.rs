@@ -34,7 +34,7 @@ fn retry_on_invalid_response_false_drops_task() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -72,7 +72,7 @@ fn retry_on_invalid_response_false_drops_task() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -105,7 +105,7 @@ fn retry_on_invalid_response_true_retries() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -142,7 +142,7 @@ fn retry_on_invalid_response_true_retries() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -175,7 +175,7 @@ fn malformed_json_triggers_retry() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -207,7 +207,7 @@ fn malformed_json_triggers_retry() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -240,7 +240,7 @@ fn per_step_options_override_global() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -282,7 +282,7 @@ fn per_step_options_override_global() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("NoRetryStep", serde_json::json!({}))],
@@ -315,7 +315,7 @@ fn recovery_on_nth_attempt() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -353,7 +353,7 @@ fn recovery_on_nth_attempt() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -384,7 +384,7 @@ fn max_retries_zero_no_retries() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let count_clone = call_count.clone();
@@ -415,7 +415,7 @@ fn max_retries_zero_no_retries() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],

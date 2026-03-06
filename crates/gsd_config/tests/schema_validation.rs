@@ -62,7 +62,7 @@ fn valid_schema_passes() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent returns valid Output schema for Input, empty for Output
     let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |payload| {
@@ -79,7 +79,7 @@ fn valid_schema_passes() {
     let config = config_with_schema();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Input", serde_json::json!({"count": 5}))],
@@ -106,7 +106,7 @@ fn invalid_initial_task_skipped() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -114,7 +114,7 @@ fn invalid_initial_task_skipped() {
     let config = config_with_schema();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         // Missing required "count" field
@@ -142,7 +142,7 @@ fn invalid_response_causes_retry() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent returns invalid Output schema (missing "result")
     let agent = GsdTestAgent::start(&root, Duration::from_millis(50), |_| {
@@ -179,7 +179,7 @@ fn invalid_response_causes_retry() {
 
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Input", serde_json::json!({}))],

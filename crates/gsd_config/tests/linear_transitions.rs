@@ -53,7 +53,7 @@ fn three_step_linear_machine() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::with_transitions(
         &root,
         Duration::from_millis(10),
@@ -66,7 +66,7 @@ fn three_step_linear_machine() {
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let invoker = create_test_invoker();
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -102,7 +102,7 @@ fn instructions_included_in_payload() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -111,7 +111,7 @@ fn instructions_included_in_payload() {
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let invoker = create_test_invoker();
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],

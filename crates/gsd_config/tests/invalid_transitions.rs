@@ -58,7 +58,7 @@ fn invalid_transition_causes_retry() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent tries to skip from Start directly to End (invalid)
     let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |_| {
@@ -70,7 +70,7 @@ fn invalid_transition_causes_retry() {
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -99,7 +99,7 @@ fn unknown_step_causes_retry() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent returns a step that doesn't exist
     let agent = GsdTestAgent::start(&root, Duration::from_millis(10), |_| {
@@ -111,7 +111,7 @@ fn unknown_step_causes_retry() {
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -140,7 +140,7 @@ fn recovery_after_invalid_then_valid() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Agent that fails first, then succeeds
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -171,7 +171,7 @@ fn recovery_after_invalid_then_valid() {
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],

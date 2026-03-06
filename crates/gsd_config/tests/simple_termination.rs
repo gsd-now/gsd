@@ -42,7 +42,7 @@ fn single_step_terminates() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -51,7 +51,7 @@ fn single_step_terminates() {
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let invoker = create_test_invoker();
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
@@ -76,6 +76,7 @@ fn empty_initial_tasks_does_nothing() {
     let root = setup_test_dir(&format!("{TEST_DIR}_empty"));
 
     // No IPC needed - we're not even starting the pool
+    // With no initial tasks, the runner completes immediately without connecting to the pool
     let config = simple_config();
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
     let invoker = create_test_invoker();

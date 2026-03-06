@@ -55,7 +55,7 @@ fn tasks_execute_in_parallel() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Start 3 agents with 100ms processing delay
     let processing_delay = Duration::from_millis(100);
@@ -73,7 +73,7 @@ fn tasks_execute_in_parallel() {
         .collect();
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks,
@@ -107,7 +107,7 @@ fn work_distributed_across_agents() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Track which agents processed tasks
     let agent1_count = Arc::new(AtomicUsize::new(0));
@@ -142,7 +142,7 @@ fn work_distributed_across_agents() {
         .collect();
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks,
@@ -183,7 +183,7 @@ fn max_concurrency_limits_parallel_tasks() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     // Track concurrent task count
     let concurrent = Arc::new(AtomicUsize::new(0));
@@ -240,7 +240,7 @@ fn max_concurrency_limits_parallel_tasks() {
         .collect();
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks,
@@ -272,7 +272,7 @@ fn task_runner_yields_results_incrementally() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -285,7 +285,7 @@ fn task_runner_yields_results_incrementally() {
         .collect();
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks,
@@ -317,7 +317,7 @@ fn task_runner_is_empty_status() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
     let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
 
     // Wait for agent to be ready (has processed initial heartbeat)
@@ -326,7 +326,7 @@ fn task_runner_is_empty_status() {
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Worker", serde_json::json!({}))],
@@ -357,7 +357,7 @@ fn nested_fan_out() {
         return;
     }
 
-    let _pool = AgentPoolHandle::start(&root);
+    let pool = AgentPoolHandle::start(&root);
 
     let processed_kinds = Arc::new(std::sync::Mutex::new(Vec::new()));
     let kinds_clone = processed_kinds.clone();
@@ -400,7 +400,7 @@ fn nested_fan_out() {
     let schemas = CompiledSchemas::compile(&config, Path::new(".")).expect("compile schemas");
 
     let runner_config = RunnerConfig {
-        agent_pool_root: &root,
+        agent_pool_root: pool.pool_path(),
         config_base_path: Path::new("."),
         wake_script: None,
         initial_tasks: vec![Task::new("Root", serde_json::json!({}))],
