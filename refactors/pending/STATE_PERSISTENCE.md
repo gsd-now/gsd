@@ -195,7 +195,7 @@ gsd run --resume-from /tmp/old.ndjson --state-log /tmp/new.ndjson
 gsd run --resume-from /tmp/run.ndjson --state-log /tmp/run.ndjson  # panic!
 ```
 
-`--resume-from` is incompatible with config file and `--initial-state` (error if both provided).
+`--resume-from` is incompatible with config file, `--initial-state`, and `--entrypoint-value` (panic if any combination provided).
 
 ## Implementation Phases
 
