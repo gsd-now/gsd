@@ -24,11 +24,11 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 {"kind":"Config","config":{...}}
 {"kind":"TaskSubmitted","task_id":1,"step":"Analyze","value":{...},"origin_id":null}
 {"kind":"TaskSubmitted","task_id":2,"step":"Analyze","value":{...},"origin_id":null}
-{"kind":"TaskCompleted","task_id":1,"outcome":{"kind":"Success","new_task_ids":[3]}}
+{"kind":"TaskCompleted","task_id":1,"outcome":{"kind":"Success","value":{"new_task_ids":[3]}}}
 {"kind":"TaskSubmitted","task_id":3,"step":"Process","value":{...},"origin_id":1}
-{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","reason":{"kind":"Timeout"}}}
-{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","reason":{"kind":"InvalidResponse","message":"parse error"}}}
-{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Success","new_task_ids":[]}}
+{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"Timeout"}}}
+{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"InvalidResponse","message":"parse error"}}}
+{"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Success","value":{"new_task_ids":[]}}}
 ```
 
 ## Data Structures
@@ -69,20 +69,15 @@ pub struct TaskCompleted {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", content = "value")]
 pub enum TaskOutcome {
     Success(TaskSuccess),
-    Failed(TaskFailed),
+    Failed(FailureReason),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskSuccess {
     pub new_task_ids: Vec<LogTaskId>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TaskFailed {
-    pub reason: FailureReason,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
