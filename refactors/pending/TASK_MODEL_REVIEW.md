@@ -101,8 +101,9 @@ What primitives do build systems have? Which translate to GSD?
 
 **Depset / Accumulation**
 - Buck: depsets accumulate values up the tree
-- GSD: no equivalent. Finally gets parent's value, not children's results
-- Could be useful: "aggregate all results from my subtree"
+- GSD currently: no equivalent. Finally gets parent's value, not children's results
+- After FINALLY_TRACKING refactor: tree-based tracking enables collecting child results
+- Could pass to after task: `{ parent_value: ..., child_results: [...] }`
 
 **Explicit Dependencies**
 - Buck: target declares what it depends on
