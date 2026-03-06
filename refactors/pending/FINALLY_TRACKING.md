@@ -2,7 +2,7 @@
 
 **Status:** Not started
 
-**Blocks:** STATE_PERSISTENCE
+**Blocks:** FINALLY_SCHEDULING
 
 ## Motivation
 

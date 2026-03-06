@@ -2,7 +2,7 @@
 
 **Status:** Not started
 
-**Depends on:** ROOT_FLAG_REFACTOR (complete), INLINED_CONFIG (complete), FINALLY_TRACKING
+**Depends on:** ROOT_FLAG_REFACTOR (complete), INLINED_CONFIG (complete), FINALLY_SCHEDULING
 
 ## Motivation
 
