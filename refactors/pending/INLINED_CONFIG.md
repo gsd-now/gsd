@@ -255,51 +255,48 @@ pub enum MaybeLinked<T> {
 
 No wrapper type needed - `resolve()` returns `T` directly, and the final config just stores `T`.
 
-#### Serde Strategies
+#### Serde: Unified Format
 
-Different `MaybeLinked<T>` need different serde implementations:
+Standardize: links are always `{"link": "path"}`. This lets us use one generic implementation:
 
-**1. String-or-object (for Instructions):**
 ```rust
-// "some text" OR {"link": "path/to/file.md"}
-
-impl<'de> Deserialize<'de> for MaybeLinked<String> {
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeLinked<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
+        // Helper to check for {"link": "..."}
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum StringOrLink {
-            Inline(String),
+        enum MaybeLink<T> {
             Link { link: String },
+            Inline(T),
         }
 
-        match StringOrLink::deserialize(deserializer)? {
-            StringOrLink::Inline(s) => Ok(MaybeLinked::Inline(s)),
-            StringOrLink::Link { link } => Ok(MaybeLinked::Link(link)),
-        }
-    }
-}
-```
-
-**2. Value-or-string (for Schema):**
-```rust
-// {"type": "object", ...} OR "path/to/schema.json"
-
-impl<'de> Deserialize<'de> for MaybeLinked<serde_json::Value> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::String(path) => Ok(MaybeLinked::Link(path)),
-            other => Ok(MaybeLinked::Inline(other)),
+        match MaybeLink::deserialize(deserializer)? {
+            MaybeLink::Link { link } => Ok(MaybeLinked::Link(link)),
+            MaybeLink::Inline(value) => Ok(MaybeLinked::Inline(value)),
         }
     }
 }
 ```
+
+**Config format (both Instructions and Schema use same pattern):**
+```jsonc
+{
+  // Inline string
+  "instructions": "Do the thing",
+  // Or link
+  "instructions": {"link": "instructions/step.md"},
+
+  // Inline schema
+  "value_schema": {"type": "object", "properties": {...}},
+  // Or link (NOW uses {"link": ...} instead of bare string)
+  "value_schema": {"link": "schemas/step.json"}
+}
+```
+
+**Breaking change:** Schema links change from `"path"` to `{"link": "path"}`. Worth it for consistency.
 
 #### Resolution
 
