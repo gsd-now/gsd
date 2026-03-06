@@ -22,10 +22,10 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 
 ```json
 {"kind":"Config","config":{...}}
-{"kind":"TaskSubmitted","task_id":1,"step":"Analyze","value":{...},"origin_id":null}
-{"kind":"TaskSubmitted","task_id":2,"step":"Analyze","value":{...},"origin_id":null}
+{"kind":"TaskSubmitted","task_id":1,"step":"Analyze","value":{...},"origin_id":null,"retry_count":0}
+{"kind":"TaskSubmitted","task_id":2,"step":"Analyze","value":{...},"origin_id":null,"retry_count":0}
 {"kind":"TaskCompleted","task_id":1,"outcome":{"kind":"Success","value":{"new_task_ids":[3]}}}
-{"kind":"TaskSubmitted","task_id":3,"step":"Process","value":{...},"origin_id":1}
+{"kind":"TaskSubmitted","task_id":3,"step":"Process","value":{...},"origin_id":1,"retry_count":0}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"Timeout"}}}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"InvalidResponse","message":"parse error"}}}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Success","value":{"new_task_ids":[]}}}
@@ -60,6 +60,7 @@ pub struct TaskSubmitted {
     pub step: String,
     pub value: serde_json::Value,
     pub origin_id: Option<LogTaskId>,
+    pub retry_count: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,44 +112,34 @@ Validation (config first, config once) happens at the call site.
 ## Reconstructing State on Resume
 
 ```rust
-struct PendingTask {
-    submitted: TaskSubmitted,
-    failure_count: u32,
-}
-
-fn reconstruct(mut entries: impl Iterator<Item = io::Result<StateLogEntry>>) -> io::Result<(Config, HashMap<LogTaskId, PendingTask>)> {
+fn reconstruct(mut entries: impl Iterator<Item = io::Result<StateLogEntry>>, max_retries: u32) -> io::Result<(Config, HashMap<LogTaskId, TaskSubmitted>)> {
     // First entry must be Config
     let config = match entries.next() {
         Some(Ok(StateLogEntry::Config(c))) => c.config,
-        Some(Ok(_)) => return Err(io::Error::new(io::ErrorKind::InvalidData, "First entry must be Config")),
+        Some(Ok(_)) => panic!("First entry must be Config"),
         Some(Err(e)) => return Err(e),
-        None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty log")),
+        None => panic!("Empty log"),
     };
 
-    let mut pending: HashMap<LogTaskId, PendingTask> = HashMap::new();
+    let mut pending: HashMap<LogTaskId, TaskSubmitted> = HashMap::new();
 
     for entry in entries {
         match entry? {
             StateLogEntry::Config(_) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Config appeared after first entry"));
+                panic!("Config appeared after first entry");
             }
             StateLogEntry::TaskSubmitted(task) => {
-                pending.insert(task.task_id, PendingTask {
-                    submitted: task,
-                    failure_count: 0,
-                });
+                if task.retry_count > max_retries {
+                    panic!("retry_count {} exceeds max_retries {}", task.retry_count, max_retries);
+                }
+                if pending.contains_key(&task.task_id) {
+                    panic!("Duplicate task_id {:?}", task.task_id);
+                }
+                pending.insert(task.task_id, task);
             }
             StateLogEntry::TaskCompleted(c) => {
-                match c.outcome {
-                    TaskOutcome::Success(_) => {
-                        pending.remove(&c.task_id);
-                    }
-                    TaskOutcome::Failed(_) => {
-                        if let Some(task) = pending.get_mut(&c.task_id) {
-                            task.failure_count += 1;
-                        }
-                    }
-                }
+                pending.remove(&c.task_id)
+                    .expect("TaskCompleted for unknown task_id");
             }
         }
     }
@@ -156,8 +147,6 @@ fn reconstruct(mut entries: impl Iterator<Item = io::Result<StateLogEntry>>) -> 
     Ok((config, pending))
 }
 ```
-
-On resume, check each pending task: if `failure_count >= max_retries` (from config), fail the run.
 
 ## CLI
 
