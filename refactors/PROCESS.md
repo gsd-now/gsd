@@ -6,14 +6,16 @@
 - Writing code
 - Creating branches
 - Running tests on proposed changes
-- Committing anything
+- Committing code to master
 - "Investigating" by making changes
 
+**Exception: Markdown files are fair game.** Feel free to update documentation, refactor docs, and design documents as we discuss. These changes help capture our thinking and don't affect code behavior. Commit and push markdown changes freely.
+
 When the user describes a task or asks you to design something:
-1. Write the plan/design document
+1. Write the plan/design document (markdown - do this immediately)
 2. Present it to the user
 3. **STOP AND WAIT** for explicit approval ("go ahead", "implement it", "approved")
-4. Only then begin implementation
+4. Only then begin code implementation
 
 **Asking "Want me to run this?" is NOT the same as waiting for approval.** Just present what you've designed and wait. The user will tell you when to proceed.
 
