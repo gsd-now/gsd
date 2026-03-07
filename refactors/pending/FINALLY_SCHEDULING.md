@@ -12,14 +12,27 @@ Currently finally hooks run synchronously as local shell commands (`sh -c`) imme
 
 Change finally to be a regular task that goes through the task pool.
 
+## Current Code Location (as of 2026-03-07)
+
+Finally hooks are implemented in `crates/gsd_config/src/runner/finally.rs`:
+- `FinallyTracker` - tracks pending descendants per task
+- `FinallyState` - holds pending_count, original_value, finally_command
+- `run_finally_hook()` - executes hook synchronously via `run_shell_command()`
+
+The hook execution uses the shared `run_shell_command()` helper in `runner/hooks.rs`.
+
 ## Current Behavior
 
 ```rust
-fn run_finally_hook(&mut self, state: FinallyState) {
-    Command::new("sh")
-        .arg("-c")
-        .arg(&state.finally_command)
-        // ... runs synchronously, spawns tasks directly
+// runner/finally.rs
+pub fn run_finally_hook(state: FinallyState) -> Vec<Task> {
+    let input = serde_json::json!({
+        "kind": "Finally",
+        "value": state.original_value,
+    });
+    run_shell_command(&state.finally_command, &input)
+        .and_then(parse_tasks)
+        .unwrap_or_default()
 }
 ```
 
@@ -105,6 +118,8 @@ Submit finally tasks for these, in correct order (deepest first).
 
 ## Files Changed
 
-- `crates/gsd_config/src/runner/mod.rs` - add queued finally (queue task instead of running sync)
-- `crates/gsd_config/src/runner/finally.rs` - remove `run_finally_hook` synchronous execution
-- `crates/gsd_config/src/state_log.rs` - add `finally_for` field
+- `crates/gsd_config/src/runner/mod.rs` - queue finally task instead of calling run_finally_hook synchronously
+- `crates/gsd_config/src/runner/finally.rs` - remove synchronous `run_finally_hook`, convert to task creation
+- `crates/gsd_config/src/runner/types.rs` - add `finally_for: Option<LogTaskId>` to track finally tasks
+- `crates/gsd_config/src/runner/dispatch.rs` - handle finally task dispatch (uses command action)
+- `crates/gsd_config/src/state_log.rs` (new) - add `finally_for` field to TaskSubmitted

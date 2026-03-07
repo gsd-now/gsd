@@ -8,20 +8,43 @@
 
 The current finally tracking algorithm uses a flat structure that can't be reconstructed from the state log. We need a tree-based approach where each task tracks its own children.
 
-## Current Implementation
+## Current Implementation (as of 2026-03-07)
 
-### Data Structures (Before)
+The runner module has been recently refactored into submodules:
+- `runner/mod.rs` - Main TaskRunner and loop
+- `runner/types.rs` - QueuedTask, TaskIdentity, InFlightResult, etc.
+- `runner/dispatch.rs` - TaskContext, dispatch_pool_task, dispatch_command_task
+- `runner/finally.rs` - FinallyTracker, FinallyState, run_finally_hook
+- `runner/hooks.rs` - run_pre_hook, run_post_hook, run_shell_command
+- `runner/response.rs` - Response processing and retry logic
+- `runner/submit.rs` - CLI invocation for agent_pool
+
+Key recent changes:
+- `initial_tasks` is now a separate parameter to `run()`, not part of `RunnerConfig`
+- `RunnerConfig` is passed by reference
+- `TaskContext` extracted to `dispatch.rs` for dispatch thread context
+
+### Data Structures (Current)
 
 ```rust
 // runner/mod.rs
 struct TaskRunner<'a> {
-    // ...
+    config: &'a Config,
+    schemas: &'a CompiledSchemas,
+    step_map: HashMap<&'a StepName, &'a Step>,  // TODO: redundant with config.steps
+    queue: VecDeque<QueuedTask>,
+    pool: PoolConnection,
+    max_concurrency: usize,
+    in_flight: usize,
+    tx: mpsc::Sender<InFlightResult>,
+    rx: mpsc::Receiver<InFlightResult>,
+    next_task_id: u32,
     finally_tracker: FinallyTracker,
 }
 
 // runner/types.rs
 struct QueuedTask {
-    task: Task,
+    task: Task,  // TODO: should be task ID with lookup
     id: LogTaskId,
     /// NOTE: This skips intermediate tasks - points directly to finally-ancestor
     origin_id: Option<LogTaskId>,
@@ -31,7 +54,7 @@ struct QueuedTask {
 pub struct FinallyState {
     pub pending_count: usize,
     pub original_value: serde_json::Value,
-    pub finally_command: String,
+    pub finally_command: HookScript,
 }
 
 pub struct FinallyTracker {
@@ -323,15 +346,20 @@ The tree structure is preserved because `origin_id` (now `parent_id`) always poi
   - Add `task_states: HashMap<LogTaskId, TrackedTask>` field
   - Rewrite `decrement_origin` → `decrement_parent` + `task_fully_done`
   - Update task spawning to always track parent relationship
+  - Consider also removing redundant `step_map` (see OPEN_REFACTORING_QUESTIONS.md)
 
 - `crates/gsd_config/src/runner/types.rs`
   - Change `QueuedTask.origin_id` to `parent_id` (always immediate parent)
   - Add `TrackedTask` struct
   - Add `TaskState` enum
+  - Consider: `QueuedTask` should hold task ID instead of full `Task` (separate TODO)
 
 - `crates/gsd_config/src/runner/finally.rs`
   - Remove `FinallyTracker` struct (no longer needed - tracking moves to `task_states`)
   - Keep `run_finally_hook` function (still needed to execute finally hooks)
+
+- `crates/gsd_config/src/runner/dispatch.rs`
+  - `TaskContext` already extracted here - may need updates for new tracking
 
 ## Testing
 
