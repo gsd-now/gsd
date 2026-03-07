@@ -109,12 +109,68 @@ When implementing a refactor:
 3. **Push and verify CI is green** before moving to the next commit
 4. **When the branch is fully ready, merge to master without squashing** - preserve the atomic commit history
 
+### Stacked branches for CI verification
+
+**Use one branch per commit to verify CI passes at each step.** This is especially important for multi-commit refactors.
+
+Example workflow for a 3-commit refactor:
+1. Create `refactor/foo-step-1` with the first commit, push, verify CI
+2. Create `refactor/foo-step-2` on top with the second commit, push, verify CI
+3. Create `refactor/foo` (main branch) on top with the final commit, push, verify CI
+4. When all green, merge the main branch to master
+
+This ensures:
+- Each commit passes CI independently
+- You can identify exactly which commit breaks CI
+- Bisecting is meaningful at every point in the stack
+
+When rebasing the stack, rebase from bottom to top:
+```bash
+git checkout refactor/foo-step-1 && git rebase master
+git checkout refactor/foo-step-2 && git rebase refactor/foo-step-1
+git checkout refactor/foo && git rebase refactor/foo-step-2
+```
+
 ### What makes a good atomic commit
 
 - Self-contained change that compiles and passes tests
 - Does one logical thing (add a type, update a function, remove dead code)
 - Commit message explains the "why"
 - Can be reverted independently if needed
+
+### Test-first pattern for bug fixes
+
+**When fixing bugs or changing behavior, write the test first.**
+
+The pattern:
+1. **First commit: Add test with `#[should_panic]`** - The test demonstrates the bug by asserting the correct behavior and panicking because the current code is broken
+2. **Second commit: Fix the bug** - Implement the fix
+3. **Third commit: Remove `#[should_panic]`** - The test now passes without panicking
+
+Example:
+```rust
+// Commit 1: Test that documents the bug
+#[test]
+#[should_panic(expected = "Hooks ran in wrong order")]
+fn test_hook_ordering() {
+    // This test asserts correct behavior
+    // It panics because the bug exists
+}
+
+// Commit 2: Fix the bug (no test changes)
+
+// Commit 3: Remove should_panic
+#[test]
+fn test_hook_ordering() {
+    // Same test, now passes
+}
+```
+
+This approach:
+- Documents the bug exists (test demonstrates it)
+- Proves the fix works (test passes after fix)
+- CI passes on every commit
+- Creates a clear commit history showing bug -> fix -> verification
 
 ### What to avoid
 

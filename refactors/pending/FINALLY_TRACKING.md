@@ -2,6 +2,8 @@
 
 **Status:** Not started
 
+**Prerequisites:** VALUE_AND_RETRY_MODEL (COMPLETED - see `refactors/past/VALUE_AND_RETRY_MODEL.md`)
+
 **Blocks:** FINALLY_SCHEDULING
 
 ## Motivation
@@ -42,12 +44,19 @@ struct TaskRunner<'a> {
     finally_tracker: FinallyTracker,
 }
 
-// runner/types.rs
-struct QueuedTask {
-    task: Task,  // TODO: should be task ID with lookup
-    id: LogTaskId,
-    /// NOTE: This skips intermediate tasks - points directly to finally-ancestor
-    origin_id: Option<LogTaskId>,
+// runner/types.rs (UPDATED after VALUE_AND_RETRY_MODEL refactor)
+pub(super) struct QueuedTask {
+    pub task: Task,
+    pub id: LogTaskId,
+    /// Origin task with finally hook waiting for this task's completion.
+    pub finally_origin_id: Option<LogTaskId>,
+}
+
+/// Outcome of processing a task submission (NEW from VALUE_AND_RETRY_MODEL)
+pub(super) enum TaskOutcome {
+    Success { spawned: Vec<Task>, finally_value: EffectiveValue },
+    Retry(Task),
+    Dropped,
 }
 
 // runner/finally.rs

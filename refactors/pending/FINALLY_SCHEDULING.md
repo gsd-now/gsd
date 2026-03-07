@@ -2,6 +2,8 @@
 
 **Status:** Not started
 
+**Prerequisites:** VALUE_AND_RETRY_MODEL (COMPLETED - see `refactors/past/VALUE_AND_RETRY_MODEL.md`)
+
 **Depends on:** FINALLY_TRACKING
 
 **Blocks:** STATE_PERSISTENCE
