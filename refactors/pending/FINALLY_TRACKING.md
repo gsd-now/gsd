@@ -6,6 +6,44 @@
 
 **Blocks:** FINALLY_SCHEDULING
 
+## Known Bugs (with tests on `test-subtree-finally-bug` branch)
+
+### Bug 1: A's finally doesn't wait for grandchildren
+
+**Test:** `subtree_finally_waits_for_grandchildren`
+
+**Setup:** A (with finally) → B (with finally) → C (no finally)
+
+**Expected order:** `C_done, B_finally, A_finally`
+**Actual order:** `A_finally, C_done, B_finally`
+
+**Root cause:** In `mod.rs:317-319`, we notify the origin when a task succeeds, even if that task set up its own finally tracking for children. A gets notified when B succeeds, not when B's finally completes.
+
+```rust
+// Task succeeded - notify origin
+if let Some(oid) = finally_origin_id {
+    self.notify_origin_of_completion(oid);  // ← Called even when we set up finally tracking!
+}
+```
+
+**Fix required:** Don't notify origin when setting up finally tracking. Store `finally_origin_id` in `FinallyState`. When finally hook completes, THEN notify the stored origin.
+
+### Bug 2: A's finally doesn't wait for B's finally-spawned tasks
+
+**Test:** TODO
+
+**Setup:** A (with finally) → B (with finally that spawns cleanup tasks)
+
+When B's finally runs, it may spawn additional tasks (e.g., cleanup). Currently these are queued as "new roots" with `finally_origin_id: None`:
+
+```rust
+finally_origin_id: None, // Finally tasks are new roots
+```
+
+A should wait for these finally-spawned tasks to complete before running A's finally.
+
+**Fix required:** Finally-spawned tasks should inherit a `finally_origin_id` that points back to the task whose finally is completing. When those tasks complete, they notify that origin, which then propagates up to A.
+
 ## Motivation
 
 The current finally tracking algorithm uses a flat structure that can't be reconstructed from the state log. We need a tree-based approach where each task tracks its own children.
