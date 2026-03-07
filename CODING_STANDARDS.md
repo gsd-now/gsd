@@ -133,6 +133,30 @@ impl Runner {
 
 The pure core can be tested without mocks, network, or timing issues.
 
+### 6. Keep Files Small
+
+Files should not exceed ~400 lines (excluding tests). Long files are:
+- Hard to navigate
+- Hard to understand as a whole
+- A sign that the module is doing too much
+
+If a file is getting long, split it:
+- Extract related types into their own module
+- Move helper functions to a separate file
+- Create submodules for distinct concerns
+
+```
+// BAD: runner.rs at 1000 lines
+runner.rs  // everything crammed together
+
+// GOOD: Split by concern
+runner/
+  mod.rs        // TaskRunner struct, public API
+  finally.rs    // FinallyState, finally tracking logic
+  hooks.rs      // pre/post hook execution
+  submit.rs     // task submission to pool
+```
+
 ---
 
 ## Specific Patterns
