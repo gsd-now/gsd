@@ -25,14 +25,14 @@ Each task tracks its own spawned children count. State propagates up the tree le
 ```rust
 enum TaskState {
     Pending,                        // Waiting for agent
-    AwaitingDescendants(NonZeroU8), // Agent done, N spawned tasks still completing
+    AwaitingDescendants(NonZeroU16), // Agent done, N spawned tasks still completing
     // When count would hit 0, task becomes fully done (removed from tracking)
 }
 ```
 
-Using `NonZeroU8`:
+Using `NonZeroU16`:
 - Makes 0 unrepresentable (0 = fully done = removed)
-- 255 max children is plenty
+- 65535 max children
 - Smaller memory footprint
 
 ### Data Changes
