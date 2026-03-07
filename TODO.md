@@ -1,5 +1,7 @@
 # TODO
 
+*Last updated: 2026-03-07*
+
 ## GSD Runner Architecture
 
 - [ ] **Restructure GSD for testability.** Currently the runner has no inner, easily testable core like agent_pool does. The entire runner is tightly coupled to IPC and external processes, making unit testing impossible. Need to extract a pure-logic core that can be tested without IPC.
