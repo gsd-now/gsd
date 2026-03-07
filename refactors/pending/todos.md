@@ -928,7 +928,7 @@ This makes debugging and monitoring much simpler - just tail the log file in the
 
 **Status: COMPLETE**
 
-GSD now invokes the CLI via `submit_via_cli()` which spawns `agent_pool submit_task`. See `crates/gsd_config/src/runner.rs`.
+GSD now invokes the CLI via `submit_via_cli()` which spawns `agent_pool submit_task`. See `crates/gsd_config/src/runner/submit.rs`.
 
 ---
 
@@ -979,7 +979,7 @@ Error ID ranges:
 - E001-E004: verified_watcher.rs (atomic write, watcher disconnect)
 - E005-E008: submit/file.rs (file-based submission)
 - E009-E013: daemon/io.rs (ID/submission lookup, finish)
-- E014-E021: runner.rs (pool paths, submit, wake, command)
+- E014-E021: runner/ (pool paths, submit, wake, command)
 - E022: cli_invoker (not found)
 - E023-E026: stop.rs (daemon stop)
 - E027-E028: transport.rs (socket not implemented)

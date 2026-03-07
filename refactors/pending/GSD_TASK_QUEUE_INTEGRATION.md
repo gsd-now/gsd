@@ -432,7 +432,7 @@ Consolidate config, schemas, paths into single struct.
 
 ### Task 5: Replace gsd_config's TaskRunner
 
-Delete the current `runner.rs` implementation, use task_queue's runner directly.
+Delete the current `runner/` module, use task_queue's runner directly.
 
 ### Task 6: Make gsd_config async
 
@@ -446,7 +446,7 @@ Add tokio dependency, make `run()` async.
 
 ## Current `finally` Implementation (for reference)
 
-From `gsd_config/src/runner.rs`:
+From `gsd_config/src/runner/finally.rs`:
 
 ```rust
 /// State for tracking when a `finally` hook should run.
