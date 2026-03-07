@@ -39,6 +39,19 @@ Questions to resolve:
 
 ---
 
+## Handle tx.send() Failures in Runner Dispatch
+
+**Status: TODO**
+
+In `runner/dispatch.rs`, task results are sent back to the runner via `tx.send()`. Currently failures are ignored with `let _ = tx.send(...)`. If the receiver is dropped (runner died), these sends fail silently.
+
+Should either:
+- Log the failure
+- Propagate the error somehow
+- Accept silent failure as intentional (runner is dead anyway)
+
+---
+
 ## Command Agent Improvements
 
 ### Reconnect on Timeout

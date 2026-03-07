@@ -6,6 +6,7 @@
 //! - [`run()`] - Run the queue to completion
 //! - [`TaskRunner`] - Iterator over task completions for fine-grained control
 
+mod dispatch;
 mod finally;
 mod hooks;
 mod response;
@@ -20,17 +21,17 @@ use std::thread;
 
 use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::docs::generate_step_docs;
 use crate::resolved::{Action, Config, Step};
 use crate::types::LogTaskId;
 use crate::value_schema::{CompiledSchemas, Task};
 
+use dispatch::{TaskContext, dispatch_command_task, dispatch_pool_task};
 use finally::{FinallyTracker, run_finally_hook};
-use hooks::{call_wake_script, run_command_action, run_post_hook, run_pre_hook};
+use hooks::{call_wake_script, run_post_hook};
 use response::{FailureKind, process_command_response, process_pool_response, process_retry};
-use submit::{build_agent_payload, submit_via_cli};
 use types::{InFlightResult, QueuedTask, SubmitResult};
 
 // Re-export public types
@@ -165,7 +166,6 @@ impl<'a> TaskRunner<'a> {
         id
     }
 
-    #[allow(clippy::too_many_lines)]
     fn submit_pending(&mut self) {
         while self.in_flight < self.max_concurrency {
             let Some(queued) = self.queue.pop_front() else {
@@ -180,7 +180,6 @@ impl<'a> TaskRunner<'a> {
 
             let Some(step) = self.step_map.get(task.step.as_str()) else {
                 error!(step = %task.step, "unknown step, skipping task");
-                // Decrement origin tracking if this task was being tracked
                 self.decrement_origin(origin_id);
                 continue;
             };
@@ -191,112 +190,42 @@ impl<'a> TaskRunner<'a> {
                 continue;
             }
 
-            let step_name = step.name.clone();
-            let pre_hook = step.pre.clone();
-            let post_hook = step.post.clone();
-            let finally_hook = step.finally_hook.clone();
-            let options = step.options;
+            let timeout = step.options.timeout;
+            let tx = self.tx.clone();
+            let ctx = TaskContext {
+                task,
+                task_id,
+                origin_id,
+                step_name: step.name.clone(),
+                pre_hook: step.pre.clone(),
+                post_hook: step.post.clone(),
+                finally_hook: step.finally_hook.clone(),
+            };
 
             match &step.action {
                 Action::Pool { .. } => {
                     let docs = generate_step_docs(step, self.config);
-                    let timeout = options.timeout;
-                    let root = self.agent_pool_root.to_path_buf();
+                    let pool_root = self.agent_pool_root.to_path_buf();
                     let invoker = Clone::clone(self.invoker);
-                    let tx = self.tx.clone();
-                    let original_value = task.value.clone();
 
-                    info!(step = %task.step, "submitting task to pool");
+                    info!(step = %ctx.task.step, "submitting task to pool");
 
                     thread::spawn(move || {
-                        // Run pre hook if present
-                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value)
-                        {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let _ = tx.send(InFlightResult {
-                                    task,
-                                    task_id,
-                                    origin_id,
-                                    step_name,
-                                    effective_value: original_value,
-                                    result: SubmitResult::PreHookError(e),
-                                    post_hook,
-                                    finally_hook,
-                                });
-                                return;
-                            }
-                        };
-
-                        // Build payload with (possibly modified) value
-                        let payload =
-                            build_agent_payload(&step_name, &effective_value, &docs, timeout);
-                        debug!(payload = %payload, "task payload");
-
-                        let result = submit_via_cli(&root, &payload, &invoker);
-                        let _ = tx.send(InFlightResult {
-                            task,
-                            task_id,
-                            origin_id,
-                            step_name,
-                            effective_value,
-                            result: SubmitResult::Pool(result),
-                            post_hook,
-                            finally_hook,
-                        });
+                        dispatch_pool_task(ctx, &docs, timeout, &pool_root, &invoker, &tx);
                     });
-                    self.in_flight += 1;
                 }
                 Action::Command { script } => {
                     let script = script.clone();
-                    let tx = self.tx.clone();
-                    let original_value = task.value.clone();
-                    let task_step = task.step.clone();
                     let working_dir = self.working_dir.to_path_buf();
 
-                    info!(step = %task.step, script = %script, "executing command");
+                    info!(step = %ctx.task.step, script = %script, "executing command");
 
                     thread::spawn(move || {
-                        // Run pre hook if present
-                        let effective_value = match run_pre_hook(pre_hook.as_ref(), &original_value)
-                        {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let _ = tx.send(InFlightResult {
-                                    task,
-                                    task_id,
-                                    origin_id,
-                                    step_name,
-                                    effective_value: original_value,
-                                    result: SubmitResult::PreHookError(e),
-                                    post_hook,
-                                    finally_hook,
-                                });
-                                return;
-                            }
-                        };
-
-                        let task_json = serde_json::to_string(&serde_json::json!({
-                            "kind": task_step,
-                            "value": effective_value,
-                        }))
-                        .unwrap_or_default();
-
-                        let result = run_command_action(&script, &task_json, &working_dir);
-                        let _ = tx.send(InFlightResult {
-                            task,
-                            task_id,
-                            origin_id,
-                            step_name,
-                            effective_value,
-                            result: SubmitResult::Command(result),
-                            post_hook,
-                            finally_hook,
-                        });
+                        dispatch_command_task(ctx, &script, &working_dir, &tx);
                     });
-                    self.in_flight += 1;
                 }
             }
+            self.in_flight += 1;
         }
     }
 
@@ -486,7 +415,7 @@ pub fn run(
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
-    use super::*;
+    use super::submit::build_agent_payload;
     use crate::types::StepName;
 
     #[test]
