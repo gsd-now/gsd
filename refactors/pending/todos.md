@@ -42,6 +42,50 @@ Questions to resolve:
 
 ---
 
+## StepMap Redundancy with config.steps
+
+**Status: TODO (needs design)**
+
+We have both a `StepMap` (for fast lookup by name) and `config.steps` (the canonical vector). This feels redundant - the config is parsed into steps, then we build a map from the same data.
+
+Questions:
+- Should `Config` just store the map and derive iteration when needed?
+- Or should we keep the vector as the source of truth and build the map lazily?
+- Is there a way to avoid having both in memory?
+
+---
+
+## QueuedTask Contains Full Task Instead of ID
+
+**Status: TODO (needs design)**
+
+`QueuedTask` currently holds a full `Task` struct. It might be cleaner to have just a task ID and look it up in a map. This would:
+- Avoid duplicating task data
+- Make it clearer which is the canonical location of task data
+- Enable task lifecycle tracking in one place
+
+Questions:
+- What's the right granularity for task IDs?
+- Where should the task map live?
+- Does this add indirection that hurts more than helps?
+
+---
+
+## Handle rx.recv() Errors in Runner Loop
+
+**Status: TODO**
+
+In `runner/mod.rs`, the main loop calls `self.rx.recv()` and ignores errors. If the channel is disconnected, the loop should handle this gracefully instead of potentially panicking or behaving unexpectedly.
+
+```rust
+// Current: ignores recv errors
+while let Some(result) = runner.next() { ... }
+
+// Should handle: what if rx.recv() returns Err?
+```
+
+---
+
 ## Handle tx.send() Failures in Runner Dispatch
 
 **Status: TODO**
