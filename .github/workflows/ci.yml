@@ -116,9 +116,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run tests
         # Run single-threaded to avoid inotify race conditions
+        # Remove --nocapture to reduce log output (only show on failure)
+        # Set RUST_LOG=warn to reduce daemon verbosity
         env:
           AGENT_POOL: ${{ github.workspace }}/target/debug/agent_pool
-        run: cargo test --workspace -- --nocapture --test-threads=1
+          RUST_LOG: warn
+        run: cargo test --workspace -- --test-threads=1
 
   demos:
     needs: [gate, build-linux-x64]
