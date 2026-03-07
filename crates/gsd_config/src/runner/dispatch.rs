@@ -22,6 +22,33 @@ pub struct TaskContext {
     pub finally_hook: Option<HookScript>,
 }
 
+/// Run pre-hook if present, returning the effective value or sending an error result.
+///
+/// Returns `Some(value)` to continue processing, `None` if error was sent.
+fn run_pre_hook_or_send_error(
+    ctx: &TaskContext,
+    original_value: &serde_json::Value,
+    tx: &mpsc::Sender<InFlightResult>,
+) -> Option<serde_json::Value> {
+    let Some(hook) = &ctx.pre_hook else {
+        return Some(original_value.clone());
+    };
+
+    match run_pre_hook(hook, original_value) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let _ = tx.send(InFlightResult {
+                identity: ctx.identity.clone(),
+                effective_value: original_value.clone(),
+                result: SubmitResult::PreHookError(e),
+                post_hook: ctx.post_hook.clone(),
+                finally_hook: ctx.finally_hook.clone(),
+            });
+            None
+        }
+    }
+}
+
 /// Execute a pool task (runs in spawned thread).
 pub fn dispatch_pool_task(
     ctx: TaskContext,
@@ -33,21 +60,8 @@ pub fn dispatch_pool_task(
 ) {
     let original_value = ctx.identity.task.value.clone();
 
-    let effective_value = match &ctx.pre_hook {
-        Some(hook) => match run_pre_hook(hook, &original_value) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = tx.send(InFlightResult {
-                    identity: ctx.identity,
-                    effective_value: original_value,
-                    result: SubmitResult::PreHookError(e),
-                    post_hook: ctx.post_hook,
-                    finally_hook: ctx.finally_hook,
-                });
-                return;
-            }
-        },
-        None => original_value,
+    let Some(effective_value) = run_pre_hook_or_send_error(&ctx, &original_value, tx) else {
+        return;
     };
 
     let payload = build_agent_payload(&ctx.identity.step_name, &effective_value, docs, timeout);
@@ -73,21 +87,8 @@ pub fn dispatch_command_task(
     let original_value = ctx.identity.task.value.clone();
     let task_step = ctx.identity.task.step.clone();
 
-    let effective_value = match &ctx.pre_hook {
-        Some(hook) => match run_pre_hook(hook, &original_value) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = tx.send(InFlightResult {
-                    identity: ctx.identity,
-                    effective_value: original_value,
-                    result: SubmitResult::PreHookError(e),
-                    post_hook: ctx.post_hook,
-                    finally_hook: ctx.finally_hook,
-                });
-                return;
-            }
-        },
-        None => original_value,
+    let Some(effective_value) = run_pre_hook_or_send_error(&ctx, &original_value, tx) else {
+        return;
     };
 
     let task_json = serde_json::to_string(&serde_json::json!({

@@ -79,15 +79,15 @@ fn valid_schema_passes() {
 
     let config = config_with_schema();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Input", serde_json::json!({"count": 5}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Input", serde_json::json!({"count": 5}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     // Input and Output
@@ -114,16 +114,16 @@ fn invalid_initial_task_skipped() {
 
     let config = config_with_schema();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    // Missing required "count" field
+    let initial_tasks = vec![Task::new("Input", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        // Missing required "count" field
-        initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     // Invalid task should be skipped
@@ -180,16 +180,16 @@ fn invalid_response_causes_retry() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Input", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Input", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped after all retries
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     let processed = agent.stop();

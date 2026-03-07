@@ -77,12 +77,11 @@ fn tasks_execute_in_parallel() {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks,
         invoker: &create_test_invoker(),
     };
 
     let start = Instant::now();
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
     let elapsed = start.elapsed();
 
     // With parallelism: ~200-300ms (accounting for overhead)
@@ -146,11 +145,10 @@ fn work_distributed_across_agents() {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks,
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let total = agent1_count.load(Ordering::SeqCst)
         + agent2_count.load(Ordering::SeqCst)
@@ -245,11 +243,10 @@ fn max_concurrency_limits_parallel_tasks() {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks,
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     // With max_concurrency=2 and 1 agent, max should be 1 (single agent)
     // But if we had 3 agents, max should not exceed 2
@@ -317,15 +314,15 @@ fn nested_fan_out() {
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
+    let initial_tasks = vec![Task::new("Root", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Root", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     {
         let kinds = processed_kinds.lock().unwrap();

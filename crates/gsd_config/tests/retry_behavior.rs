@@ -72,16 +72,16 @@ fn retry_on_invalid_response_false_drops_task() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // With retry_on_invalid_response=false, should only try once
@@ -143,16 +143,16 @@ fn retry_on_invalid_response_true_retries() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped after all retries
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // With max_retries=3, should try 1 original + 3 retries = 4 total
@@ -209,16 +209,16 @@ fn malformed_json_triggers_retry() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped after all retries
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // 1 original + 2 retries = 3 total
@@ -285,16 +285,16 @@ fn per_step_options_override_global() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("NoRetryStep", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("NoRetryStep", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // Per-step override should prevent retries
@@ -357,15 +357,15 @@ fn recovery_on_nth_attempt() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     // Should succeed on third attempt
     assert_eq!(
@@ -420,16 +420,16 @@ fn max_retries_zero_no_retries() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     // max_retries=0 means only the original attempt

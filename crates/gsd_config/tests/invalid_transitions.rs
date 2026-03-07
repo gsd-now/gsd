@@ -70,16 +70,16 @@ fn invalid_transition_causes_retry() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped after retries exhausted
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     let processed = agent.stop();
@@ -111,16 +111,16 @@ fn unknown_step_causes_retry() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
     // Run should return error because task is dropped after retries exhausted
-    let result = gsd_config::run(&config, &schemas, runner_config);
+    let result = gsd_config::run(&config, &schemas, &runner_config, initial_tasks);
     assert!(result.is_err(), "run should fail when tasks are dropped");
 
     let processed = agent.stop();
@@ -171,15 +171,15 @@ fn recovery_after_invalid_then_valid() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     // Start (fail) + Start (success) + Middle + End = 4

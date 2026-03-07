@@ -241,11 +241,10 @@ fn run_command(
         agent_pool_root: &pool_path,
         working_dir: &config_dir,
         wake_script: wake,
-        initial_tasks,
         invoker: &invoker,
     };
 
-    run(&cfg, &schemas, runner_config)
+    run(&cfg, &schemas, &runner_config, initial_tasks)
 }
 
 /// Resolve pool ID to full path.
@@ -427,11 +426,12 @@ fn generate_graphviz(config: &Config) -> String {
     for step in &config.steps {
         let mut attrs: Vec<String> = vec![];
 
-        // Shape based on action type
-        match &step.action {
-            Action::Pool { .. } => attrs.push("shape=box".to_string()),
-            Action::Command { .. } => attrs.push("shape=diamond".to_string()),
-        }
+        // Shape and color based on action type
+        let (shape, fill_color) = match &step.action {
+            Action::Pool { .. } => ("box", "#e3f2fd"),
+            Action::Command { .. } => ("diamond", "#fff3e0"),
+        };
+        attrs.push(format!("shape={shape}"));
 
         // Terminal steps get double border
         if step.next.is_empty() {
@@ -456,16 +456,7 @@ fn generate_graphviz(config: &Config) -> String {
 
         let label = label_parts.join("\\n");
         attrs.push(format!("label=\"{label}\""));
-
-        // Color based on action type
-        match &step.action {
-            Action::Pool { .. } => {
-                attrs.push("style=filled, fillcolor=\"#e3f2fd\"".to_string());
-            }
-            Action::Command { .. } => {
-                attrs.push("style=filled, fillcolor=\"#fff3e0\"".to_string());
-            }
-        }
+        attrs.push(format!("style=filled, fillcolor=\"{fill_color}\""));
 
         lines.push(format!("  \"{}\" [{}];", step.name, attrs.join(", ")));
     }

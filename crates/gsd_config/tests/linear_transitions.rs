@@ -66,15 +66,15 @@ fn three_step_linear_machine() {
     let config = linear_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &invoker,
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     assert_eq!(processed.len(), 3);
@@ -111,15 +111,15 @@ fn instructions_included_in_payload() {
     let config = linear_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &invoker,
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     assert_eq!(processed.len(), 1);

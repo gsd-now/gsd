@@ -4,54 +4,6 @@ Issues found during coding standards pass.
 
 ---
 
-## gsd_config
-
-### Code Duplication: Pre-hook handling in dispatch.rs
-
-`dispatch_pool_task` and `dispatch_command_task` have identical pre-hook handling logic (~20 lines each). Could extract:
-
-```rust
-fn run_pre_hook_or_error(
-    ctx: &TaskContext,
-    original_value: &serde_json::Value,
-    tx: &mpsc::Sender<InFlightResult>,
-) -> Option<serde_json::Value>
-```
-
-### Code Duplication: Shell command execution in hooks.rs
-
-`run_pre_hook`, `run_post_hook`, and `run_command_action` all spawn shell commands with similar patterns. Could extract:
-
-```rust
-fn run_shell_command(script: &str, stdin: &str, working_dir: Option<&Path>) -> Result<String, String>
-```
-
-### Double Match: gsd_cli generate_graphviz
-
-In `main.rs:generate_graphviz`, `step.action` is matched twice (lines 431 and 461). Could match once:
-
-```rust
-let (shape, color) = match &step.action {
-    Action::Pool { .. } => ("box", "#e3f2fd"),
-    Action::Command { .. } => ("diamond", "#fff3e0"),
-};
-```
-
-### API Design: `initial_tasks` in `RunnerConfig`
-
-`RunnerConfig` mixes configuration with input data. `initial_tasks` should be a separate parameter:
-
-```rust
-pub fn run(
-    config: &Config,
-    schemas: &CompiledSchemas,
-    runner_config: RunnerConfig,
-    initial_tasks: Vec<Task>,  // separate parameter
-) -> Result<...>
-```
-
----
-
 ## agent_pool
 
 ### File Length: wiring.rs (~1050 lines)

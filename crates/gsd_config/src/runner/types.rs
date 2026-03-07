@@ -54,7 +54,7 @@ pub enum PostHookInput {
     },
 }
 
-/// Runner configuration.
+/// Runner configuration (how to run, not what to run).
 pub struct RunnerConfig<'a> {
     /// Path to the `agent_pool` root directory.
     pub agent_pool_root: &'a Path,
@@ -62,8 +62,6 @@ pub struct RunnerConfig<'a> {
     pub working_dir: &'a Path,
     /// Optional wake script to call before starting.
     pub wake_script: Option<&'a str>,
-    /// Initial tasks to process (must not be empty).
-    pub initial_tasks: Vec<Task>,
     /// Invoker for the `agent_pool` CLI.
     pub invoker: &'a Invoker<AgentPoolCli>,
 }
@@ -89,6 +87,7 @@ pub(super) struct QueuedTask {
 }
 
 /// Identity of a task being processed.
+#[derive(Clone)]
 pub(super) struct TaskIdentity {
     pub task: Task,
     pub task_id: LogTaskId,

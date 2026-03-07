@@ -59,7 +59,8 @@ impl<'a> TaskRunner<'a> {
     fn new(
         config: &'a Config,
         schemas: &'a CompiledSchemas,
-        runner_config: RunnerConfig<'a>,
+        runner_config: &RunnerConfig<'a>,
+        initial_tasks: Vec<Task>,
     ) -> io::Result<Self> {
         if let Some(script) = runner_config.wake_script {
             call_wake_script(script)?;
@@ -69,7 +70,7 @@ impl<'a> TaskRunner<'a> {
         let max_concurrency = config.max_concurrency.unwrap_or(DEFAULT_MAX_CONCURRENCY);
 
         info!(
-            tasks = runner_config.initial_tasks.len(),
+            tasks = initial_tasks.len(),
             pool_root = %runner_config.agent_pool_root.display(),
             invoker = %runner_config.invoker.description(),
             max_concurrency,
@@ -98,7 +99,7 @@ impl<'a> TaskRunner<'a> {
             finally_tracker: FinallyTracker::new(),
         };
 
-        for task in runner_config.initial_tasks {
+        for task in initial_tasks {
             let id = runner.next_task_id();
             runner.queue.push_back(QueuedTask {
                 task,
@@ -340,9 +341,10 @@ fn extract_next_tasks(input: &PostHookInput) -> Vec<Task> {
 pub fn run(
     config: &Config,
     schemas: &CompiledSchemas,
-    runner_config: RunnerConfig<'_>,
+    runner_config: &RunnerConfig<'_>,
+    initial_tasks: Vec<Task>,
 ) -> io::Result<()> {
-    let mut runner = TaskRunner::new(config, schemas, runner_config)?;
+    let mut runner = TaskRunner::new(config, schemas, runner_config, initial_tasks)?;
     let mut completed_count = 0u32;
     let mut dropped_count = 0u32;
 

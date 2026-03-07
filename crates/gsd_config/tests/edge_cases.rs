@@ -46,16 +46,16 @@ fn empty_initial_tasks_completes() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![]; // Empty!
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![], // Empty!
         invoker: &create_test_invoker(),
     };
 
     // Should complete immediately without error
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     cleanup_test_dir(TEST_DIR);
 }
@@ -88,19 +88,19 @@ fn unknown_initial_step_skipped() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![
+        Task::new("Unknown", serde_json::json!({})), // Unknown step
+        Task::new("Known", serde_json::json!({})),   // Known step
+    ];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![
-            Task::new("Unknown", serde_json::json!({})), // Unknown step
-            Task::new("Known", serde_json::json!({})),   // Known step
-        ],
         invoker: &create_test_invoker(),
     };
 
     // Should complete - unknown task skipped, known task processed
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     cleanup_test_dir(&format!("{TEST_DIR}_unknown_step"));
 }
@@ -150,18 +150,18 @@ fn invalid_value_schema_skipped() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![
+        Task::new("Validated", serde_json::json!({})), // Missing required "name"
+        Task::new("Validated", serde_json::json!({"name": "ok"})), // Valid
+    ];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![
-            Task::new("Validated", serde_json::json!({})), // Missing required "name"
-            Task::new("Validated", serde_json::json!({"name": "ok"})), // Valid
-        ],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     // Only the valid task should be processed
     assert_eq!(
@@ -221,15 +221,15 @@ fn large_fan_out() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Distribute", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Distribute", serde_json::json!({}))],
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     // 1 Distribute + 20 Workers = 21 tasks
     assert_eq!(
@@ -269,16 +269,16 @@ fn command_action_executes() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+    let initial_tasks = vec![Task::new("Echo", serde_json::json!({"message": "hello"}))];
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Echo", serde_json::json!({"message": "hello"}))],
         invoker: &create_test_invoker(),
     };
 
     // Should complete without error
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     cleanup_test_dir(&format!("{TEST_DIR}_command"));
 }
@@ -323,11 +323,10 @@ fn rapid_task_completion() {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks,
         invoker: &create_test_invoker(),
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     cleanup_test_dir(&format!("{TEST_DIR}_rapid"));
 }

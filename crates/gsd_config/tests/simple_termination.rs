@@ -51,15 +51,15 @@ fn single_step_terminates() {
     let config = simple_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
+    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![Task::new("Start", serde_json::json!({}))],
         invoker: &invoker,
     };
 
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     let processed = agent.stop();
     assert_eq!(processed.len(), 1);
@@ -81,16 +81,16 @@ fn empty_initial_tasks_does_nothing() {
     let config = simple_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
+    let initial_tasks = vec![];
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         working_dir: Path::new("."),
         wake_script: None,
-        initial_tasks: vec![],
         invoker: &invoker,
     };
 
     // Should complete immediately without error
-    gsd_config::run(&config, &schemas, runner_config).expect("run failed");
+    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
 
     cleanup_test_dir(&format!("{TEST_DIR}_empty"));
 }
