@@ -6,6 +6,7 @@ mod dispatch;
 mod finally;
 mod hooks;
 mod response;
+mod shell;
 mod submit;
 mod types;
 

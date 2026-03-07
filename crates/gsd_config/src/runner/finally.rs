@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::types::{HookScript, LogTaskId};
 use crate::value_schema::Task;
 
-use super::hooks::run_shell_command;
+use super::shell::run_shell_command;
 
 pub struct FinallyState {
     pub pending_count: usize,
