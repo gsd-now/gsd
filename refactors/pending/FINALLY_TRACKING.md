@@ -13,33 +13,29 @@ The current finally tracking algorithm uses a flat structure that can't be recon
 ### Data Structures (Before)
 
 ```rust
-// runner.rs
-
+// runner/mod.rs
 struct TaskRunner<'a> {
     // ...
-    /// Tracks pending descendants for tasks with `finally` hooks.
-    /// Key: origin task ID, Value: (pending count, original value, finally command)
-    finally_tracking: HashMap<LogTaskId, FinallyState>,
+    finally_tracker: FinallyTracker,
 }
 
-/// Internal task wrapper with lineage tracking.
+// runner/types.rs
 struct QueuedTask {
     task: Task,
-    /// Unique ID for this task instance.
     id: LogTaskId,
-    /// If this task descended from a task with `finally`, tracks that origin.
     /// NOTE: This skips intermediate tasks - points directly to finally-ancestor
     origin_id: Option<LogTaskId>,
 }
 
-/// State for tracking when a `finally` hook should run.
-struct FinallyState {
-    /// Number of descendants still pending (in queue or in flight).
-    pending_count: usize,
-    /// The original task's value (input to finally hook).
-    original_value: serde_json::Value,
-    /// The finally hook command.
-    finally_command: String,
+// runner/finally.rs
+pub struct FinallyState {
+    pub pending_count: usize,
+    pub original_value: serde_json::Value,
+    pub finally_command: String,
+}
+
+pub struct FinallyTracker {
+    tracking: HashMap<LogTaskId, FinallyState>,
 }
 ```
 
@@ -120,14 +116,14 @@ We lose the tree structure.
 ### Data Structures (After)
 
 ```rust
-// runner.rs
-
+// runner/mod.rs
 struct TaskRunner<'a> {
     // ...
     /// Per-task state tracking. Tasks not in this map are fully done.
     task_states: HashMap<LogTaskId, TrackedTask>,
 }
 
+// runner/types.rs
 struct TrackedTask {
     /// Immediate parent (always set except for initial tasks)
     parent_id: Option<LogTaskId>,
@@ -322,12 +318,20 @@ The tree structure is preserved because `origin_id` (now `parent_id`) always poi
 
 ## Files Changed
 
-- `crates/gsd_config/src/runner.rs`
-  - Remove `finally_tracking: HashMap<LogTaskId, FinallyState>`
-  - Add `task_states: HashMap<LogTaskId, TrackedTask>`
-  - Change `QueuedTask.origin_id` to `parent_id` (always immediate parent)
+- `crates/gsd_config/src/runner/mod.rs`
+  - Remove `finally_tracker: FinallyTracker` field from `TaskRunner`
+  - Add `task_states: HashMap<LogTaskId, TrackedTask>` field
   - Rewrite `decrement_origin` → `decrement_parent` + `task_fully_done`
   - Update task spawning to always track parent relationship
+
+- `crates/gsd_config/src/runner/types.rs`
+  - Change `QueuedTask.origin_id` to `parent_id` (always immediate parent)
+  - Add `TrackedTask` struct
+  - Add `TaskState` enum
+
+- `crates/gsd_config/src/runner/finally.rs`
+  - Remove `FinallyTracker` struct (no longer needed - tracking moves to `task_states`)
+  - Keep `run_finally_hook` function (still needed to execute finally hooks)
 
 ## Testing
 
