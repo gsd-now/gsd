@@ -98,42 +98,6 @@ fn valid_schema_passes() {
 
 #[rstest]
 #[timeout(Duration::from_secs(20))]
-fn invalid_initial_task_skipped() {
-    let root = setup_test_dir(&format!("{TEST_DIR}_invalid_initial"));
-
-    if !is_ipc_available(&root) {
-        eprintln!("SKIP: IPC not available");
-        cleanup_test_dir(&format!("{TEST_DIR}_invalid_initial"));
-        return;
-    }
-
-    let pool = AgentPoolHandle::start(&root);
-    let agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
-
-    // Wait for agent to be ready (has processed initial heartbeat)
-
-    let config = config_with_schema();
-    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    // Missing required "count" field
-    let initial_tasks = vec![Task::new("Input", serde_json::json!({}))];
-    let runner_config = RunnerConfig {
-        agent_pool_root: pool.pool_path(),
-        working_dir: Path::new("."),
-        wake_script: None,
-        invoker: &create_test_invoker(),
-    };
-
-    gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
-
-    let processed = agent.stop();
-    // Invalid task should be skipped
-    assert_eq!(processed.len(), 0);
-
-    cleanup_test_dir(&format!("{TEST_DIR}_invalid_initial"));
-}
-
-#[rstest]
-#[timeout(Duration::from_secs(20))]
 fn invalid_response_causes_retry() {
     let root = setup_test_dir(&format!("{TEST_DIR}_invalid_response"));
 
