@@ -54,7 +54,7 @@ struct QueuedTask {
 pub struct FinallyState {
     pub pending_count: usize,
     pub original_value: serde_json::Value,
-    pub finally_command: HookScript,
+    pub finally_command: HookScript,  // TODO: derive from step via task_id lookup
 }
 
 pub struct FinallyTracker {
@@ -156,6 +156,8 @@ struct TrackedTask {
     step: StepName,
     /// Original value (passed to finally hook)
     value: serde_json::Value,
+    // NOTE: finally_command is NOT stored here - we look it up from the step
+    // via step_map when needed (single source of truth principle)
 }
 
 enum TaskState {

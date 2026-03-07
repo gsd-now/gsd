@@ -1,12 +1,12 @@
 //! Finally hook tracking and execution.
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::process::{Command, Stdio};
 use tracing::{info, warn};
 
 use crate::types::{HookScript, LogTaskId};
 use crate::value_schema::Task;
+
+use super::hooks::run_shell_command;
 
 pub struct FinallyState {
     pub pending_count: usize,
@@ -64,51 +64,24 @@ impl FinallyTracker {
     }
 }
 
-#[expect(clippy::needless_pass_by_value)]
-pub fn run_finally_hook(state: FinallyState) -> Vec<Task> {
+pub fn run_finally_hook(state: &FinallyState) -> Vec<Task> {
     info!(command = %state.finally_command, "running finally hook");
 
     let input_json = serde_json::to_string(&state.original_value).unwrap_or_default();
 
-    let result = Command::new("sh")
-        .arg("-c")
-        .arg(state.finally_command.as_str())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(input_json.as_bytes());
+    match run_shell_command(state.finally_command.as_str(), &input_json, None) {
+        Ok(stdout) => match serde_json::from_str::<Vec<Task>>(&stdout) {
+            Ok(tasks) => {
+                info!(count = tasks.len(), "finally hook spawned tasks");
+                tasks
             }
-            child.wait_with_output()
-        });
-
-    match result {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            match serde_json::from_str::<Vec<Task>>(&stdout) {
-                Ok(tasks) => {
-                    info!(count = tasks.len(), "finally hook spawned tasks");
-                    tasks
-                }
-                Err(e) => {
-                    warn!(error = %e, "finally hook output is not valid JSON (ignored)");
-                    vec![]
-                }
+            Err(e) => {
+                warn!(error = %e, "finally hook output is not valid JSON (ignored)");
+                vec![]
             }
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                status = %output.status,
-                stderr = %stderr.trim(),
-                "finally hook failed (ignored)"
-            );
-            vec![]
-        }
+        },
         Err(e) => {
-            warn!(error = %e, "finally hook failed to run (ignored)");
+            warn!(error = %e, "finally hook failed (ignored)");
             vec![]
         }
     }

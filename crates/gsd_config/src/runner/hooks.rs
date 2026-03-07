@@ -12,7 +12,7 @@ use super::PostHookInput;
 /// Run a shell command with stdin input and capture output.
 ///
 /// Returns the stdout on success, or an error message on failure.
-fn run_shell_command(
+pub(super) fn run_shell_command(
     script: &str,
     stdin_input: &str,
     working_dir: Option<&Path>,

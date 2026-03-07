@@ -187,7 +187,7 @@ impl<'a> TaskRunner<'a> {
     /// task is "fully done" (including finally hook). See `FINALLY_TRACKING` refactor.
     fn notify_origin_of_completion(&mut self, origin_id: LogTaskId) {
         if let Some(state) = self.finally_tracker.record_descendant_done(origin_id) {
-            let spawned = run_finally_hook(state);
+            let spawned = run_finally_hook(&state);
             for task in spawned {
                 let id = self.next_task_id();
                 self.queue.push_back(QueuedTask {
