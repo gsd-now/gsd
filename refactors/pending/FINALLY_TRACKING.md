@@ -134,14 +134,13 @@ fn dispatch_next(&mut self) -> Option<(LogTaskId, Task)> {
 
     // Transition Pending → InFlight, return task for dispatching
     let entry = self.tasks.get_mut(&task_id).expect("task_id from iterator must exist");
-    if let TaskState::Pending { task } = &entry.state {
-        let task_to_dispatch = task.clone();
-        entry.state = TaskState::InFlight { step_name: task.step.clone() };
-        self.in_flight += 1;
-        return Some((task_id, task_to_dispatch));
-    }
-
-    None
+    let TaskState::Pending { task } = &entry.state else {
+        unreachable!("found Pending in iterator but not Pending on lookup");
+    };
+    let task_to_dispatch = task.clone();
+    entry.state = TaskState::InFlight { step_name: task.step.clone() };
+    self.in_flight += 1;
+    Some((task_id, task_to_dispatch))
 }
 ```
 
