@@ -8,7 +8,7 @@
 
 use crate::docs::generate_step_docs;
 use crate::resolved::{Action, Config, Options, Step};
-use crate::types::StepName;
+use crate::types::{LogTaskId, StepName};
 use crate::value_schema::{CompiledSchemas, Task, validate_response};
 use agent_pool::Response;
 use agent_pool_cli::AgentPoolCli;
@@ -132,19 +132,19 @@ pub struct TaskRunner<'a> {
     tx: mpsc::Sender<InFlightResult>,
     rx: mpsc::Receiver<InFlightResult>,
     /// Counter for assigning unique task IDs.
-    next_task_id: u64,
+    next_task_id: u32,
     /// Tracks pending descendants for tasks with `finally` hooks.
     /// Key: origin task ID, Value: (pending count, original value, finally command)
-    finally_tracking: HashMap<u64, FinallyState>,
+    finally_tracking: HashMap<LogTaskId, FinallyState>,
 }
 
 /// Internal task wrapper with lineage tracking.
 struct QueuedTask {
     task: Task,
     /// Unique ID for this task instance.
-    id: u64,
+    id: LogTaskId,
     /// If this task descended from a task with `finally`, tracks that origin.
-    origin_id: Option<u64>,
+    origin_id: Option<LogTaskId>,
 }
 
 /// State for tracking when a `finally` hook should run.
@@ -159,8 +159,8 @@ struct FinallyState {
 
 struct InFlightResult {
     task: Task,
-    task_id: u64,
-    origin_id: Option<u64>,
+    task_id: LogTaskId,
+    origin_id: Option<LogTaskId>,
     step_name: StepName,
     /// The value passed to the action (possibly modified by pre hook).
     effective_value: serde_json::Value,
@@ -216,12 +216,12 @@ impl<'a> TaskRunner<'a> {
         let (tx, rx) = mpsc::channel();
 
         // Wrap initial tasks with IDs (no origin since they're root tasks)
-        let mut next_task_id = 0u64;
+        let mut next_task_id = 0u32;
         let queue: VecDeque<QueuedTask> = runner_config
             .initial_tasks
             .into_iter()
             .map(|task| {
-                let id = next_task_id;
+                let id = LogTaskId(next_task_id);
                 next_task_id += 1;
                 QueuedTask {
                     task,
@@ -418,7 +418,7 @@ impl<'a> TaskRunner<'a> {
     }
 
     /// Decrement the pending count for an origin and run finally if done.
-    fn decrement_origin(&mut self, origin_id: Option<u64>) {
+    fn decrement_origin(&mut self, origin_id: Option<LogTaskId>) {
         let Some(oid) = origin_id else { return };
 
         let should_run_finally = if let Some(state) = self.finally_tracking.get_mut(&oid) {
@@ -461,7 +461,7 @@ impl<'a> TaskRunner<'a> {
                     Ok(tasks) => {
                         info!(count = tasks.len(), "finally hook spawned tasks");
                         for task in tasks {
-                            let id = self.next_task_id;
+                            let id = LogTaskId(self.next_task_id);
                             self.next_task_id += 1;
                             self.queue.push_back(QueuedTask {
                                 task,
@@ -585,7 +585,7 @@ impl<'a> TaskRunner<'a> {
 
         // Queue new tasks with proper origin tracking
         for new_task in final_tasks {
-            let id = self.next_task_id;
+            let id = LogTaskId(self.next_task_id);
             self.next_task_id += 1;
             self.queue.push_back(QueuedTask {
                 task: new_task,

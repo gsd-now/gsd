@@ -37,9 +37,10 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 use serde::{Deserialize, Serialize};
 use crate::resolved::Config;
 
+// Defined in crate::types - shown here for reference
 #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct LogTaskId(pub u64);
+pub struct LogTaskId(pub u32);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]

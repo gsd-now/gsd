@@ -84,6 +84,14 @@ macro_rules! define_string_id {
     };
 }
 
+/// Unique identifier for a task instance within a GSD run.
+///
+/// Used both at runtime (in the runner) and for serialization (in state logs).
+/// Named `LogTaskId` to avoid confusion with `agent_pool::TaskId` which is unrelated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LogTaskId(pub u32);
+
 define_string_id! {
     /// A step name identifier.
     ///
