@@ -34,7 +34,6 @@ use std::time::Duration;
 /// Correct behavior (after fix):
 /// - A's finally runs after B' succeeds
 #[test]
-#[should_panic(expected = "orphaned notification")]
 fn finally_runs_too_early_on_retry() {
     let test_name = "finally_retry_bugs_too_early";
     let root = setup_test_dir(test_name);
@@ -167,7 +166,6 @@ echo "finally_ran" > "{}"
 /// - Track total B agent calls at the moment finally runs
 /// - Assert finally ran after ALL B calls, not after the failure
 #[test]
-#[should_panic(expected = "orphaned notification")]
 fn finally_timing_via_counters() {
     let test_name = "finally_retry_bugs_counters";
     let root = setup_test_dir(test_name);
@@ -318,7 +316,6 @@ echo "finally_executed" > "{}"
 /// 4. Child retries and succeeds
 /// 5. Child's finally runs
 #[test]
-#[should_panic(expected = "Finally hooks ran in wrong order")]
 #[expect(clippy::too_many_lines)]
 fn nested_finally_with_retry_ordering() {
     let test_name = "finally_retry_bugs_nested";
@@ -459,7 +456,6 @@ echo "child_finally" >> "{}"
 /// If Child exhausts all retries and is dropped, Parent's finally should
 /// still run (the descendant is "done" even though it failed).
 #[test]
-#[should_panic(expected = "orphaned notification")]
 fn finally_runs_when_retries_exhausted() {
     let test_name = "finally_retry_bugs_exhausted";
     let root = setup_test_dir(test_name);
