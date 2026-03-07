@@ -202,10 +202,24 @@ impl<'a> TaskRunner<'a> {
     ///
     /// BUG: Currently called when task completes, but should only be called when
     /// task is "fully done" (including finally hook). See `FINALLY_TRACKING` refactor.
+    #[expect(clippy::panic)] // Finally hook returning invalid tasks is a config bug
     fn notify_origin_of_completion(&mut self, origin_id: LogTaskId) {
         if let Some(state) = self.finally_tracker.record_descendant_done(origin_id) {
             let spawned = run_finally_hook(&state);
             for task in spawned {
+                // Validate finally hook spawned tasks
+                assert!(
+                    self.step_map.contains_key(&task.step),
+                    "BUG: finally hook returned unknown step '{}' - this is a configuration error",
+                    task.step
+                );
+                if let Err(e) = self.schemas.validate(&task.step, &task.value) {
+                    panic!(
+                        "BUG: finally hook returned invalid task for step '{}': {e}",
+                        task.step
+                    );
+                }
+
                 let id = self.next_task_id();
                 self.queue.push_back(QueuedTask {
                     task,
@@ -225,9 +239,10 @@ impl<'a> TaskRunner<'a> {
             origin_id,
         } = identity;
 
-        let Some(step) = self.step_map.get(&task.step) else {
-            return TaskResult::Skipped;
-        };
+        #[expect(clippy::expect_used)] // Invariant: all queued tasks are validated at entry points
+        let step = self.step_map.get(&task.step).expect(
+            "BUG: task step must exist - all queued tasks should be validated at entry points",
+        );
 
         let ProcessedSubmit {
             result: task_result,

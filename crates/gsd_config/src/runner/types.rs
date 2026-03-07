@@ -75,8 +75,6 @@ pub(super) enum TaskResult {
     Requeued,
     /// Task was dropped after exhausting retries.
     Dropped,
-    /// Task was skipped (step not found).
-    Skipped,
 }
 
 /// Task queued for execution.
