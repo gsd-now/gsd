@@ -26,30 +26,40 @@ jobs:
       - name: Check for changes
         id: check
         run: |
-          # Always run on main, tags, or PRs
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
+          # Always run on master/main, tags, or PRs
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]] || \
+             [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
              [[ "${{ github.ref }}" == refs/tags/* ]] || \
              [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "Running: on main, tag, or PR"
+            echo "Running: on master/main, tag, or PR"
             exit 0
           fi
 
-          # On other branches (like master), check if crates/ or libs/ changed since main
-          if git rev-parse origin/main >/dev/null 2>&1; then
-            CHANGES=$(git diff --name-only origin/main...HEAD -- crates/ libs/ Cargo.lock Cargo.toml)
-            if [[ -n "$CHANGES" ]]; then
-              echo "should_run=true" >> $GITHUB_OUTPUT
-              echo "Running: changes detected in crates/ or libs/"
-              echo "$CHANGES"
-            else
-              echo "should_run=false" >> $GITHUB_OUTPUT
-              echo "Skipping: no changes to crates/ or libs/ since main"
-            fi
+          # On feature branches, check if crates/ or libs/ changed since merge-base with master
+          # Try master first, fall back to main
+          if git rev-parse origin/master >/dev/null 2>&1; then
+            BASE_BRANCH="origin/master"
+          elif git rev-parse origin/main >/dev/null 2>&1; then
+            BASE_BRANCH="origin/main"
           else
-            # Can't find main, run to be safe
+            # Can't find base branch, run to be safe
             echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "Running: cannot find origin/main for comparison"
+            echo "Running: cannot find origin/master or origin/main for comparison"
+            exit 0
+          fi
+
+          # Find merge-base and compare
+          MERGE_BASE=$(git merge-base $BASE_BRANCH HEAD)
+          echo "Comparing HEAD against merge-base: $MERGE_BASE (from $BASE_BRANCH)"
+          CHANGES=$(git diff --name-only $MERGE_BASE HEAD -- crates/ libs/ Cargo.lock Cargo.toml .github/)
+          if [[ -n "$CHANGES" ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "Running: changes detected in crates/, libs/, or .github/"
+            echo "$CHANGES"
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "Skipping: no changes to crates/, libs/, or .github/ since $BASE_BRANCH"
           fi
 
   # Gate job - all other jobs depend on this
