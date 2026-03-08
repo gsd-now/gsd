@@ -2,7 +2,7 @@
 
 **Status:** Not started
 
-**Depends on:** ROOT_FLAG_REFACTOR (complete), INLINED_CONFIG (complete), FINALLY_TRACKING (complete), FINALLY_SCHEDULING
+**Depends on:** ROOT_FLAG_REFACTOR (complete), INLINED_CONFIG (complete), FINALLY_TRACKING (complete), FINALLY_SCHEDULING (complete)
 
 ## Motivation
 
@@ -16,13 +16,13 @@ A run creates a single NDJSON log file. First entry is config, then task events.
 - **Debug logs** (`--log-file`): Tracing output for debugging
 - **State logs** (this feature): Machine-readable NDJSON for persistence/resume
 
-## Current Runner Architecture (as of 2026-03-08)
+## Current Runner Architecture (as of 2026-03-08, updated after FINALLY_SCHEDULING)
 
 The runner module (`crates/gsd_config/src/runner/`) has these submodules:
 - `mod.rs` - TaskRunner struct, main loop, `run()` public function
-- `types.rs` - TaskEntry, TaskState, Continuation, InFlight, TaskIdentity, InFlightResult, RunnerConfig
-- `dispatch.rs` - TaskContext, dispatch_pool_task, dispatch_command_task
-- `finally.rs` - `run_finally_hook_direct()` (synchronous finally execution)
+- `types.rs` - TaskEntry, TaskState, InFlight, TaskIdentity, InFlightResult, RunnerConfig, SubmitResult
+- `dispatch.rs` - TaskContext, dispatch_pool_task, dispatch_command_task, dispatch_finally_task
+- `finally.rs` - (empty after FINALLY_SCHEDULING - finally now goes through dispatch)
 - `hooks.rs` - run_pre_hook, run_post_hook
 - `shell.rs` - `run_shell_command()` helper
 - `response.rs` - Response processing and retry logic
@@ -32,11 +32,12 @@ Key current state:
 - `initial_tasks` passed separately from `RunnerConfig`
 - `RunnerConfig` passed by reference
 - Unified task state in `BTreeMap<LogTaskId, TaskEntry>`:
-  - `TaskEntry { parent_id: Option<LogTaskId>, state: TaskState }`
-  - `TaskState::Pending(Task)` - queued, waiting for dispatch
+  - `TaskEntry { step, parent_id, finally_script, state, retries_remaining }`
+  - `TaskState::Pending { value }` - queued, waiting for dispatch
   - `TaskState::InFlight(InFlight)` - currently executing
-  - `TaskState::Waiting { pending_count, continuation }` - waiting for children
+  - `TaskState::WaitingForChildren { pending_children_count, finally_data }` - waiting for children
 - `parent_id` is always the immediate parent (tree structure for proper finally tracking)
+- `finally_script: Option<HookScript>` identifies finally tasks (same step name as parent, dispatched differently)
 
 ## State Log Format
 
@@ -51,7 +52,10 @@ Newline-delimited JSON. First entry MUST be `Config` (exactly once). Uses `#[ser
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"Timeout"}}}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Failed","value":{"kind":"InvalidResponse","message":"parse error"}}}
 {"kind":"TaskCompleted","task_id":2,"outcome":{"kind":"Success","value":{"new_task_ids":[]}}}
+{"kind":"TaskSubmitted","task_id":4,"step":"Process","value":{...},"origin_id":null,"retries":0,"finally_script":"./cleanup.sh"}
 ```
+
+Note: `finally_script` is only present for finally tasks. Regular step tasks omit this field.
 
 ## Data Structures
 
@@ -84,6 +88,10 @@ pub struct TaskSubmitted {
     pub value: serde_json::Value,
     pub origin_id: Option<LogTaskId>,
     pub retries: u32,
+    /// For finally tasks: the script to run. Absent for regular step tasks.
+    /// Finally tasks use the same step name as their parent but are dispatched differently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finally_script: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -244,17 +252,21 @@ gsd run --resume-from /tmp/run.ndjson --state-log /tmp/run.ndjson  # panic!
 ## What We Don't Track (v1)
 
 - **In-flight tasks**: Lost on crash. May cause duplicate work on resume.
-- **Finally hook state**: ✅ **Fixed by FINALLY_TRACKING** - tree-based tracking with `parent_id` enables reconstruction. Once FINALLY_SCHEDULING is complete, finally hooks will be loggable tasks that can be resumed.
+- **Finally hook state**: [DONE] **Fixed by FINALLY_TRACKING + FINALLY_SCHEDULING** - finally hooks are now regular tasks that go through the queue and can be logged/resumed like any other task.
 
 ## Prerequisite Refactors
 
-Before implementing state persistence:
+All prerequisites are now complete:
 
-1. **FINALLY_TRACKING** ✅ COMPLETE - Changed to `parent_id` (always immediate parent) in unified `BTreeMap<LogTaskId, TaskEntry>`. Tree structure enables reconstructing task relationships from the log.
+1. **FINALLY_TRACKING** [DONE] COMPLETE - Changed to `parent_id` (always immediate parent) in unified `BTreeMap<LogTaskId, TaskEntry>`. Tree structure enables reconstructing task relationships from the log.
 
-2. **FINALLY_SCHEDULING** - Make finally hooks go through the task queue instead of running synchronously. This makes them loggable/resumable.
+2. **FINALLY_SCHEDULING** [DONE] COMPLETE - Finally hooks now go through the task queue as regular tasks. Key implementation details:
+   - Finally tasks are identified by `finally_script: Option<HookScript>` on `TaskEntry`
+   - Finally tasks use the **same step name** as their parent (NOT a special `"__finally__"` step)
+   - Finally tasks are scheduled as **siblings** (child of same parent), not child of the original task
+   - `TaskState::WaitingForChildren { pending_children_count, finally_data }` stores the hook + value to schedule when children complete
 
-3. **Task ID Registry** (optional but recommended) - Consider whether needed now that we have unified `BTreeMap<LogTaskId, TaskEntry>`. The current structure already provides a central task registry.
+3. **Task ID Registry** - Not needed. The unified `BTreeMap<LogTaskId, TaskEntry>` already provides this.
 
 ## Future Work
 
