@@ -301,20 +301,96 @@ Create the new crate with log types and comprehensive tests (no integration with
 - Finally tasks identified
 
 **Tests to write:**
-- Serialization round-trips for all types
-- `reconstruct()` with various scenarios:
-  - Empty log (error)
-  - Config only (no tasks)
-  - Simple task lifecycle (submit → complete)
-  - Task with children (parent waits)
-  - Retry chain (fail → retry → succeed)
-  - Finally scheduling (complete → finally submitted)
-  - Mixed: some complete, some pending
-  - Error cases: duplicate task_id, unknown task_id, duplicate config
-- Edge cases:
-  - Task completed before submitted in log (corruption)
-  - Retry for non-existent task
-  - Finally for non-existent task
+
+#### Serialization Tests
+```rust
+#[test] fn log_task_id_serializes_as_number()
+#[test] fn step_name_serializes_as_string()
+#[test] fn task_origin_initial_serializes()
+#[test] fn task_origin_spawned_serializes()
+#[test] fn task_origin_retry_serializes_with_replaces()
+#[test] fn task_origin_finally_serializes_with_finally_for()
+#[test] fn task_submitted_roundtrip()
+#[test] fn task_completed_success_roundtrip()
+#[test] fn task_completed_failed_with_retry_roundtrip()
+#[test] fn task_completed_failed_without_retry_roundtrip()
+#[test] fn failure_reason_timeout_serializes()
+#[test] fn failure_reason_agent_lost_serializes()
+#[test] fn failure_reason_invalid_response_serializes()
+#[test] fn state_log_entry_config_roundtrip()
+#[test] fn ndjson_multiple_entries_roundtrip()
+```
+
+#### Reconstruct: Basic Scenarios
+```rust
+#[test] fn reconstruct_empty_log_errors()
+#[test] fn reconstruct_config_only_returns_empty_state()
+#[test] fn reconstruct_single_task_pending()
+#[test] fn reconstruct_single_task_completed_returns_empty()
+#[test] fn reconstruct_submit_complete_submit_leaves_second_pending()
+```
+
+#### Reconstruct: Parent-Child Relationships
+```rust
+#[test] fn reconstruct_child_pending_parent_waiting()
+#[test] fn reconstruct_two_children_one_complete_parent_waiting()
+#[test] fn reconstruct_all_children_complete_parent_done()
+#[test] fn reconstruct_grandchild_pending_sets_ancestor_waiting()
+#[test] fn reconstruct_preserves_parent_id_on_pending_tasks()
+```
+
+#### Reconstruct: Retry Chains
+```rust
+#[test] fn reconstruct_failed_with_retry_only_retry_pending()
+#[test] fn reconstruct_failed_without_retry_task_dropped()
+#[test] fn reconstruct_retry_chain_only_final_pending()
+#[test] fn reconstruct_retry_of_child_parent_still_waiting()
+```
+
+#### Reconstruct: Finally Tasks
+```rust
+#[test] fn reconstruct_finally_pending_after_parent_complete()
+#[test] fn reconstruct_finally_identifies_via_origin()
+#[test] fn reconstruct_finally_for_task_with_children_waits()
+#[test] fn reconstruct_finally_complete_parent_done()
+#[test] fn reconstruct_finally_spawns_children_finally_waiting()
+```
+
+#### Reconstruct: WaitingForChildren State
+```rust
+#[test] fn reconstruct_waiting_has_correct_pending_count()
+#[test] fn reconstruct_waiting_preserves_finally_data()
+#[test] fn reconstruct_waiting_task_not_re_queued_for_action()
+```
+
+#### Reconstruct: Error Cases
+```rust
+#[test] fn reconstruct_duplicate_task_id_errors()
+#[test] fn reconstruct_complete_unknown_task_errors()
+#[test] fn reconstruct_duplicate_config_errors()
+#[test] fn reconstruct_first_entry_not_config_errors()
+#[test] fn reconstruct_retry_for_nonexistent_task_errors()
+#[test] fn reconstruct_finally_for_nonexistent_task_errors()
+```
+
+#### Reconstruct: Complex Scenarios
+```rust
+#[test] fn reconstruct_mixed_pending_waiting_done()
+#[test] fn reconstruct_diamond_dependency()  // A spawns B,C; B,C both spawn D
+#[test] fn reconstruct_deep_nesting_five_levels()
+#[test] fn reconstruct_wide_fanout_ten_children()
+#[test] fn reconstruct_interleaved_submits_and_completes()
+```
+
+#### Write/Read Functions
+```rust
+#[test] fn write_entry_appends_newline()
+#[test] fn write_entry_flushes()
+#[test] fn read_entries_parses_ndjson()
+#[test] fn read_entries_handles_empty_file()
+#[test] fn read_entries_handles_trailing_newline()
+#[test] fn read_entries_errors_on_invalid_json()
+```
 
 **Branch:** `state/02-crate-and-tests`
 
@@ -335,9 +411,264 @@ Add log writing to `gsd_config` runner without changing behavior.
 - Add `--state-log <path>` flag to `gsd run`
 - Print resume instructions on startup
 
+#### Before/After: TaskRunner struct
+
+```rust
+// BEFORE
+struct TaskRunner<'a> {
+    config: &'a Config,
+    schemas: &'a CompiledSchemas,
+    step_map: HashMap<&'a StepName, &'a Step>,
+    tasks: BTreeMap<LogTaskId, TaskEntry>,
+    pool: PoolConnection,
+    max_concurrency: usize,
+    in_flight: usize,
+    tx: mpsc::Sender<InFlightResult>,
+    rx: mpsc::Receiver<InFlightResult>,
+    next_task_id: u32,
+}
+
+// AFTER
+struct TaskRunner<'a> {
+    config: &'a Config,
+    schemas: &'a CompiledSchemas,
+    step_map: HashMap<&'a StepName, &'a Step>,
+    tasks: BTreeMap<LogTaskId, TaskEntry>,
+    pool: PoolConnection,
+    max_concurrency: usize,
+    in_flight: usize,
+    tx: mpsc::Sender<InFlightResult>,
+    rx: mpsc::Receiver<InFlightResult>,
+    next_task_id: u32,
+    log_writer: Option<StateLogWriter>,  // NEW
+}
+```
+
+#### Before/After: queue_task (for initial/spawned tasks)
+
+```rust
+// BEFORE
+fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) {
+    let id = self.next_task_id();
+    let retries_remaining = self.step_map.get(&task.step).map_or(0, |s| s.options.max_retries);
+
+    if self.in_flight < self.max_concurrency {
+        let prev = self.tasks.insert(id, TaskEntry { /* ... */ });
+        assert!(prev.is_none(), "task_id collision");
+        self.in_flight += 1;
+        self.dispatch(id, task);
+    } else {
+        let prev = self.tasks.insert(id, TaskEntry { /* ... */ });
+        assert!(prev.is_none(), "task_id collision");
+    }
+}
+
+// AFTER
+fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>, origin: TaskOrigin) {
+    let id = self.next_task_id();
+    let retries_remaining = self.step_map.get(&task.step).map_or(0, |s| s.options.max_retries);
+
+    // LOG: TaskSubmitted
+    if let Some(writer) = &mut self.log_writer {
+        writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
+            task_id: id,
+            step: task.step.clone(),
+            value: task.value.0.clone(),
+            parent_id,
+            origin,
+        }));
+    }
+
+    if self.in_flight < self.max_concurrency {
+        let prev = self.tasks.insert(id, TaskEntry { /* ... */ });
+        assert!(prev.is_none(), "task_id collision");
+        self.in_flight += 1;
+        self.dispatch(id, task);
+    } else {
+        let prev = self.tasks.insert(id, TaskEntry { /* ... */ });
+        assert!(prev.is_none(), "task_id collision");
+    }
+}
+```
+
+#### Before/After: task_succeeded
+
+```rust
+// BEFORE
+fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, value: StepInputValue) {
+    self.in_flight -= 1;
+
+    let entry = self.tasks.get(&task_id).expect("task must exist");
+    let finally_hook = self.lookup_finally_hook(entry);
+
+    if spawned.is_empty() {
+        if let Some(hook) = finally_hook {
+            self.schedule_finally(task_id, hook, value);
+        }
+        self.remove_and_notify_parent(task_id);
+    } else {
+        let count = NonZeroU16::new(spawned.len() as u16).unwrap();
+        let finally_data = finally_hook.map(|hook| (hook, value));
+        // ... transition to WaitingForChildren, queue children
+        for child in spawned {
+            self.queue_task(child, Some(task_id));
+        }
+    }
+}
+
+// AFTER
+fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, value: StepInputValue) {
+    self.in_flight -= 1;
+
+    // Collect spawned task IDs for logging (assigned during queue_task)
+    let spawned_start_id = LogTaskId(self.next_task_id);
+
+    let entry = self.tasks.get(&task_id).expect("task must exist");
+    let finally_hook = self.lookup_finally_hook(entry);
+
+    if spawned.is_empty() {
+        // LOG: TaskCompleted(Success) with no children
+        if let Some(writer) = &mut self.log_writer {
+            writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids: vec![] }),
+            }));
+        }
+
+        if let Some(hook) = finally_hook {
+            self.schedule_finally(task_id, hook, value);
+        }
+        self.remove_and_notify_parent(task_id);
+    } else {
+        let spawned_count = spawned.len();
+        let count = NonZeroU16::new(spawned_count as u16).unwrap();
+        let finally_data = finally_hook.map(|hook| (hook, value));
+        // ... transition to WaitingForChildren
+
+        for child in spawned {
+            self.queue_task(child, Some(task_id), TaskOrigin::Spawned);
+        }
+
+        // LOG: TaskCompleted(Success) with spawned_task_ids
+        let spawned_task_ids: Vec<LogTaskId> = (spawned_start_id.0..self.next_task_id)
+            .map(LogTaskId)
+            .collect();
+        if let Some(writer) = &mut self.log_writer {
+            writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids }),
+            }));
+        }
+    }
+}
+```
+
+#### Before/After: task_failed
+
+```rust
+// BEFORE
+fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>) {
+    let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
+
+    if let Some(retry_task) = retry {
+        self.queue_task(retry_task, parent_id);
+        self.transition_to_done(task_id);
+    } else {
+        // Permanent failure
+        let entry = self.tasks.remove(&task_id).expect("task must exist");
+        // ...
+    }
+}
+
+// AFTER
+fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>, reason: FailureReason) {
+    let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
+
+    let retry_task_id = if let Some(retry_task) = retry {
+        let retry_id = LogTaskId(self.next_task_id);  // Will be assigned by queue_task
+        self.queue_task(retry_task, parent_id, TaskOrigin::Retry { replaces: task_id });
+        self.transition_to_done(task_id);
+        Some(retry_id)
+    } else {
+        let entry = self.tasks.remove(&task_id).expect("task must exist");
+        // ...
+        None
+    };
+
+    // LOG: TaskCompleted(Failed)
+    if let Some(writer) = &mut self.log_writer {
+        writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+            task_id,
+            outcome: TaskOutcome::Failed(TaskFailed { reason, retry_task_id }),
+        }));
+    }
+}
+```
+
+#### Before/After: schedule_finally
+
+```rust
+// BEFORE
+fn schedule_finally(&mut self, task_id: LogTaskId, hook: HookScript, value: StepInputValue) {
+    let entry = self.tasks.get(&task_id).expect("task must exist");
+    let parent_id = entry.parent_id;
+    let step = entry.step.clone();
+
+    if let Some(parent_id) = parent_id {
+        self.increment_pending_children(parent_id);
+    }
+
+    let id = self.next_task_id();
+    let finally_entry = TaskEntry {
+        step,
+        parent_id,
+        finally_script: Some(hook),
+        state: TaskState::Pending { value },
+        retries_remaining,
+    };
+    self.tasks.insert(id, finally_entry);
+}
+
+// AFTER
+fn schedule_finally(&mut self, task_id: LogTaskId, hook: HookScript, value: StepInputValue) {
+    let entry = self.tasks.get(&task_id).expect("task must exist");
+    let parent_id = entry.parent_id;
+    let step = entry.step.clone();
+
+    if let Some(parent_id) = parent_id {
+        self.increment_pending_children(parent_id);
+    }
+
+    let id = self.next_task_id();
+
+    // LOG: TaskSubmitted with Finally origin
+    if let Some(writer) = &mut self.log_writer {
+        writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
+            task_id: id,
+            step: step.clone(),
+            value: value.0.clone(),
+            parent_id,
+            origin: TaskOrigin::Finally { finally_for: task_id },
+        }));
+    }
+
+    let finally_entry = TaskEntry {
+        step,
+        parent_id,
+        finally_script: Some(hook),
+        state: TaskState::Pending { value },
+        retries_remaining,
+    };
+    self.tasks.insert(id, finally_entry);
+}
+```
+
 **Tests:**
-- Run existing demos with `--state-log`, verify log is valid
-- Parse log and verify structure matches execution
+- Run existing demos with `--state-log`, verify log is valid NDJSON
+- Parse log and verify task IDs are monotonic
+- Verify parent_id relationships match spawned_task_ids
+- Verify retry chains have correct `replaces` references
+- Verify finally tasks have correct `finally_for` references
 
 **Branch:** `state/03-logging`
 
@@ -365,18 +696,201 @@ The runner needs a way to be initialized with pre-existing state:
 
 This is NOT exposed via `--initial-state` CLI. It's internal to resume.
 
-**Resume entry point:**
-- New function: `run_from_state(config, reconstructed_state, runner_config, log_writer)`
-- Or: runner accepts `InitialState::Fresh(Vec<Task>) | InitialState::Reconstructed(ReconstructedState)`
+#### Before/After: TaskRunner::new signature
+
+```rust
+// BEFORE
+impl<'a> TaskRunner<'a> {
+    fn new(
+        config: &'a Config,
+        schemas: &'a CompiledSchemas,
+        runner_config: &RunnerConfig<'a>,
+        initial_tasks: Vec<Task>,
+    ) -> io::Result<Self> {
+        // ... setup ...
+        for task in initial_tasks {
+            runner.queue_task(task, None, TaskOrigin::Initial);
+        }
+        Ok(runner)
+    }
+}
+
+// AFTER
+impl<'a> TaskRunner<'a> {
+    fn new(
+        config: &'a Config,
+        schemas: &'a CompiledSchemas,
+        runner_config: &RunnerConfig<'a>,
+        initial_state: InitialState,
+        log_writer: Option<StateLogWriter>,
+    ) -> io::Result<Self> {
+        // ... setup ...
+        match initial_state {
+            InitialState::Fresh(tasks) => {
+                for task in tasks {
+                    runner.queue_task(task, None, TaskOrigin::Initial);
+                }
+            }
+            InitialState::Resumed(state) => {
+                runner.load_reconstructed_state(state);
+            }
+        }
+        Ok(runner)
+    }
+}
+```
+
+#### New: InitialState enum
+
+```rust
+pub enum InitialState {
+    /// Fresh run with initial tasks (from --initial-state CLI)
+    Fresh(Vec<Task>),
+    /// Resumed from log file
+    Resumed(ReconstructedState),
+}
+```
+
+#### New: ReconstructedState (from gsd_state crate)
+
+```rust
+/// State reconstructed from a log file for resume.
+pub struct ReconstructedState {
+    /// Tasks that need their action run (were Pending or InFlight at crash).
+    pub pending_tasks: Vec<ReconstructedTask>,
+    /// Tasks waiting for children (action completed, children still running).
+    pub waiting_tasks: Vec<WaitingTask>,
+    /// Next task ID to use (continues from log).
+    pub next_task_id: u32,
+}
+
+pub struct ReconstructedTask {
+    pub task_id: LogTaskId,
+    pub step: StepName,
+    pub value: StepInputValue,
+    pub parent_id: Option<LogTaskId>,
+    pub origin: TaskOrigin,
+    pub finally_script: Option<HookScript>,  // For Finally tasks
+}
+
+pub struct WaitingTask {
+    pub task_id: LogTaskId,
+    pub step: StepName,
+    pub parent_id: Option<LogTaskId>,
+    pub pending_children_count: NonZeroU16,
+    pub finally_data: Option<(HookScript, StepInputValue)>,
+}
+```
+
+#### New: load_reconstructed_state
+
+```rust
+impl TaskRunner<'_> {
+    fn load_reconstructed_state(&mut self, state: ReconstructedState) {
+        self.next_task_id = state.next_task_id;
+
+        // Load waiting tasks (don't dispatch, just wait for children)
+        for waiting in state.waiting_tasks {
+            self.tasks.insert(waiting.task_id, TaskEntry {
+                step: waiting.step,
+                parent_id: waiting.parent_id,
+                finally_script: None,  // Waiting tasks are never finally tasks
+                state: TaskState::WaitingForChildren {
+                    pending_children_count: waiting.pending_children_count,
+                    finally_data: waiting.finally_data,
+                },
+                retries_remaining: 0,  // Not used for waiting tasks
+            });
+        }
+
+        // Load pending tasks (will be dispatched by dispatch_all_pending)
+        for pending in state.pending_tasks {
+            let retries_remaining = self.step_map
+                .get(&pending.step)
+                .map_or(0, |s| s.options.max_retries);
+
+            self.tasks.insert(pending.task_id, TaskEntry {
+                step: pending.step,
+                parent_id: pending.parent_id,
+                finally_script: pending.finally_script,
+                state: TaskState::Pending { value: pending.value },
+                retries_remaining,
+            });
+        }
+    }
+}
+```
+
+#### Before/After: run() public function
+
+```rust
+// BEFORE
+pub fn run(
+    config: &Config,
+    schemas: &CompiledSchemas,
+    runner_config: &RunnerConfig<'_>,
+    initial_tasks: Vec<Task>,
+) -> io::Result<()> {
+    let mut runner = TaskRunner::new(config, schemas, runner_config, initial_tasks)?;
+    // ... run loop ...
+}
+
+// AFTER
+pub fn run(
+    config: &Config,
+    schemas: &CompiledSchemas,
+    runner_config: &RunnerConfig<'_>,
+    initial_state: InitialState,
+    log_writer: Option<StateLogWriter>,
+) -> io::Result<()> {
+    let mut runner = TaskRunner::new(config, schemas, runner_config, initial_state, log_writer)?;
+    // ... run loop ...
+}
+
+/// Resume a run from a log file.
+pub fn resume(
+    old_log_path: &Path,
+    new_log_path: &Path,
+    runner_config: &RunnerConfig<'_>,
+) -> io::Result<()> {
+    // 1. Read and reconstruct from old log
+    let (config, state) = gsd_state::reconstruct_from_file(old_log_path)?;
+
+    // 2. Create new log, copy old entries
+    let mut writer = StateLogWriter::new(new_log_path)?;
+    gsd_state::copy_log(old_log_path, &mut writer)?;
+
+    // 3. Compile schemas from config
+    let schemas = CompiledSchemas::new(&config)?;
+
+    // 4. Run with reconstructed state
+    run(&config, &schemas, runner_config, InitialState::Resumed(state), Some(writer))
+}
+```
 
 **Tests:**
-- Resume with no pending tasks (completes immediately)
-- Resume with pending root tasks (re-run actions)
-- Resume with parent in WaitingForChildren (don't re-run parent action)
-- Resume with pending retry task
-- Resume with pending finally task
-- Resume with nested: parent waiting, child pending, finally pending
-- Crash simulation: run partway, kill, resume, verify completion
+```rust
+#[test] fn resume_empty_log_errors()
+#[test] fn resume_no_pending_completes_immediately()
+#[test] fn resume_pending_root_task_runs_action()
+#[test] fn resume_pending_child_parent_waits()
+#[test] fn resume_waiting_parent_not_re_run()
+#[test] fn resume_pending_retry_runs()
+#[test] fn resume_pending_finally_runs()
+#[test] fn resume_nested_waiting_child_pending_finally_pending()
+#[test] fn resume_preserves_task_ids()  // new tasks get IDs after resumed ones
+#[test] fn resume_new_log_contains_old_entries()
+#[test] fn resume_new_log_appends_new_entries()
+#[test] fn resume_twice_works()  // resume from resumed log
+```
+
+**Integration tests (with actual process):**
+```rust
+#[test] fn crash_simulation_linear_workflow()
+#[test] fn crash_simulation_fan_out()
+#[test] fn crash_simulation_with_finally()
+#[test] fn crash_simulation_with_retries()
+```
 
 **Branch:** `state/04-resume`
 
