@@ -265,31 +265,40 @@ fn queue_finally_task(
     parent_id: LogTaskId,
 ) {
     let id = self.next_task_id();
-    let kind = TaskKind::Finally { step, input };
-    let retries_remaining = 3;  // Finally tasks get retries like any other task
+    let kind = TaskKind::Finally { step: step.clone(), input };
+
+    // Get retry count from step config
+    let retries_remaining = self.step_map.get(&step)
+        .map(|s| s.options.max_retries)
+        .unwrap_or(0);
 
     let entry = TaskEntry {
         parent_id: Some(parent_id),
-        state: TaskState::Pending,
+        state: TaskState::Pending,  // Always queue as Pending
         kind,
         retries_remaining,
     };
 
-    if self.in_flight < self.max_concurrency {
-        self.dispatch_entry(id, entry);
-    } else {
-        let prev = self.tasks.insert(id, entry);
-        assert!(prev.is_none());
-    }
+    // Just insert as Pending - dispatch_all_pending() handles concurrency
+    let prev = self.tasks.insert(id, entry);
+    assert!(prev.is_none());
+    // Note: dispatch_all_pending() called at start of next iterator loop
 }
 ```
 
 #### `mod.rs` - `dispatch()` changes
 
-Dispatch now matches on `TaskKind`:
+Dispatch matches on `TaskKind`. The key invariant: `InFlight::new()` is only called immediately after spawning the thread - creating the marker proves dispatch happened.
 
 ```rust
-fn dispatch_entry(&mut self, task_id: LogTaskId, mut entry: TaskEntry) {
+/// Dispatch a pending task. Called from dispatch_all_pending().
+/// Precondition: task_id exists in self.tasks with state Pending.
+fn dispatch(&mut self, task_id: LogTaskId) {
+    let entry = self.tasks.get_mut(&task_id).expect("task must exist");
+    let TaskState::Pending = &entry.state else {
+        panic!("dispatch called on non-Pending task");
+    };
+
     let tx = self.tx.clone();
 
     match &entry.kind {
@@ -318,10 +327,20 @@ fn dispatch_entry(&mut self, task_id: LogTaskId, mut entry: TaskEntry) {
         }
     }
 
+    // InFlight::new() immediately after spawn - creating marker proves dispatch
     entry.state = TaskState::InFlight(InFlight::new());
-    let prev = self.tasks.insert(task_id, entry);
-    assert!(prev.is_none());
     self.in_flight += 1;
+}
+
+/// Dispatch pending tasks up to max concurrency. Single place for concurrency check.
+fn dispatch_all_pending(&mut self) {
+    while self.in_flight < self.max_concurrency {
+        let Some(task_id) = self.tasks.iter()
+            .find_map(|(id, e)| matches!(e.state, TaskState::Pending).then_some(*id))
+        else { break };
+
+        self.dispatch(task_id);
+    }
 }
 ```
 
