@@ -171,19 +171,24 @@ fn transition_to_done(&mut self, task_id: LogTaskId) -> Option<LogTaskId> {
     entry.parent_id
 }
 
-/// Add a new pending task, transition to in_flight immediately if under concurrency limit
+/// Add a new task - InFlight if under concurrency limit, otherwise Pending
 fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) -> Option<(LogTaskId, Task)> {
     let id = self.next_task_id();
-    self.tasks.insert(id, TaskEntry {
-        parent_id,
-        state: TaskState::Pending(task),
-    });
 
-    // Opportunistically dispatch if we have capacity
     if self.in_flight < self.max_concurrency {
-        let task = self.transition_to_in_flight(id);
+        // Create directly as InFlight
+        self.tasks.insert(id, TaskEntry {
+            parent_id,
+            state: TaskState::InFlight,
+        });
+        self.in_flight += 1;
         Some((id, task))
     } else {
+        // Queue as Pending
+        self.tasks.insert(id, TaskEntry {
+            parent_id,
+            state: TaskState::Pending(task),
+        });
         None
     }
 }
