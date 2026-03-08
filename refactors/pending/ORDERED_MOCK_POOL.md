@@ -42,8 +42,7 @@ Add `OrderedAgentController` that lets tests explicitly control when each task c
 ### New Types
 
 ```rust
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 /// A waiting task that hasn't been completed yet.
 pub struct WaitingTask {
@@ -60,43 +59,51 @@ pub struct WaitingTask {
 /// Tasks register themselves when they arrive, and tests can complete
 /// them in any order by specifying which task to complete.
 pub struct OrderedAgentController {
-    /// Tasks waiting for completion, keyed by arrival order.
+    /// Tasks waiting for completion.
     waiting: Arc<Mutex<Vec<WaitingTask>>>,
-    /// Notifier for when new tasks arrive.
-    task_arrived: Arc<(Mutex<()>, Condvar)>,
+    /// Channel that receives notifications when tasks arrive.
+    /// Each message is the kind of the task that arrived.
+    arrival_rx: mpsc::Receiver<String>,
 }
 
 impl OrderedAgentController {
     /// Wait for a task with the given kind to arrive.
+    /// Blocks until a matching task is available.
     /// Returns the index of the task in the waiting queue.
     pub fn wait_for(&self, kind: &str) -> usize {
-        loop {
-            {
-                let waiting = self.waiting.lock().unwrap();
-                if let Some(idx) = waiting.iter().position(|t| t.kind == kind) {
-                    return idx;
-                }
+        // First check if already waiting
+        {
+            let waiting = self.waiting.lock().unwrap();
+            if let Some(idx) = waiting.iter().position(|t| t.kind == kind) {
+                return idx;
             }
-            // Wait for notification that a new task arrived
-            let (lock, cvar) = &*self.task_arrived;
-            let guard = lock.lock().unwrap();
-            let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
+        }
+
+        // Block on arrival channel until we get the right kind
+        loop {
+            let arrived_kind = self.arrival_rx.recv().expect("agent dropped");
+            if arrived_kind == kind {
+                let waiting = self.waiting.lock().unwrap();
+                return waiting.iter().position(|t| t.kind == kind)
+                    .expect("task disappeared after arrival notification");
+            }
+            // Wrong kind arrived, keep waiting
         }
     }
 
     /// Wait for any task to arrive. Returns its index.
     pub fn wait_for_any(&self) -> usize {
-        loop {
-            {
-                let waiting = self.waiting.lock().unwrap();
-                if !waiting.is_empty() {
-                    return waiting.len() - 1;  // Most recent
-                }
+        // First check if any already waiting
+        {
+            let waiting = self.waiting.lock().unwrap();
+            if !waiting.is_empty() {
+                return 0;
             }
-            let (lock, cvar) = &*self.task_arrived;
-            let guard = lock.lock().unwrap();
-            let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
         }
+
+        // Block until something arrives
+        let _ = self.arrival_rx.recv().expect("agent dropped");
+        0  // Return first task
     }
 
     /// Get list of currently waiting tasks (kind, payload).
@@ -115,6 +122,7 @@ impl OrderedAgentController {
     }
 
     /// Complete the first waiting task with the given kind.
+    /// Blocks until a task of that kind is available.
     pub fn complete(&self, kind: &str, response: &str) {
         let idx = self.wait_for(kind);
         self.complete_at(idx, response);
@@ -134,8 +142,9 @@ impl OrderedAgentController {
         self.complete(kind, &format!("[{}]", tasks.join(", ")));
     }
 
-    /// Complete all waiting tasks of a given kind with the same response.
-    pub fn complete_all(&self, kind: &str, response: &str) {
+    /// Complete all currently waiting tasks of a given kind.
+    /// Does not block - only completes tasks already waiting.
+    pub fn complete_all_waiting(&self, kind: &str, response: &str) {
         loop {
             let idx = {
                 let waiting = self.waiting.lock().unwrap();
@@ -148,9 +157,9 @@ impl OrderedAgentController {
         }
     }
 
-    /// Terminate all waiting tasks of a given kind.
-    pub fn terminate_all(&self, kind: &str) {
-        self.complete_all(kind, "[]");
+    /// Terminate all currently waiting tasks of a given kind.
+    pub fn terminate_all_waiting(&self, kind: &str) {
+        self.complete_all_waiting(kind, "[]");
     }
 }
 ```
@@ -168,10 +177,9 @@ impl GsdTestAgent {
     /// Returns (agent, controller).
     pub fn ordered(root: &Path) -> (Self, OrderedAgentController) {
         let waiting: Arc<Mutex<Vec<WaitingTask>>> = Arc::new(Mutex::new(Vec::new()));
-        let task_arrived = Arc::new((Mutex::new(()), Condvar::new()));
+        let (arrival_tx, arrival_rx) = mpsc::channel::<String>();
 
         let waiting_clone = waiting.clone();
-        let task_arrived_clone = task_arrived.clone();
 
         let agent = Self::start(root, Duration::ZERO, move |payload| {
             // Parse task kind from payload
@@ -187,17 +195,14 @@ impl GsdTestAgent {
             {
                 let mut waiting = waiting_clone.lock().unwrap();
                 waiting.push(WaitingTask {
-                    kind,
+                    kind: kind.clone(),
                     payload: payload.to_string(),
                     response_tx: tx,
                 });
             }
 
-            // Notify controller that a task arrived
-            {
-                let (_, cvar) = &*task_arrived_clone;
-                cvar.notify_all();
-            }
+            // Notify controller that a task arrived (blocks if controller is slow)
+            let _ = arrival_tx.send(kind);
 
             // Block until test sends response
             rx.recv().unwrap_or_else(|_| "[]".to_string())
@@ -205,7 +210,7 @@ impl GsdTestAgent {
 
         let controller = OrderedAgentController {
             waiting,
-            task_arrived,
+            arrival_rx,
         };
 
         (agent, controller)
