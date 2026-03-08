@@ -141,17 +141,17 @@ Task created → [Pending] → [InFlight] ──┬── success with children 
 
 ```rust
 /// Pending → InFlight
-fn dispatch(&mut self, task_id: LogTaskId) -> Task {
+fn transition_to_in_flight(&mut self, task_id: LogTaskId) -> Task {
     let entry = self.tasks.get_mut(&task_id).expect("task must exist");
     let TaskState::Pending(task) = std::mem::replace(&mut entry.state, TaskState::InFlight) else {
-        panic!("dispatch called on non-Pending task");
+        panic!("transition_to_in_flight called on non-Pending task");
     };
     self.in_flight += 1;
     task
 }
 
 /// InFlight → Waiting
-fn start_waiting(
+fn transition_to_waiting(
     &mut self,
     task_id: LogTaskId,
     pending_count: NonZeroU16,
@@ -164,14 +164,14 @@ fn start_waiting(
 }
 
 /// InFlight → removed
-fn finish_in_flight(&mut self, task_id: LogTaskId) -> Option<LogTaskId> {
+fn transition_to_done(&mut self, task_id: LogTaskId) -> Option<LogTaskId> {
     let entry = self.tasks.remove(&task_id).expect("task must exist");
     assert!(matches!(entry.state, TaskState::InFlight));
     self.in_flight -= 1;
     entry.parent_id
 }
 
-/// Add a new pending task, dispatch immediately if under concurrency limit
+/// Add a new pending task, transition to in_flight immediately if under concurrency limit
 fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) -> Option<(LogTaskId, Task)> {
     let id = self.next_task_id();
     self.tasks.insert(id, TaskEntry {
@@ -181,7 +181,7 @@ fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) -> Option<(Lo
 
     // Opportunistically dispatch if we have capacity
     if self.in_flight < self.max_concurrency {
-        let task = self.dispatch(id);
+        let task = self.transition_to_in_flight(id);
         Some((id, task))
     } else {
         None
@@ -189,7 +189,7 @@ fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) -> Option<(Lo
 }
 ```
 
-Note: No `finish_waiting` - callers that know they're in `Waiting` state remove directly to avoid redundant matching.
+Note: No `transition_from_waiting` - callers that know they're in `Waiting` state remove directly to avoid redundant matching.
 
 ### Key Operations
 
@@ -206,7 +206,7 @@ fn dispatch_next(&mut self) -> Option<(LogTaskId, Task)> {
     let task_id = self.tasks.iter()
         .find_map(|(id, entry)| matches!(entry.state, TaskState::Pending(_)).then_some(*id))?;
 
-    let task = self.dispatch(task_id);
+    let task = self.transition_to_in_flight(task_id);
     Some((task_id, task))
 }
 ```
@@ -223,7 +223,7 @@ fn task_succeeded(&mut self, task_id: LogTaskId, step_name: StepName, spawned: V
         // Has children - wait for them
         let continuation = finally_hook.map(|_| Continuation { step_name, value: effective_value });
         let count = NonZeroU16::new(spawned.len() as u16).unwrap();
-        self.start_waiting(task_id, count, continuation);
+        self.transition_to_waiting(task_id, count, continuation);
         for child in spawned {
             if let Some(dispatch) = self.queue_task(child, Some(task_id)) {
                 to_dispatch.push(dispatch);
@@ -234,24 +234,24 @@ fn task_succeeded(&mut self, task_id: LogTaskId, step_name: StepName, spawned: V
         let continuation_spawned = run_finally_hook_direct(&hook, &effective_value.0);
         if !continuation_spawned.is_empty() {
             let count = NonZeroU16::new(continuation_spawned.len() as u16).unwrap();
-            self.start_waiting(task_id, count, None);  // continuation already ran
+            self.transition_to_waiting(task_id, count, None);  // continuation already ran
             for child in continuation_spawned {
                 if let Some(dispatch) = self.queue_task(child, Some(task_id)) {
                     to_dispatch.push(dispatch);
                 }
             }
         } else {
-            self.finish_in_flight_and_notify(task_id, &mut to_dispatch);
+            self.transition_to_done_and_notify(task_id, &mut to_dispatch);
         }
     } else {
         // No children, no finally - done
-        self.finish_in_flight_and_notify(task_id, &mut to_dispatch);
+        self.transition_to_done_and_notify(task_id, &mut to_dispatch);
     }
     to_dispatch
 }
 
-fn finish_in_flight_and_notify(&mut self, task_id: LogTaskId, to_dispatch: &mut Vec<(LogTaskId, Task)>) {
-    if let Some(parent_id) = self.finish_in_flight(task_id) {
+fn transition_to_done_and_notify(&mut self, task_id: LogTaskId, to_dispatch: &mut Vec<(LogTaskId, Task)>) {
+    if let Some(parent_id) = self.transition_to_done(task_id) {
         self.decrement_parent(parent_id, to_dispatch);
     }
 }
@@ -263,7 +263,7 @@ fn finish_in_flight_and_notify(&mut self, task_id: LogTaskId, to_dispatch: &mut 
 fn task_retried(&mut self, task_id: LogTaskId, retry_task: Task) -> Option<(LogTaskId, Task)> {
     let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
     let dispatch = self.queue_task(retry_task, parent_id);
-    self.finish_in_flight(task_id);  // Don't notify parent
+    self.transition_to_done(task_id);  // Don't notify parent
     dispatch
 }
 ```
@@ -273,7 +273,7 @@ fn task_retried(&mut self, task_id: LogTaskId, retry_task: Task) -> Option<(LogT
 ```rust
 fn task_failed(&mut self, task_id: LogTaskId) -> Vec<(LogTaskId, Task)> {
     let mut to_dispatch = Vec::new();
-    self.finish_in_flight_and_notify(task_id, &mut to_dispatch);
+    self.transition_to_done_and_notify(task_id, &mut to_dispatch);
     to_dispatch
 }
 ```
