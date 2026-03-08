@@ -89,7 +89,7 @@ else
     # Run GSD
     echo ""
     echo "Running GSD with simple config..."
-    $GSD --root "$POOL_ROOT" run "$SCRIPT_DIR/config.jsonc" \
+    $GSD --root "$POOL_ROOT" run --config "$SCRIPT_DIR/config.jsonc" \
         --pool "$POOL_ID" \
         --initial-state '[{"kind": "Start", "value": {}}]'
 
