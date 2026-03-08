@@ -9,7 +9,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::time::Duration;
@@ -79,7 +79,10 @@ fn valid_schema_passes() {
 
     let config = config_with_schema();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Input", serde_json::json!({"count": 5}))];
+    let initial_tasks = vec![Task::new(
+        "Input",
+        StepInputValue(serde_json::json!({"count": 5})),
+    )];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -144,7 +147,7 @@ fn invalid_response_causes_retry() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Input", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Input", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),

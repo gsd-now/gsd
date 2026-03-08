@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::time::Duration;
@@ -66,7 +66,7 @@ fn three_step_linear_machine() {
     let config = linear_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
-    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Start", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -111,7 +111,7 @@ fn instructions_included_in_payload() {
     let config = linear_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let invoker = create_test_invoker();
-    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Start", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),

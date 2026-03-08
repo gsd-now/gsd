@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -108,7 +108,10 @@ fn large_fan_out() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Distribute", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new(
+        "Distribute",
+        StepInputValue(serde_json::json!({})),
+    )];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -156,7 +159,10 @@ fn command_action_executes() {
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Echo", serde_json::json!({"message": "hello"}))];
+    let initial_tasks = vec![Task::new(
+        "Echo",
+        StepInputValue(serde_json::json!({"message": "hello"})),
+    )];
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
         working_dir: Path::new("."),
@@ -203,7 +209,7 @@ fn rapid_task_completion() {
 
     // Submit many tasks
     let initial_tasks: Vec<Task> = (0..50)
-        .map(|i| Task::new("Fast", serde_json::json!({"id": i})))
+        .map(|i| Task::new("Fast", StepInputValue(serde_json::json!({"id": i}))))
         .collect();
 
     let runner_config = RunnerConfig {
@@ -236,7 +242,7 @@ fn unknown_step_in_initial_tasks_returns_error() {
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let initial_tasks = vec![
-        Task::new("Unknown", serde_json::json!({})), // Unknown step - should error
+        Task::new("Unknown", StepInputValue(serde_json::json!({}))), // Unknown step - should error
     ];
     let runner_config = RunnerConfig {
         agent_pool_root: &root,
@@ -285,7 +291,7 @@ fn invalid_value_schema_in_initial_tasks_returns_error() {
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
     let initial_tasks = vec![
-        Task::new("Validated", serde_json::json!({})), // Missing required "name" - should error
+        Task::new("Validated", StepInputValue(serde_json::json!({}))), // Missing required "name" - should error
     ];
     let runner_config = RunnerConfig {
         agent_pool_root: &root,

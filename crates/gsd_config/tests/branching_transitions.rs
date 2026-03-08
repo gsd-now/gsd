@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ fn branch_to_path_a() {
 
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Decide", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Decide", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -118,7 +118,7 @@ fn branch_to_path_b() {
 
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Decide", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Decide", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -178,7 +178,7 @@ fn fan_out_multiple_tasks() {
 
     let config = branching_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Decide", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Decide", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),

@@ -10,7 +10,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::path::Path;
 use std::sync::Arc;
@@ -70,7 +70,7 @@ fn invalid_transition_causes_retry() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Start", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -111,7 +111,7 @@ fn unknown_step_causes_retry() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Start", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -171,7 +171,7 @@ fn recovery_after_invalid_then_valid() {
 
     let config = strict_config();
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
-    let initial_tasks = vec![Task::new("Start", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Start", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),

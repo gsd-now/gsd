@@ -14,7 +14,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task};
 use rstest::rstest;
 use std::collections::HashSet;
 use std::path::Path;
@@ -70,7 +70,7 @@ fn tasks_execute_in_parallel() {
     // Submit 6 tasks - with 3 agents and 100ms delay, parallel execution
     // should take ~200ms (2 batches of 3), sequential would take ~600ms
     let initial_tasks: Vec<Task> = (0..6)
-        .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
+        .map(|i| Task::new("Worker", StepInputValue(serde_json::json!({"id": i}))))
         .collect();
 
     let runner_config = RunnerConfig {
@@ -138,7 +138,7 @@ fn work_distributed_across_agents() {
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let initial_tasks: Vec<Task> = (0..9)
-        .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
+        .map(|i| Task::new("Worker", StepInputValue(serde_json::json!({"id": i}))))
         .collect();
 
     let runner_config = RunnerConfig {
@@ -236,7 +236,7 @@ fn max_concurrency_limits_parallel_tasks() {
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
     let initial_tasks: Vec<Task> = (0..6)
-        .map(|i| Task::new("Worker", serde_json::json!({"id": i})))
+        .map(|i| Task::new("Worker", StepInputValue(serde_json::json!({"id": i}))))
         .collect();
 
     let runner_config = RunnerConfig {
@@ -314,7 +314,7 @@ fn nested_fan_out() {
 
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
-    let initial_tasks = vec![Task::new("Root", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("Root", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),

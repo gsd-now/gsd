@@ -12,7 +12,7 @@ use common::{
     AgentPoolHandle, GsdTestAgent, cleanup_test_dir, create_test_invoker, is_ipc_available,
     setup_test_dir,
 };
-use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, Task};
+use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, StepInputValue, Task};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -130,7 +130,7 @@ echo "finally_ran" > "{}"
     let config = config_file.resolve(Path::new(".")).expect("resolve config");
     let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
-    let initial_tasks = vec![Task::new("StepA", serde_json::json!({}))];
+    let initial_tasks = vec![Task::new("StepA", StepInputValue(serde_json::json!({})))];
     let runner_config = RunnerConfig {
         agent_pool_root: pool.pool_path(),
         working_dir: Path::new("."),
@@ -272,7 +272,7 @@ echo "finally_executed" > "{}"
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("Parent", serde_json::json!({}))],
+        vec![Task::new("Parent", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -429,7 +429,7 @@ echo "child_finally" >> "{}"
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("Parent", serde_json::json!({}))],
+        vec![Task::new("Parent", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -542,7 +542,7 @@ echo "finally_executed" > "{}"
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("Parent", serde_json::json!({}))],
+        vec![Task::new("Parent", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -696,7 +696,7 @@ cat  # pass through stdin to stdout
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("StepA", serde_json::json!({}))],
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -856,7 +856,7 @@ cat  # pass through stdin to stdout
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("StepA", serde_json::json!({}))],
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -1000,7 +1000,7 @@ fn deeply_nested_finally_chain() {
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("StepA", serde_json::json!({}))],
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -1145,7 +1145,7 @@ fn multiple_children_with_finally() {
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("StepA", serde_json::json!({}))],
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();
@@ -1300,7 +1300,7 @@ fn finally_spawns_multiple_tasks() {
         &config,
         &schemas,
         &runner_config,
-        vec![Task::new("StepA", serde_json::json!({}))],
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
     );
 
     let _processed = agent.stop();

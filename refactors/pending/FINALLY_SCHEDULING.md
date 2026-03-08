@@ -246,50 +246,43 @@ A (waiting for B)
 ```
 
 ```rust
+/// Look up the finally hook for a task's step, if any.
+/// Returns None for Finally tasks (no "finally of finally").
+fn lookup_finally_hook(&self, entry: &TaskEntry) -> Option<HookScript> {
+    if entry.finally_script.is_some() {
+        return None;
+    }
+    self.config.steps.iter()
+        .find(|s| s.name == entry.step)
+        .and_then(|s| s.finally_hook.clone())
+}
+
 /// Called when a task completes successfully.
-/// If task has finally, schedules it as sibling. Then unconditionally removes task.
+/// Schedules finally as sibling (if any), then removes task.
 fn task_succeeded(
     &mut self,
     task_id: LogTaskId,
     spawned: Vec<Task>,
     value: StepInputValue,
 ) {
-    self.in_flight -= 1;  // Unconditional - task was InFlight
+    self.in_flight -= 1;
 
     let entry = self.tasks.get(&task_id).expect("task must exist");
     let step_name = entry.step.clone();
-
-    // Two orthogonal questions:
-    //   1. entry.finally_script: "Am I a finally task?" (this task's type)
-    //   2. step.finally_hook:    "Does this step have a finally hook?" (config)
-    //
-    // Only Step tasks (finally_script=None) can have finally hooks.
-    // Finally tasks (finally_script=Some) never spawn their own finally -
-    // there's no "finally of finally". We check entry.finally_script first
-    // to skip the config lookup entirely for finally tasks.
-    let finally_hook: Option<HookScript> = if entry.finally_script.is_none() {
-        self.config.steps.iter()
-            .find(|s| s.name == step_name)
-            .and_then(|s| s.finally_hook.clone())
-    } else {
-        None  // Finally tasks don't have finally hooks
-    };
+    let finally_hook = self.lookup_finally_hook(entry);
 
     if spawned.is_empty() {
-        // No children - schedule finally (if any), then remove
         if let Some(hook) = finally_hook {
             self.schedule_finally(task_id, step_name, hook, value);
         }
-        self.remove_and_notify_parent(task_id);  // Unconditional
+        self.remove_and_notify_parent(task_id);
     } else {
-        // Has children - wait for them, store hook + value for later
         let entry = self.tasks.get_mut(&task_id).expect("task must exist");
         let count = NonZeroU16::new(spawned.len() as u16).unwrap();
         entry.state = TaskState::WaitingForChildren {
             pending_children_count: count,
             finally_data: finally_hook.map(|hook| (hook, value)),
         };
-
         for child in spawned {
             self.queue_task(child, Some(task_id));
         }
@@ -297,8 +290,7 @@ fn task_succeeded(
 }
 
 /// Schedule a finally task as a sibling of the given task.
-/// The finally becomes a child of task_id's parent (not a child of task_id).
-/// Does NOT remove task_id - caller must do that afterward.
+/// Does NOT remove task_id - caller must do that.
 fn schedule_finally(
     &mut self,
     task_id: LogTaskId,
@@ -309,12 +301,10 @@ fn schedule_finally(
     let entry = self.tasks.get(&task_id).expect("task must exist");
     let parent_id = entry.parent_id;
 
-    // Increment parent's count (we're adding a sibling to task_id)
     if let Some(parent_id) = parent_id {
         self.increment_pending_children(parent_id);
     }
 
-    // Create finally task entry directly (inlined queue_finally_task)
     let id = self.next_task_id();
     let retries_remaining = self.step_map.get(&step)
         .map(|s| s.options.max_retries)
@@ -323,15 +313,14 @@ fn schedule_finally(
     let entry = TaskEntry {
         step,
         parent_id,
-        finally_script: Some(hook),  // This is a finally task
+        finally_script: Some(hook),
         state: TaskState::Pending { value },
         retries_remaining,
     };
-
     self.tasks.insert(id, entry);
 }
 
-/// Increment a WaitingForChildren task's pending_children_count.
+/// Increment a task's pending_children_count.
 fn increment_pending_children(&mut self, task_id: LogTaskId) {
     let entry = self.tasks.get_mut(&task_id).expect("task must exist");
     let TaskState::WaitingForChildren { pending_children_count, .. } = &mut entry.state else {
@@ -340,7 +329,7 @@ fn increment_pending_children(&mut self, task_id: LogTaskId) {
     *pending_children_count = NonZeroU16::new(pending_children_count.get() + 1).unwrap();
 }
 
-/// Queue a regular step task.
+/// Queue a step task.
 fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) {
     let id = self.next_task_id();
     let retries_remaining = self.step_map.get(&task.step)
@@ -354,33 +343,32 @@ fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) {
         state: TaskState::Pending { value: task.value },
         retries_remaining,
     };
-
     self.tasks.insert(id, entry);
 }
 
-/// Remove task from map and decrement parent's count.
+/// Remove task and decrement parent's count.
 fn remove_and_notify_parent(&mut self, task_id: LogTaskId) {
     let entry = self.tasks.remove(&task_id).expect("task must exist");
     if let Some(parent_id) = entry.parent_id {
-        self.decrement_parent(parent_id);
+        self.decrement_pending_children(parent_id);
     }
 }
 
-/// Decrement parent's pending_children_count. If hits zero, schedule finally (if any), then remove.
-fn decrement_parent(&mut self, parent_id: LogTaskId) {
-    let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
+/// Decrement a task's pending_children_count.
+/// When count hits zero: schedule finally (if any), then remove.
+fn decrement_pending_children(&mut self, task_id: LogTaskId) {
+    let entry = self.tasks.get_mut(&task_id).expect("task must exist");
     let TaskState::WaitingForChildren { pending_children_count, finally_data } = &mut entry.state else {
-        panic!("parent not in WaitingForChildren state");
+        panic!("task not in WaitingForChildren state");
     };
 
     let new_count = pending_children_count.get() - 1;
     if new_count == 0 {
-        // All children done - schedule finally (if stored), then unconditionally remove
         let step_name = entry.step.clone();
         if let Some((hook, value)) = finally_data.take() {
-            self.schedule_finally(parent_id, step_name, hook, value);
+            self.schedule_finally(task_id, step_name, hook, value);
         }
-        self.remove_and_notify_parent(parent_id);  // Unconditional
+        self.remove_and_notify_parent(task_id);
     } else {
         *pending_children_count = NonZeroU16::new(new_count).unwrap();
     }
@@ -399,47 +387,40 @@ fn decrement_parent(&mut self, parent_id: LogTaskId) {
 **This is the ONLY place that checks `finally_script`.** The key invariant: `InFlight::new()` is only called immediately after spawning the thread - creating the marker proves dispatch happened.
 
 ```rust
-/// Dispatch a pending task. Called from dispatch_all_pending().
-/// Precondition: task_id exists in self.tasks with state Pending.
+/// Dispatch a pending task.
 fn dispatch(&mut self, task_id: LogTaskId) {
     let entry = self.tasks.get_mut(&task_id).expect("task must exist");
     let TaskState::Pending { value } = &mut entry.state else {
         panic!("dispatch called on non-Pending task");
     };
-    let value = std::mem::take(value);  // Take the value out
+    let value = std::mem::take(value);
 
     let tx = self.tx.clone();
 
     if let Some(script) = &entry.finally_script {
-        // Finally task - script was looked up at scheduling time, use it directly
         let script = script.clone();
         let input_json = serde_json::to_string(&value).expect("input serializes");
         let step = entry.step.clone();
-
         info!(task_id = ?task_id, step = %step, "dispatching finally task");
-
         thread::spawn(move || {
             let result = run_shell_command(script.as_str(), &input_json, None);
             // ... send result back via tx
         });
     } else {
-        // Step task - run pre-hook with value, get effective_value, then run action
         let step_config = self.step_map.get(&entry.step).expect("step must exist");
         // ... spawn thread, submit to pool or run command
     }
 
-    // InFlight::new() immediately after spawn - creating marker proves dispatch
     entry.state = TaskState::InFlight(InFlight::new());
     self.in_flight += 1;
 }
 
-/// Dispatch pending tasks up to max concurrency. Single place for concurrency check.
+/// Dispatch pending tasks up to max concurrency.
 fn dispatch_all_pending(&mut self) {
     while self.in_flight < self.max_concurrency {
         let Some(task_id) = self.tasks.iter()
             .find_map(|(id, e)| matches!(e.state, TaskState::Pending).then_some(*id))
         else { break };
-
         self.dispatch(task_id);
     }
 }
@@ -447,13 +428,13 @@ fn dispatch_all_pending(&mut self) {
 
 #### Finally uses existing task handling
 
-**No special handling needed.** Outside of `dispatch()`, `TaskKind` is never matched. All task handling is kind-agnostic:
-- Retry: uses existing `task_failed()` - no special case for finally
-- Failure: uses existing failure propagation to parent - no special case for finally
-- Result: uses `SubmitResult::Command` (it's a shell command) - same as any command task
-- Spawned tasks: parsed from stdout as `Vec<Task>`, become children of finally task - standard behavior
+Outside of `dispatch()`, all task handling is kind-agnostic:
+- Retry: uses existing `task_failed()`
+- Failure: propagates to parent via existing mechanism
+- Result: uses `SubmitResult::Command`
+- Spawned tasks: become children of finally task
 
-The only finally-specific code is the match arm in `dispatch()` that looks up the script from config.
+The only finally-specific code is the `if let Some(script)` branch in `dispatch()`.
 
 ---
 
