@@ -150,8 +150,19 @@ impl<'a> TaskRunner<'a> {
         let id = self.next_task_id();
 
         if self.in_flight < self.max_concurrency {
-            self.dispatch(id, task, parent_id);
+            // Create entry in InFlight state and dispatch
+            let prev = self.tasks.insert(
+                id,
+                TaskEntry {
+                    parent_id,
+                    state: TaskState::InFlight(InFlight::new()),
+                },
+            );
+            assert!(prev.is_none(), "task_id collision: {id:?} already in map");
+            self.in_flight += 1;
+            self.dispatch(id, task);
         } else {
+            // Queue as Pending
             let prev = self.tasks.insert(
                 id,
                 TaskEntry {
@@ -163,8 +174,11 @@ impl<'a> TaskRunner<'a> {
         }
     }
 
-    /// Dispatch a task to a worker thread, creating `InFlight` state.
-    fn dispatch(&mut self, task_id: LogTaskId, task: Task, parent_id: Option<LogTaskId>) {
+    /// Dispatch a task to a worker thread.
+    ///
+    /// Precondition: The task must already be in `InFlight` state in the map
+    /// (set by `take_next_pending`).
+    fn dispatch(&self, task_id: LogTaskId, task: Task) {
         #[expect(clippy::expect_used)] // Invariant: config validation ensures all step names exist
         let step = self.step_map.get(&task.step).expect("[P014] unknown step");
 
@@ -199,42 +213,38 @@ impl<'a> TaskRunner<'a> {
                 });
             }
         }
-
-        let prev = self.tasks.insert(
-            task_id,
-            TaskEntry {
-                parent_id,
-                state: TaskState::InFlight(InFlight::new()),
-            },
-        );
-        assert!(
-            prev.is_none(),
-            "task_id collision: {task_id:?} already in map"
-        );
-        self.in_flight += 1;
     }
 
     /// Dispatch pending tasks up to max concurrency.
     fn dispatch_all_pending(&mut self) {
         while self.in_flight < self.max_concurrency {
-            // Find first Pending task (BTreeMap iteration = FIFO by task_id)
-            let Some(task_id) = self.tasks.iter().find_map(|(id, entry)| {
-                matches!(entry.state, TaskState::Pending(_)).then_some(*id)
-            }) else {
+            let Some((task_id, task)) = self.take_next_pending() else {
                 break;
             };
-            self.dispatch_pending(task_id);
+            self.dispatch(task_id, task);
         }
     }
 
-    /// Dispatch a specific pending task.
-    #[expect(clippy::expect_used, clippy::panic)] // Invariant: task must exist in Pending state
-    fn dispatch_pending(&mut self, task_id: LogTaskId) {
-        let entry = self.tasks.remove(&task_id).expect("task must exist");
-        let TaskState::Pending(task) = entry.state else {
-            panic!("dispatch_pending called on non-Pending task");
-        };
-        self.dispatch(task_id, task, entry.parent_id);
+    /// Find and extract the next pending task, transitioning it to `InFlight`.
+    ///
+    /// Returns `(task_id, task)` if a pending task was found.
+    /// The task is transitioned to `InFlight` state in the map.
+    fn take_next_pending(&mut self) -> Option<(LogTaskId, Task)> {
+        let result = self.tasks.iter_mut().find_map(|(id, entry)| {
+            if let TaskState::Pending(task) = &mut entry.state {
+                let task =
+                    std::mem::replace(task, Task::new("", StepInputValue(serde_json::Value::Null)));
+                entry.state = TaskState::InFlight(InFlight::new());
+                Some((*id, task))
+            } else {
+                None
+            }
+        });
+
+        if result.is_some() {
+            self.in_flight += 1;
+        }
+        result
     }
 
     /// Transition `InFlight` → `Waiting`.
