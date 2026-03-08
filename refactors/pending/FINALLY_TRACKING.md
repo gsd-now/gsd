@@ -155,10 +155,11 @@ Task created → [Pending] → [InFlight] ──┬── success with children 
 /// Create InFlight task - ZST constructor enforces dispatch
 fn dispatch(&mut self, task_id: LogTaskId, task: Task, parent_id: Option<LogTaskId>) {
     let in_flight = InFlight::new(&self.tx, task_id, task);
-    self.tasks.insert(task_id, TaskEntry {
+    let prev = self.tasks.insert(task_id, TaskEntry {
         parent_id,
         state: TaskState::InFlight(in_flight),
     });
+    assert!(prev.is_none(), "task_id collision: {task_id:?} already in map");
     self.in_flight += 1;
 }
 
@@ -199,10 +200,11 @@ fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>) {
     if self.in_flight < self.max_concurrency {
         self.dispatch(id, task, parent_id);  // Atomic: create InFlight + send to worker
     } else {
-        self.tasks.insert(id, TaskEntry {
+        let prev = self.tasks.insert(id, TaskEntry {
             parent_id,
             state: TaskState::Pending(task),
         });
+        assert!(prev.is_none(), "task_id collision: {id:?} already in map");
     }
 }
 ```
