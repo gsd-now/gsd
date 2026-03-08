@@ -1,6 +1,6 @@
 # Finally Scheduling Refactor
 
-**Status:** Not started
+**Status:** COMPLETED (2026-03-08)
 
 **Prerequisites:** VALUE_AND_RETRY_MODEL (COMPLETED), FINALLY_TRACKING (COMPLETED)
 
