@@ -259,7 +259,7 @@ A (waiting for B)
 
 ```rust
 /// Called when a task completes successfully.
-/// If task has finally, schedules it as sibling before removing task.
+/// If task has finally, schedules it as sibling. Then unconditionally removes task.
 fn task_succeeded(
     &mut self,
     task_id: LogTaskId,
@@ -270,7 +270,6 @@ fn task_succeeded(
 
     let entry = self.tasks.get(&task_id).expect("task must exist");
     let step_name = entry.step_name().clone();
-    let parent_id = entry.parent_id;
 
     // Check if this step has a finally hook
     let has_finally = self.config.steps.iter()
@@ -279,14 +278,11 @@ fn task_succeeded(
         .is_some();
 
     if spawned.is_empty() {
-        // No children
+        // No children - schedule finally (if any), then remove
         if has_finally {
-            // Schedule finally as sibling, then remove this task
             self.schedule_finally_as_sibling(task_id, step_name, effective_value);
-        } else {
-            // No finally - just remove and notify parent
-            self.remove_and_notify_parent(task_id);
         }
+        self.remove_and_notify_parent(task_id);  // Unconditional
     } else {
         // Has children - wait for them, store finally info for later
         let entry = self.tasks.get_mut(&task_id).expect("task must exist");
@@ -304,7 +300,7 @@ fn task_succeeded(
     }
 }
 
-/// Schedule finally task as sibling (child of same parent), then remove completed task.
+/// Schedule finally task as sibling (child of same parent). Does NOT remove the original task.
 fn schedule_finally_as_sibling(
     &mut self,
     task_id: LogTaskId,
@@ -314,9 +310,8 @@ fn schedule_finally_as_sibling(
     let entry = self.tasks.get(&task_id).expect("task must exist");
     let parent_id = entry.parent_id;
 
-    // Schedule finally as child of our parent (sibling of us)
+    // Increment parent's count for the finally task (if we have a parent)
     if let Some(parent_id) = parent_id {
-        // Increment parent's count for the finally task
         let parent = self.tasks.get_mut(&parent_id).expect("parent must exist");
         let TaskState::Waiting { pending_count } = &mut parent.state else {
             panic!("parent not in Waiting state");
@@ -332,16 +327,15 @@ fn schedule_finally_as_sibling(
         .unwrap_or(0);
 
     let finally_entry = TaskEntry {
-        parent_id,  // Same parent as the completed task
+        parent_id,  // Same parent as the completed task (vertical parent)
         state: TaskState::Pending,
         kind,
         retries_remaining,
+        effective_value: None,
     };
 
     self.tasks.insert(finally_id, finally_entry);
-
-    // Now remove completed task and decrement parent
-    self.remove_and_notify_parent(task_id);
+    // Caller is responsible for calling remove_and_notify_parent(task_id)
 }
 
 /// Remove task from map and decrement parent's count.
@@ -352,7 +346,7 @@ fn remove_and_notify_parent(&mut self, task_id: LogTaskId) {
     }
 }
 
-/// Decrement parent's pending_count. If hits zero, check for parent's finally.
+/// Decrement parent's pending_count. If hits zero, schedule finally (if any), then remove.
 fn decrement_parent(&mut self, parent_id: LogTaskId) {
     let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
     let TaskState::Waiting { pending_count } = &mut entry.state else {
@@ -361,7 +355,8 @@ fn decrement_parent(&mut self, parent_id: LogTaskId) {
 
     let new_count = pending_count.get() - 1;
     if new_count == 0 {
-        // All children done - check if parent has finally
+        // All children done - same pattern as task_succeeded:
+        // schedule finally (if any), then unconditionally remove
         let step_name = entry.step_name().clone();
         let has_finally = self.config.steps.iter()
             .find(|s| s.name == step_name)
@@ -372,9 +367,8 @@ fn decrement_parent(&mut self, parent_id: LogTaskId) {
             let effective_value = entry.effective_value.take()
                 .expect("effective_value must be set for task with finally");
             self.schedule_finally_as_sibling(parent_id, step_name, effective_value);
-        } else {
-            self.remove_and_notify_parent(parent_id);
         }
+        self.remove_and_notify_parent(parent_id);  // Unconditional
     } else {
         *pending_count = NonZeroU16::new(new_count).unwrap();
     }
