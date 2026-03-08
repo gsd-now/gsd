@@ -64,26 +64,29 @@ t3     rx.recv() blocks...                1          [B]
 t4     A completes, recv() returns        1          [B]
 t5     process_result(A)                  1          [B]
 t6       task_succeeded(A)                1          [B]
-t7         handle_completion(A, Some)     1          [B]
-t8           queue finally task F         1          [B, F]    F queued, not run
-t9           A → Waiting{count:1}         0          [B, F]    slot freed!
-t10    return from process_result         0          [B, F]
-t11    runner.next() called again         0          [B, F]
-t12    dispatch_all_pending()             0          [B, F]
-t13      dispatch(B)                      1          [F]       B starts immediately
-t14    rx.recv() blocks...                1          [F]
-t15    B completes                        0          [F]
-t16    dispatch_all_pending()             0          [F]
-t17      dispatch(F)                      1          []        finally starts
-t18    rx.recv() blocks...                1          []
-t19    F completes                        1          []
-t20      decrement_parent(A)              0          []        A done
-t21    done                               0          []
+t7         A has no children              1          [B]
+t8         children_done(A)               1          [B]       check for finally
+t9           has finally → schedule F     1          [B, F]    F queued
+t10          A → Waiting{count:1}         0          [B, F]    slot freed!
+t11    return from process_result         0          [B, F]
+t12    runner.next() called again         0          [B, F]
+t13    dispatch_all_pending()             0          [B, F]
+t14      dispatch(B)                      1          [F]       B starts immediately
+t15    rx.recv() blocks...                1          [F]
+t16    B completes                        0          [F]
+t17    dispatch_all_pending()             0          [F]
+t18      dispatch(F)                      1          []        finally starts
+t19    rx.recv() blocks...                1          []
+t20    F completes                        1          []
+t21      decrement_parent(A)              0          []
+t22      children_done(A)                 0          []        effective_value=None (consumed)
+t23      handle_completion(A)             0          []        A removed
+t24    done                               0          []
 
 Observed order: A_done, B_done, A_finally
 ```
 
-**Key difference:** At t9, instead of blocking, we queue F and free the concurrency slot. B can start at t13 while A waits for F.
+**Key difference:** At t10, instead of blocking, we schedule F and free the concurrency slot. B can start at t14 while A waits for F.
 
 ---
 
@@ -202,73 +205,81 @@ pub(super) struct TaskEntry {
     pub state: TaskState,
     pub kind: TaskKind,           // NEW: replaces Task in Pending state
     pub retries_remaining: u32,   // NEW: for retry logic (finally tasks retry too)
+    pub step_name: StepName,      // NEW: which step this task is (for finally lookup)
+    pub effective_value: Option<EffectiveValue>,  // NEW: set when task succeeds (for finally input)
 }
 
 // TaskState::Pending no longer holds Task - it's in TaskEntry.kind
+// TaskState::Waiting no longer holds continuation - finally is scheduled when count hits 0
 pub(super) enum TaskState {
     Pending,                      // CHANGED: no longer Pending(Task)
     InFlight(InFlight),
     Waiting {
-        pending_count: NonZeroU16,
-        continuation: Option<Continuation>,
+        pending_count: NonZeroU16,  // Just the count - no continuation
     },
 }
 ```
+
+**Key simplification:** `Waiting` just holds `pending_count`. When count hits zero, we look up whether the step has a finally hook (using `step_name` from TaskEntry) and schedule it then. The `effective_value` is stored on TaskEntry when the task succeeds, ready to pass to finally.
 
 **Note:** `finally_for` field is NOT needed. The `parent_id` already tells us which task the finally is for. We can identify finally tasks by matching on `TaskKind::Finally`.
 
 ### Code Changes
 
-#### `mod.rs` - `handle_completion()` changes
+#### `mod.rs` - Completion flow changes
+
+The key insight: `Waiting` no longer stores a continuation. When `pending_count` hits zero, we check if the step has a finally hook and schedule it at that moment.
 
 ```rust
-// BEFORE (synchronous):
-fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continuation>) {
-    let spawned = if let Some(cont) = continuation {
-        let hook = self.config.steps.iter()
-            .find(|s| s.name == cont.step_name)
-            .and_then(|s| s.finally_hook.as_ref())
-            .expect("continuation implies finally hook exists");
-        run_finally_hook_direct(hook, &cont.value.0)  // ← BLOCKS
-    } else {
-        vec![]
-    };
-    // ... queue spawned tasks
+// BEFORE: handle_completion took continuation parameter, ran finally synchronously
+// AFTER: handle_completion just removes the task and notifies parent
+
+/// Called when a task is fully done (no more children, no finally to run).
+/// Removes task from map and notifies parent.
+fn handle_completion(&mut self, task_id: LogTaskId) {
+    let entry = self.tasks.remove(&task_id).expect("task must exist");
+    if let Some(parent_id) = entry.parent_id {
+        self.decrement_parent(parent_id);
+    }
 }
 
-// AFTER (async):
-fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continuation>) {
-    if let Some(cont) = continuation {
-        // Queue finally as a task instead of running synchronously
-        // Just pass the step name - script is looked up at dispatch time
+/// Called when a task's pending_count hits zero.
+/// Checks if step has finally hook AND we haven't scheduled it yet.
+/// Uses effective_value as the marker: Some = not yet scheduled, None = already scheduled.
+fn children_done(&mut self, task_id: LogTaskId) {
+    let entry = self.tasks.get_mut(&task_id).expect("task must exist");
 
-        // Transition parent to Waiting for the finally task
-        let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-        if matches!(entry.state, TaskState::InFlight(_)) {
-            self.in_flight -= 1;
+    // .take() atomically checks and clears effective_value
+    // If Some, we haven't scheduled finally yet; if None, we have (or task never succeeded)
+    if let Some(effective_value) = entry.effective_value.take() {
+        let step_name = entry.step_name.clone();
+
+        // Check if this step has a finally hook
+        let has_finally = self.config.steps.iter()
+            .find(|s| s.name == step_name)
+            .and_then(|s| s.finally_hook.as_ref())
+            .is_some();
+
+        if has_finally {
+            // Schedule finally as child task
+            self.schedule_finally(task_id, step_name, effective_value);
+            return;
         }
-        entry.state = TaskState::Waiting {
-            pending_count: NonZeroU16::new(1).unwrap(),
-            continuation: None,
-        };
-
-        // Queue finally task as child of this task
-        self.queue_finally_task(cont.step_name, cont.value.0, task_id);
-        return;
     }
 
-    // No continuation - remove and notify parent (unchanged)
-    // ...
+    // No finally (or already scheduled) - task is done
+    self.handle_completion(task_id);
 }
 
-fn queue_finally_task(
+/// Schedule a finally task as child of parent_id.
+fn schedule_finally(
     &mut self,
-    step: StepName,  // Which step's finally hook to run
-    input: serde_json::Value,
     parent_id: LogTaskId,
+    step: StepName,
+    effective_value: EffectiveValue,
 ) {
     let id = self.next_task_id();
-    let kind = TaskKind::Finally { step: step.clone(), input };
+    let kind = TaskKind::Finally { step: step.clone(), input: effective_value.0 };
 
     // Get retry count from step config
     let retries_remaining = self.step_map.get(&step)
@@ -277,17 +288,68 @@ fn queue_finally_task(
 
     let entry = TaskEntry {
         parent_id: Some(parent_id),
-        state: TaskState::Pending,  // Always queue as Pending
+        state: TaskState::Pending,
         kind,
         retries_remaining,
+        step_name: step,  // Finally task uses same step (for config lookup)
+        effective_value: None,  // Finally tasks don't have their own effective_value
     };
 
-    // Just insert as Pending - dispatch_all_pending() handles concurrency
+    // Update parent to wait for this finally task
+    let parent = self.tasks.get_mut(&parent_id).expect("parent must exist");
+    parent.state = TaskState::Waiting {
+        pending_count: NonZeroU16::new(1).unwrap(),
+    };
+
     let prev = self.tasks.insert(id, entry);
     assert!(prev.is_none());
-    // Note: dispatch_all_pending() called at start of next iterator loop
+}
+
+/// Decrement parent's pending_count. If hits zero, call children_done.
+fn decrement_parent(&mut self, parent_id: LogTaskId) {
+    let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
+    let TaskState::Waiting { pending_count } = &mut entry.state else {
+        panic!("parent not in Waiting state");
+    };
+
+    let new_count = pending_count.get() - 1;
+    if new_count == 0 {
+        self.children_done(parent_id);
+    } else {
+        *pending_count = NonZeroU16::new(new_count).unwrap();
+    }
 }
 ```
+
+```rust
+/// Called when task action completes successfully.
+fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, effective_value: EffectiveValue) {
+    // Store effective_value for later finally scheduling
+    let entry = self.tasks.get_mut(&task_id).expect("task must exist");
+    entry.effective_value = Some(effective_value);
+
+    self.in_flight -= 1;  // Unconditional - we know task was InFlight
+
+    if spawned.is_empty() {
+        // No children - check for finally immediately
+        self.children_done(task_id);
+    } else {
+        // Has children - wait for them
+        let count = NonZeroU16::new(spawned.len() as u16).unwrap();
+        entry.state = TaskState::Waiting { pending_count: count };
+        for child in spawned {
+            self.queue_task(child, Some(task_id));
+        }
+    }
+}
+```
+
+**Key changes:**
+1. `handle_completion` no longer takes `continuation` - it just removes the task
+2. `task_succeeded` stores `effective_value` on TaskEntry for later use
+3. New `children_done` function: when count hits 0, checks for finally (via `effective_value`) and schedules it
+4. `schedule_finally` creates finally task and updates parent to wait for it
+5. `in_flight` decrement is unconditional at call sites that know the task state
 
 #### `mod.rs` - `dispatch()` changes
 
@@ -488,23 +550,29 @@ Finally retry works like any task retry:
 
 ### Phase 2: Data structure changes
 
-- [ ] Add `TaskKind` enum with `Step(Task)` and `Finally { script, input }` variants
+- [ ] Add `TaskKind` enum with `Step(Task)` and `Finally { step, input }` variants
 - [ ] Add `retries_remaining: u32` to `TaskEntry`
+- [ ] Add `step_name: StepName` to `TaskEntry`
+- [ ] Add `effective_value: Option<EffectiveValue>` to `TaskEntry`
 - [ ] Change `TaskState::Pending` to not hold `Task` (task data now in `TaskEntry.kind`)
+- [ ] Change `TaskState::Waiting` to only hold `pending_count` (remove `continuation`)
+- [ ] Remove `Continuation` type entirely
 - [ ] Update all `TaskEntry` construction sites
 
-### Phase 3: Queue finally as task
+### Phase 3: Restructure completion flow
 
-- [ ] Modify `handle_completion()` to queue finally task instead of running sync
-- [ ] Add `queue_finally_task(script, input, parent_id)` helper
+- [ ] `task_succeeded`: store `effective_value`, unconditionally decrement `in_flight`
+- [ ] New `children_done`: check `effective_value` for finally scheduling
+- [ ] New `schedule_finally`: create finally task, update parent to Waiting
+- [ ] Simplify `handle_completion`: just remove task and notify parent
 - [ ] Modify `dispatch()` to match on `TaskKind`
 - [ ] Add dispatch logic for `TaskKind::Finally`
 
 ### Phase 4: Finally retry and failure handling
 
-- [ ] Implement retry logic for finally tasks (use `retries_remaining`)
-- [ ] On retry exhausted, propagate failure to parent via `task_failed()`
-- [ ] Spawned tasks from finally become children of finally task
+- [ ] Finally tasks use existing retry logic (via `retries_remaining`)
+- [ ] Finally failure propagates to parent via existing `task_failed()`
+- [ ] Spawned tasks from finally become children of finally task (standard behavior)
 
 ### Phase 5: Verify and clean up
 
@@ -518,7 +586,8 @@ Finally retry works like any task retry:
 
 | File | Changes |
 |------|---------|
-| `runner/types.rs` | Add `TaskKind` enum, add `retries_remaining` to `TaskEntry`, modify `TaskState::Pending` |
-| `runner/mod.rs` | Modify `handle_completion()`, add `queue_finally_task()`, modify `dispatch()` to match on `TaskKind` |
+| `runner/types.rs` | Add `TaskKind` enum, add `step_name`/`effective_value`/`retries_remaining` to `TaskEntry`, simplify `Waiting` (remove `continuation`), remove `Continuation` type |
+| `runner/mod.rs` | Add `children_done()`, `schedule_finally()`, simplify `handle_completion()`, modify `task_succeeded()` to store `effective_value`, modify `dispatch()` to match on `TaskKind` |
 | `runner/response.rs` | Handle finally task results |
+| `runner/finally.rs` | Remove `run_finally_hook_direct()` (no longer needed) |
 | `tests/finally_retry_bugs.rs` | Add 3 new tests for finally scheduling bugs |
