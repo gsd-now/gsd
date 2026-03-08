@@ -10,6 +10,7 @@ use tracing::debug;
 use crate::types::{HookScript, StepInputValue};
 
 use super::hooks::{run_command_action, run_pre_hook};
+use super::shell::run_shell_command;
 use super::submit::{build_agent_payload, submit_via_cli};
 use super::types::{InFlightResult, SubmitResult, TaskIdentity};
 
@@ -92,5 +93,24 @@ pub fn dispatch_command_task(
     let _ = tx.send(InFlightResult {
         identity: ctx.identity,
         result: SubmitResult::Command { value, output },
+    });
+}
+
+/// Execute a finally task (runs in spawned thread).
+///
+/// Finally tasks have no pre-hook. The script is run directly with the value as JSON input.
+/// Output is parsed as a task array by the receiver.
+pub fn dispatch_finally_task(
+    identity: TaskIdentity,
+    script: &HookScript,
+    tx: &mpsc::Sender<InFlightResult>,
+) {
+    let value = identity.task.value.clone();
+    let input_json = serde_json::to_string(&value.0).unwrap_or_default();
+
+    let output = run_shell_command(script.as_str(), &input_json, None);
+    let _ = tx.send(InFlightResult {
+        identity,
+        result: SubmitResult::Finally { value, output },
     });
 }

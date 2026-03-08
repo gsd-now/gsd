@@ -578,7 +578,6 @@ echo "finally_executed" > "{}"
 /// - A's finally runs when B succeeds (before C completes, before B's finally)
 /// - Order is: `A_finally`, `C_done`, `B_finally` (wrong!)
 #[test]
-#[should_panic(expected = "wrong order")]
 #[expect(clippy::too_many_lines)]
 fn subtree_finally_waits_for_grandchildren() {
     let test_name = "finally_subtree_grandchildren";
@@ -738,7 +737,6 @@ cat  # pass through stdin to stdout
 /// - A's finally runs when B's finally completes (before C runs)
 /// - Order is: `B_finally`, `A_finally`, `C_done` (wrong!)
 #[test]
-#[should_panic(expected = "wrong order")]
 #[expect(clippy::too_many_lines)]
 fn finally_waits_for_finally_spawned_tasks() {
     let test_name = "finally_spawned_tasks";
@@ -1345,7 +1343,6 @@ fn finally_spawns_multiple_tasks() {
 /// Expected: `run()` succeeds (finally eventually succeeded after retries)
 /// Bug behavior: Finally failures are silently ignored, no retry attempted
 #[test]
-#[should_panic(expected = "finally did not retry")]
 fn finally_retries_on_failure() {
     let test_name = "finally_retries_failure";
     let root = setup_test_dir(test_name);
@@ -1444,7 +1441,6 @@ exit 0
 /// Expected: `run()` returns error (finally failed after all retries)
 /// Bug behavior: Finally failures are silently ignored, `run()` succeeds
 #[test]
-#[should_panic(expected = "finally failure not propagated")]
 fn finally_failure_propagates_after_retries_exhausted() {
     let test_name = "finally_failure_propagates";
     let root = setup_test_dir(test_name);
@@ -1522,7 +1518,6 @@ fn finally_failure_propagates_after_retries_exhausted() {
 /// Expected: `run()` returns error (child of finally failed)
 /// Bug behavior: Unknown - need to verify
 #[test]
-#[should_panic(expected = "finally child failure not propagated")]
 fn finally_child_failure_propagates() {
     let test_name = "finally_child_failure";
     let root = setup_test_dir(test_name);

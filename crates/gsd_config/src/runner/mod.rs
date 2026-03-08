@@ -24,8 +24,7 @@ use crate::types::{HookScript, LogTaskId, StepName};
 use crate::value_schema::{CompiledSchemas, Task};
 
 use crate::types::StepInputValue;
-use dispatch::{TaskContext, dispatch_command_task, dispatch_pool_task};
-use finally::run_finally_hook_direct;
+use dispatch::{TaskContext, dispatch_command_task, dispatch_finally_task, dispatch_pool_task};
 use hooks::{call_wake_script, run_post_hook};
 use response::{FailureKind, ProcessedSubmit, process_retry, process_submit_result};
 use types::{
@@ -187,11 +186,27 @@ impl<'a> TaskRunner<'a> {
     ///
     /// Precondition: The task must already be in `InFlight` state in the map
     /// (set by `take_next_pending`).
+    #[expect(clippy::expect_used)] // Invariants
     fn dispatch(&self, task_id: LogTaskId, task: Task) {
-        #[expect(clippy::expect_used)] // Invariant: config validation ensures all step names exist
-        let step = self.step_map.get(&task.step).expect("[P014] unknown step");
-
+        let entry = self.tasks.get(&task_id).expect("[P014] task must exist");
         let tx = self.tx.clone();
+
+        // Finally tasks: run the finally script directly (no pre-hook)
+        if let Some(script) = &entry.finally_script {
+            let script = script.clone();
+            let identity = TaskIdentity { task, task_id };
+
+            info!(step = %identity.task.step, "dispatching finally task");
+
+            thread::spawn(move || {
+                dispatch_finally_task(identity, &script, &tx);
+            });
+            return;
+        }
+
+        // Regular tasks: dispatch based on step action
+        let step = self.step_map.get(&task.step).expect("[P015] unknown step");
+
         let identity = TaskIdentity { task, task_id };
         let ctx = TaskContext {
             identity,
@@ -256,23 +271,6 @@ impl<'a> TaskRunner<'a> {
         result
     }
 
-    /// Transition `InFlight` → `WaitingForChildren`.
-    #[expect(clippy::expect_used)] // Invariant: task must exist
-    fn transition_to_waiting(
-        &mut self,
-        task_id: LogTaskId,
-        pending_children_count: NonZeroU16,
-        finally_data: Option<(HookScript, StepInputValue)>,
-    ) {
-        let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-        assert!(matches!(entry.state, TaskState::InFlight(_)));
-        entry.state = TaskState::WaitingForChildren {
-            pending_children_count,
-            finally_data,
-        };
-        self.in_flight -= 1;
-    }
-
     /// Remove an `InFlight` task (for retry - don't notify parent).
     #[expect(clippy::expect_used)] // Invariant: task must exist
     fn transition_to_done(&mut self, task_id: LogTaskId) -> Option<LogTaskId> {
@@ -282,79 +280,94 @@ impl<'a> TaskRunner<'a> {
         entry.parent_id
     }
 
-    // ==================== Key Operations ====================
+    /// Look up the finally hook for a task's step, if any.
+    /// Returns None for Finally tasks (no "finally of finally").
+    fn lookup_finally_hook(&self, entry: &TaskEntry) -> Option<HookScript> {
+        if entry.finally_script.is_some() {
+            return None; // No "finally of finally"
+        }
+        self.config
+            .steps
+            .iter()
+            .find(|s| s.name == entry.step)
+            .and_then(|s| s.finally_hook.clone())
+    }
 
-    /// Handle completion of a task (`InFlight` success with no children, or `WaitingForChildren` with count=0).
-    /// Runs finally hook if present; if that spawns tasks, waits for them.
-    /// Otherwise removes task and notifies parent.
-    #[expect(clippy::panic, clippy::expect_used)] // Finally hook returning invalid tasks is a config bug
-    fn handle_completion(
-        &mut self,
-        task_id: LogTaskId,
-        finally_data: Option<(HookScript, StepInputValue)>,
-    ) {
-        let spawned = if let Some((hook, value)) = finally_data {
-            let tasks = run_finally_hook_direct(&hook, &value.0);
+    /// Schedule a finally task as a sibling of the given task.
+    ///
+    /// The finally task becomes a child of the original task's parent.
+    /// Does NOT remove `task_id` - caller must do that.
+    #[expect(clippy::expect_used)] // Invariant: task must exist
+    fn schedule_finally(&mut self, task_id: LogTaskId, hook: HookScript, value: StepInputValue) {
+        let entry = self.tasks.get(&task_id).expect("[P018] task must exist");
+        let parent_id = entry.parent_id;
+        let step = entry.step.clone();
 
-            // Validate finally hook spawned tasks
-            for task in &tasks {
-                assert!(
-                    self.step_map.contains_key(&task.step),
-                    "[P016] BUG: finally hook returned unknown step '{}' - this is a configuration error",
-                    task.step
-                );
-                if let Err(e) = self.schemas.validate(&task.step, &task.value) {
-                    panic!(
-                        "[P017] BUG: finally hook returned invalid task for step '{}': {e}",
-                        task.step
-                    );
-                }
-            }
-            tasks
-        } else {
-            vec![]
+        // Increment parent's pending count (finally becomes another child)
+        if let Some(parent_id) = parent_id {
+            self.increment_pending_children(parent_id);
+        }
+
+        // Create the finally task
+        let id = self.next_task_id();
+        let retries_remaining = self
+            .step_map
+            .get(&step)
+            .map_or(0, |s| s.options.max_retries);
+
+        let finally_entry = TaskEntry {
+            step,
+            parent_id,
+            finally_script: Some(hook),
+            state: TaskState::Pending { value },
+            retries_remaining,
         };
+        self.tasks.insert(id, finally_entry);
+    }
 
-        if spawned.is_empty() {
-            // Remove and notify parent
-            let entry = self.tasks.remove(&task_id).expect("task must exist");
-            if matches!(entry.state, TaskState::InFlight(_)) {
-                self.in_flight -= 1;
-            }
-            if let Some(parent_id) = entry.parent_id {
-                self.decrement_parent(parent_id);
-            }
-        } else {
-            // Transition to or update WaitingForChildren state
-            #[expect(clippy::unwrap_used, clippy::cast_possible_truncation)]
-            let count = NonZeroU16::new(spawned.len() as u16).unwrap();
+    /// Increment a task's `pending_children_count`.
+    #[expect(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // Invariants
+    fn increment_pending_children(&mut self, task_id: LogTaskId) {
+        let entry = self
+            .tasks
+            .get_mut(&task_id)
+            .expect("[P019] task must exist");
+        let TaskState::WaitingForChildren {
+            pending_children_count,
+            ..
+        } = &mut entry.state
+        else {
+            panic!("[P020] task not in WaitingForChildren state");
+        };
+        *pending_children_count = NonZeroU16::new(pending_children_count.get() + 1).unwrap();
+    }
 
-            let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-            if matches!(entry.state, TaskState::InFlight(_)) {
-                self.in_flight -= 1;
-            }
-            entry.state = TaskState::WaitingForChildren {
-                pending_children_count: count,
-                finally_data: None,
-            };
-
-            for child in spawned {
-                self.queue_task(child, Some(task_id));
-            }
+    /// Remove task and decrement parent's count.
+    fn remove_and_notify_parent(&mut self, task_id: LogTaskId) {
+        #[expect(clippy::expect_used)] // Invariant: task must exist
+        let entry = self.tasks.remove(&task_id).expect("[P021] task must exist");
+        if let Some(parent_id) = entry.parent_id {
+            self.decrement_pending_children(parent_id);
         }
     }
 
-    /// Decrement parent's pending count, run finally or finish when count hits 0.
+    // ==================== Key Operations ====================
+
+    /// Decrement a task's `pending_children_count`.
+    /// When count hits zero: schedule finally (if any), then remove.
     #[expect(clippy::expect_used, clippy::panic, clippy::unwrap_used)] // Invariants
-    fn decrement_parent(&mut self, parent_id: LogTaskId) {
+    fn decrement_pending_children(&mut self, task_id: LogTaskId) {
         let (hit_zero, finally_data) = {
-            let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
+            let entry = self
+                .tasks
+                .get_mut(&task_id)
+                .expect("[P022] task must exist");
             let TaskState::WaitingForChildren {
                 pending_children_count,
                 finally_data,
             } = &mut entry.state
             else {
-                panic!("parent not in WaitingForChildren state");
+                panic!("[P023] task not in WaitingForChildren state");
             };
 
             let new_count = pending_children_count.get() - 1;
@@ -367,34 +380,53 @@ impl<'a> TaskRunner<'a> {
         };
 
         if hit_zero {
-            self.handle_completion(parent_id, finally_data);
+            // Schedule finally as sibling (if any), then remove task
+            if let Some((hook, value)) = finally_data {
+                self.schedule_finally(task_id, hook, value);
+            }
+            self.remove_and_notify_parent(task_id);
         }
     }
 
     /// Handle task success.
-    #[expect(clippy::unwrap_used, clippy::cast_possible_truncation)] // spawned.len() fits in u16
-    fn task_succeeded(
-        &mut self,
-        task_id: LogTaskId,
-        step_name: &StepName,
-        spawned: Vec<Task>,
-        value: StepInputValue,
-    ) {
-        let finally_hook = self
-            .config
-            .steps
-            .iter()
-            .find(|s| &s.name == step_name)
-            .and_then(|s| s.finally_hook.clone());
-        let finally_data = finally_hook.map(|hook| (hook, value));
+    ///
+    /// If task has no children:
+    ///   - Schedule finally as sibling (if any)
+    ///   - Remove task, notify parent
+    ///
+    /// If task has children:
+    ///   - Transition to `WaitingForChildren` with `finally_data`
+    ///   - Queue children
+    #[expect(
+        clippy::unwrap_used,
+        clippy::cast_possible_truncation,
+        clippy::expect_used
+    )]
+    fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, value: StepInputValue) {
+        self.in_flight -= 1;
+
+        let entry = self.tasks.get(&task_id).expect("[P024] task must exist");
+        let finally_hook = self.lookup_finally_hook(entry);
 
         if spawned.is_empty() {
-            // No children - handle completion (may run finally)
-            self.handle_completion(task_id, finally_data);
+            // No children - schedule finally (if any) as sibling, then remove
+            if let Some(hook) = finally_hook {
+                self.schedule_finally(task_id, hook, value);
+            }
+            self.remove_and_notify_parent(task_id);
         } else {
-            // Has children - wait for them
+            // Has children - wait for them, storing finally_data
             let count = NonZeroU16::new(spawned.len() as u16).unwrap();
-            self.transition_to_waiting(task_id, count, finally_data);
+            let finally_data = finally_hook.map(|hook| (hook, value));
+
+            let entry = self
+                .tasks
+                .get_mut(&task_id)
+                .expect("[P025] task must exist");
+            entry.state = TaskState::WaitingForChildren {
+                pending_children_count: count,
+                finally_data,
+            };
             for child in spawned {
                 self.queue_task(child, Some(task_id));
             }
@@ -404,19 +436,23 @@ impl<'a> TaskRunner<'a> {
     /// Handle task failure (with optional retry).
     #[expect(clippy::expect_used)] // Invariant: task must exist
     fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>) {
-        let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
+        let parent_id = self
+            .tasks
+            .get(&task_id)
+            .expect("[P026] task must exist")
+            .parent_id;
 
         if let Some(retry_task) = retry {
             self.queue_task(retry_task, parent_id);
             self.transition_to_done(task_id); // Don't notify - retry takes over
         } else {
             // Permanent failure - remove and notify parent
-            let entry = self.tasks.remove(&task_id).expect("task must exist");
+            let entry = self.tasks.remove(&task_id).expect("[P027] task must exist");
             if matches!(entry.state, TaskState::InFlight(_)) {
                 self.in_flight -= 1;
             }
             if let Some(parent_id) = entry.parent_id {
-                self.decrement_parent(parent_id);
+                self.decrement_pending_children(parent_id);
             }
         }
     }
@@ -463,7 +499,7 @@ impl<'a> TaskRunner<'a> {
                 spawned,
                 finally_value,
             } => {
-                self.task_succeeded(task_id, &task.step, spawned, finally_value);
+                self.task_succeeded(task_id, spawned, finally_value);
                 TaskResult::Completed
             }
 

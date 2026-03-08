@@ -113,12 +113,12 @@ pub(super) struct TaskEntry {
     /// **Not to be confused with `finally_data` in `WaitingForChildren`:**
     /// - `finally_script`: "Am I a finally task?" (this task's type)
     /// - `finally_data`:   "Do I have a finally hook to run after my children?" (step's config)
-    #[expect(dead_code)] // Used in Branch 4 (finally/04-completion-flow)
     pub finally_script: Option<HookScript>,
     /// Current state of this task.
     pub state: TaskState,
     /// Number of retries remaining for this task.
-    #[expect(dead_code)] // Used in Branch 4 (finally/04-completion-flow)
+    // TODO: Use this for finally task retries (currently uses Task.retries like other tasks)
+    #[expect(dead_code)]
     pub retries_remaining: u32,
 }
 
@@ -186,6 +186,11 @@ pub(super) enum SubmitResult {
     Command {
         value: StepInputValue,
         output: io::Result<String>,
+    },
+    /// Result from a finally task (no pre-hook, stdout parsed as task array).
+    Finally {
+        value: StepInputValue,
+        output: Result<String, String>,
     },
     PreHookError(String),
 }

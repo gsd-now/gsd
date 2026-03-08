@@ -86,6 +86,68 @@ pub fn process_submit_result(
                 },
             }
         }
+        SubmitResult::Finally { value, output } => match output {
+            Ok(stdout) => {
+                let (outcome, post_input) = process_finally_response(&stdout, task, &value);
+                ProcessedSubmit {
+                    outcome,
+                    post_input,
+                }
+            }
+            Err(e) => {
+                error!(step = %task.step, error = %e, "finally hook failed");
+                let outcome = process_retry(task, &step.options, FailureKind::SubmitError);
+                ProcessedSubmit {
+                    outcome,
+                    post_input: PostHookInput::Error {
+                        input: value,
+                        error: e,
+                    },
+                }
+            }
+        },
+    }
+}
+
+/// Process stdout from a finally task.
+///
+/// Finally hook output is parsed as a JSON array of tasks.
+/// Unlike regular tasks, there's no schema validation - finally hooks return raw task objects.
+fn process_finally_response(
+    stdout: &str,
+    task: &Task,
+    value: &StepInputValue,
+) -> (TaskOutcome, PostHookInput) {
+    debug!(stdout = %stdout, "finally hook output");
+
+    match serde_json::from_str::<Vec<Task>>(stdout) {
+        Ok(tasks) => {
+            info!(step = %task.step, count = tasks.len(), "finally hook completed");
+            let post_input = PostHookInput::Success {
+                input: value.clone(),
+                output: serde_json::json!(tasks),
+                next: tasks.clone(),
+            };
+            let outcome = TaskOutcome::Success {
+                spawned: tasks,
+                finally_value: value.clone(),
+            };
+            (outcome, post_input)
+        }
+        Err(e) => {
+            // If output can't be parsed as task array, treat as empty (backwards compatible)
+            warn!(step = %task.step, error = %e, "finally hook output is not valid JSON task array");
+            let post_input = PostHookInput::Success {
+                input: value.clone(),
+                output: serde_json::json!([]),
+                next: vec![],
+            };
+            let outcome = TaskOutcome::Success {
+                spawned: vec![],
+                finally_value: value.clone(),
+            };
+            (outcome, post_input)
+        }
     }
 }
 
