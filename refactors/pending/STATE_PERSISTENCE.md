@@ -255,24 +255,122 @@ gsd run --resume-from /tmp/run.ndjson --state-log /tmp/run.ndjson  # panic!
 
 ## Implementation Phases
 
-### Phase 1: Data Structures
-- Add `state_log.rs` with types and read/write functions
+### Phase 1: Extract Shared Types → `gsd_types` crate
 
-### Phase 2: CLI Integration
-- Add `--state-log <path>` flag
-- Write config as first entry on startup
-- Print: `State log: <path>. Resume with: gsd run --resume-from <path>`
+Create a new `gsd_types` crate with types shared between `gsd_config` and the new `gsd_state` crate.
 
-### Phase 3: Task Logging
-- Write `TaskSubmitted` when task queued
-- Write `TaskCompleted` with `Success` or `Failed` outcome when task resolves
-- Flush after each write
+**Identify candidates in `gsd_config`:**
+- `LogTaskId` - used in log entries and runner
+- `StepName` - used in log entries and config
+- `StepInputValue` - used in log entries and runner
+- `HookScript` - might be needed if we log finally hooks
 
-### Phase 4: Resume
-- Add `--resume-from <path>` flag
-- Parse log, reconstruct pending tasks with failure counts
-- Check retries exhausted, fail run if so
-- Continue with remaining pending tasks
+**Tasks:**
+1. Create `crates/gsd_types/` with `Cargo.toml`
+2. Move shared types from `gsd_config::types` to `gsd_types`
+3. Update `gsd_config` to re-export or depend on `gsd_types`
+4. Verify all existing tests pass
+
+**Branch:** `state/01-shared-types`
+
+---
+
+### Phase 2: Create `gsd_state` crate with Tests
+
+Create the new crate with log types and comprehensive tests (no integration with runner yet).
+
+**Types to implement:**
+- `StateLogEntry` (Config, TaskSubmitted, TaskCompleted)
+- `TaskSubmitted` (task_id, step, value, parent_id, origin)
+- `TaskOrigin` (Initial, Spawned, Retry, Finally)
+- `TaskCompleted` (task_id, outcome)
+- `TaskOutcome` (Success, Failed)
+- `TaskSuccess` (spawned_task_ids)
+- `TaskFailed` (reason, retry_task_id)
+- `FailureReason` (Timeout, AgentLost, InvalidResponse)
+
+**Write/read functions:**
+- `write_entry(file, entry)` - append NDJSON line
+- `read_entries(file)` - iterator over entries
+- `reconstruct(entries)` - return (Config, PendingTasks)
+
+**Tests to write:**
+- Serialization round-trips for all types
+- `reconstruct()` with various scenarios:
+  - Empty log (error)
+  - Config only (no tasks)
+  - Simple task lifecycle (submit → complete)
+  - Task with children (parent waits)
+  - Retry chain (fail → retry → succeed)
+  - Finally scheduling (complete → finally submitted)
+  - Mixed: some complete, some pending
+  - Error cases: duplicate task_id, unknown task_id, duplicate config
+- Edge cases:
+  - Task completed before submitted in log (corruption)
+  - Retry for non-existent task
+  - Finally for non-existent task
+
+**Branch:** `state/02-crate-and-tests`
+
+---
+
+### Phase 3: Integrate Logging into Runner
+
+Add log writing to `gsd_config` runner without changing behavior.
+
+**Changes to runner:**
+- Accept optional `StateLogWriter` (trait or concrete type)
+- `queue_task()` → write `TaskSubmitted`
+- `task_succeeded()` → write `TaskCompleted(Success)`
+- `task_failed()` → write `TaskCompleted(Failed)` with retry_task_id if applicable
+- `schedule_finally()` → write `TaskSubmitted` with `Finally` origin
+
+**CLI changes:**
+- Add `--state-log <path>` flag to `gsd run`
+- Print resume instructions on startup
+
+**Tests:**
+- Run existing demos with `--state-log`, verify log is valid
+- Parse log and verify structure matches execution
+
+**Branch:** `state/03-logging`
+
+---
+
+### Phase 4: Implement Resume
+
+Add `--resume-from` flag and resume logic.
+
+**Tasks:**
+1. Add `--resume-from <path>` CLI flag
+2. Validate flag combinations (incompatible with config file, --initial-state)
+3. Read and reconstruct state from log
+4. Create new log file, copy existing entries
+5. Feed reconstructed tasks into runner with parent relationships
+6. Continue normal execution, appending to new log
+
+**Resume entry point:**
+- Probably a new function like `run_from_log(log_path, new_log_path, runner_config)`
+- Or extend `run()` with an enum: `InitialTasks::Fresh(Vec<Task>) | InitialTasks::Resume(path)`
+
+**Tests:**
+- Resume with no pending tasks (completes immediately)
+- Resume with pending root tasks
+- Resume with pending child tasks (parent in WaitingForChildren)
+- Resume with pending retry
+- Resume with pending finally
+- Crash simulation: run partway, kill, resume, verify completion
+
+**Branch:** `state/04-resume`
+
+---
+
+### Phase 5: Polish and Edge Cases
+
+- Handle corrupted/truncated logs gracefully
+- Add `gsd log inspect <path>` command to view log contents
+- Consider compression for large logs
+- Documentation
 
 ## What We Don't Track (v1)
 
