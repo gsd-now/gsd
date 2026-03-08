@@ -90,18 +90,19 @@ enum TaskState {
     Pending(Task),
     /// Task currently executing
     InFlight,
-    /// Task succeeded, waiting for children/cleanup to complete
+    /// Task succeeded, waiting for children to complete
     Waiting {
         pending_count: NonZeroU16,
-        finally: Option<FinallyData>,
+        continuation: Option<Continuation>,
     },
 }
 
-/// Data needed to run a finally hook. Present = run finally when count hits 0.
-/// None = no subsequent step, just done when count hits 0.
-struct FinallyData {
-    step_name: StepName,
-    effective_value: EffectiveValue,
+/// What to run when all children complete. The task tree doesn't know what
+/// this does - it just runs it and queues any spawned tasks as children.
+/// In GSD, this is a finally hook, but could be anything.
+struct Continuation {
+    step_name: StepName,      // Used to look up what to run
+    value: EffectiveValue,    // Passed to it
 }
 ```
 
@@ -119,21 +120,21 @@ Could calculate via `tasks.values().filter(|e| matches!(e.state, InFlight { .. }
 ### Task Lifecycle
 
 ```
-Task created → [Pending] → [InFlight] ──┬── success with children ──→ [Waiting { finally: Some/None }]
+Task created → [Pending] → [InFlight] ──┬── success with children ──→ [Waiting { continuation: Some/None }]
                     ▲                   │                                        │
-                    │                   ├── success, no children, has finally ──→│ (run finally immediately)
-                    │                   │    └── finally spawns ────────────────→│ [Waiting { finally: None }]
-                    │                   │    └── finally spawns nothing ─────────┼──→ done
+                    │                   ├── success, no children, has continuation ──→│ (run continuation immediately)
+                    │                   │    └── continuation spawns ────────────────→│ [Waiting { continuation: None }]
+                    │                   │    └── continuation spawns nothing ─────────┼──→ done
                     │                   │                                        │
-                    │                   ├── success, no children, no finally ────┼──→ done
+                    │                   ├── success, no children, no continuation ────┼──→ done
                     │                   ├── retry ──────────────────────────────→│ (new Pending, same parent)
                     │                   └── dropped ────────────────────────────→│ done (notify parent)
                     │                                                            │
                     │                                                            ▼ count hits 0
-                    │                   ┌── finally.is_some() ──→ run finally ───┤
-                    │                   │    └── spawns tasks ──→ [Waiting { finally: None }]
+                    │                   ┌── continuation.is_some() ──→ run continuation ───┤
+                    │                   │    └── spawns tasks ──→ [Waiting { continuation: None }]
                     │                   │    └── spawns nothing ─────────────────┼──→ done
-                    └───────────────────┴── finally.is_none() ───────────────────┴──→ done
+                    └───────────────────┴── continuation.is_none() ───────────────────┴──→ done
 ```
 
 ### State Transitions
@@ -152,11 +153,11 @@ fn start_waiting(
     &mut self,
     task_id: LogTaskId,
     pending_count: NonZeroU16,
-    finally: Option<FinallyData>,
+    continuation: Option<Continuation>,
 ) {
     let entry = self.tasks.get_mut(&task_id).expect("task must exist");
     assert!(matches!(entry.state, TaskState::InFlight));
-    entry.state = TaskState::Waiting { pending_count, finally };
+    entry.state = TaskState::Waiting { pending_count, continuation };
     self.in_flight -= 1;
 }
 
@@ -215,26 +216,26 @@ fn task_succeeded(&mut self, task_id: LogTaskId, step_name: StepName, spawned: V
 
     if !spawned.is_empty() {
         // Has children - wait for them
-        let finally = finally_hook.map(|_| FinallyData { step_name, effective_value });
+        let continuation = finally_hook.map(|_| Continuation { step_name, value: effective_value });
         let count = NonZeroU16::new(spawned.len() as u16).unwrap();
-        self.start_waiting(task_id, count, finally);
+        self.start_waiting(task_id, count, continuation);
         for child in spawned {
             self.queue_task(child, Some(task_id));
         }
     } else if let Some(hook) = finally_hook {
-        // No children, has finally - run it now
-        let finally_spawned = run_finally_hook_direct(&hook, &effective_value.0);
-        if !finally_spawned.is_empty() {
-            let count = NonZeroU16::new(finally_spawned.len() as u16).unwrap();
-            self.start_waiting(task_id, count, None);  // finally already ran
-            for child in finally_spawned {
+        // No children, has continuation - run it now
+        let continuation_spawned = run_finally_hook_direct(&hook, &effective_value.0);
+        if !continuation_spawned.is_empty() {
+            let count = NonZeroU16::new(continuation_spawned.len() as u16).unwrap();
+            self.start_waiting(task_id, count, None);  // continuation already ran
+            for child in continuation_spawned {
                 self.queue_task(child, Some(task_id));
             }
         } else {
             self.finish_in_flight_and_notify(task_id);
         }
     } else {
-        // No children, no finally - done
+        // No children, no continuation - done
         self.finish_in_flight_and_notify(task_id);
     }
 }
@@ -269,30 +270,30 @@ fn task_failed(&mut self, task_id: LogTaskId) {
 ```rust
 fn decrement_parent(&mut self, parent_id: LogTaskId) {
     let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
-    let TaskState::Waiting { pending_count, finally } = &mut entry.state else {
+    let TaskState::Waiting { pending_count, continuation } = &mut entry.state else {
         panic!("parent not in Waiting state");
     };
 
     let new_count = pending_count.get() - 1;
     if new_count == 0 {
         // All children done
-        if let Some(finally_data) = finally.take() {
-            // Run finally hook
-            let hook = self.config.steps.get(&finally_data.step_name)
+        if let Some(continuation_data) = continuation.take() {
+            // Run continuation hook
+            let hook = self.config.steps.get(&continuation_data.step_name)
                 .and_then(|s| s.finally_hook.as_ref())
-                .expect("finally_data implies finally hook exists");
-            let finally_spawned = run_finally_hook_direct(hook, &finally_data.effective_value.0);
+                .expect("continuation_data implies finally hook exists");
+            let continuation_spawned = run_finally_hook_direct(hook, &continuation_data.value.0);
 
-            if !finally_spawned.is_empty() {
-                // Finally spawned tasks - update count, finally is now None
-                *pending_count = NonZeroU16::new(finally_spawned.len() as u16).unwrap();
-                for child in finally_spawned {
+            if !continuation_spawned.is_empty() {
+                // Finally spawned tasks - update count, continuation is now None
+                *pending_count = NonZeroU16::new(continuation_spawned.len() as u16).unwrap();
+                for child in continuation_spawned {
                     self.queue_task(child, Some(parent_id));
                 }
                 return;
             }
         }
-        // No finally or finally spawned nothing - done
+        // No continuation or continuation spawned nothing - done
         if let Some(grandparent_id) = self.finish_waiting(parent_id) {
             self.decrement_parent(grandparent_id);
         }
@@ -313,17 +314,17 @@ Initial:
   tasks[0/A] = { parent: None, Pending(A) }
 
 A dispatched and succeeds, spawns B:
-  tasks[0/A] = { parent: None, Waiting { count: 1, finally: Some(...) } }
+  tasks[0/A] = { parent: None, Waiting { count: 1, continuation: Some(...) } }
   tasks[1/B] = { parent: Some(0), Pending(B) }
 
 B dispatched and succeeds, spawns C:
-  tasks[0/A] = { parent: None, Waiting { count: 1, finally: Some(...) } }
-  tasks[1/B] = { parent: Some(0), Waiting { count: 1, finally: Some(...) } }
+  tasks[0/A] = { parent: None, Waiting { count: 1, continuation: Some(...) } }
+  tasks[1/B] = { parent: Some(0), Waiting { count: 1, continuation: Some(...) } }
   tasks[2/C] = { parent: Some(1), Pending(C) }
 
 C dispatched and succeeds (no children, no finally):
-  decrement_parent(1/B): count 1→0, finally.is_some() → run B_finally (spawns nothing)
-    decrement_parent(0/A): count 1→0, finally.is_some() → run A_finally
+  decrement_parent(1/B): count 1→0, continuation.is_some() → run B_finally (spawns nothing)
+    decrement_parent(0/A): count 1→0, continuation.is_some() → run A_finally
     done
 ```
 
@@ -335,24 +336,24 @@ C dispatched and succeeds (no children, no finally):
 A (finally) spawns B (finally that spawns C)
 
 A dispatched and succeeds, spawns B:
-  tasks[0/A] = { parent: None, Waiting { count: 1, finally: Some(...) } }
+  tasks[0/A] = { parent: None, Waiting { count: 1, continuation: Some(...) } }
   tasks[1/B] = { parent: Some(0), Pending(B) }
 
 B dispatched and succeeds (no children, has finally):
   Run B_finally → spawns C
-  tasks[0/A] = { parent: None, Waiting { count: 1, finally: Some(...) } }
-  tasks[1/B] = { parent: Some(0), Waiting { count: 1, finally: None } }  ← KEY!
+  tasks[0/A] = { parent: None, Waiting { count: 1, continuation: Some(...) } }
+  tasks[1/B] = { parent: Some(0), Waiting { count: 1, continuation: None } }  ← KEY!
   tasks[2/C] = { parent: Some(1), Pending(C) }
 
 C dispatched and succeeds:
-  decrement_parent(1/B): count 1→0, finally.is_none() → done
-    decrement_parent(0/A): count 1→0, finally.is_some() → run A_finally
+  decrement_parent(1/B): count 1→0, continuation.is_none() → done
+    decrement_parent(0/A): count 1→0, continuation.is_some() → run A_finally
     done
 ```
 
 **Order: B_finally runs, C completes, THEN A_finally ✓**
 
-The key: when B's finally spawns C, B enters `Waiting { finally: None }`. B isn't "done" until C completes, but there's no more finally to run - it already ran.
+The key: when B's finally spawns C, B enters `Waiting { continuation: None }`. B isn't "done" until C completes, but there's no more continuation to run - it already ran.
 
 ---
 
@@ -366,7 +367,7 @@ The key: when B's finally spawns C, B enters `Waiting { finally: None }`. B isn'
 
 - `crates/gsd_config/src/runner/types.rs`
   - Remove `QueuedTask` struct
-  - Add `TaskEntry`, `TaskState`, `FinallyData`
+  - Add `TaskEntry`, `TaskState`, `Continuation`
 
 - `crates/gsd_config/src/runner/finally.rs`
   - Remove `FinallyTracker` and `FinallyState`
