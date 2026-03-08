@@ -169,9 +169,11 @@ Per coding standards, use enums instead of magic sentinel values like `"__finall
 pub enum TaskKind {
     /// Regular step task from config
     Step(Task),
-    /// Finally task - runs a shell script when parent's children complete
+    /// Finally task - runs when parent's children complete
     Finally {
-        script: HookScript,
+        /// The step whose finally hook this runs (used to look up the script)
+        step: StepName,
+        /// Input value passed to the finally hook
         input: serde_json::Value,
     },
 }
@@ -181,11 +183,13 @@ impl TaskKind {
     pub fn description(&self) -> String {
         match self {
             TaskKind::Step(task) => format!("step {}", task.step),
-            TaskKind::Finally { .. } => "finally".to_string(),
+            TaskKind::Finally { step, .. } => format!("finally for {}", step),
         }
     }
 }
 ```
+
+**Note:** `StepName` will eventually be interned as a `u32`, making this very efficient. The actual `HookScript` is looked up from `config.steps[step].finally_hook` at dispatch time.
 
 #### `types.rs` - TaskEntry changes
 
@@ -233,11 +237,7 @@ fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continu
 fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continuation>) {
     if let Some(cont) = continuation {
         // Queue finally as a task instead of running synchronously
-        let hook = self.config.steps.iter()
-            .find(|s| s.name == cont.step_name)
-            .and_then(|s| s.finally_hook.as_ref())
-            .expect("continuation implies finally hook exists")
-            .clone();
+        // Just pass the step name - script is looked up at dispatch time
 
         // Transition parent to Waiting for the finally task
         let entry = self.tasks.get_mut(&task_id).expect("task must exist");
@@ -250,7 +250,7 @@ fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continu
         };
 
         // Queue finally task as child of this task
-        self.queue_finally_task(hook, cont.value.0, task_id);
+        self.queue_finally_task(cont.step_name, cont.value.0, task_id);
         return;
     }
 
@@ -260,12 +260,12 @@ fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continu
 
 fn queue_finally_task(
     &mut self,
-    script: HookScript,
+    step: StepName,  // Which step's finally hook to run
     input: serde_json::Value,
     parent_id: LogTaskId,
 ) {
     let id = self.next_task_id();
-    let kind = TaskKind::Finally { script, input };
+    let kind = TaskKind::Finally { step, input };
     let retries_remaining = 3;  // Finally tasks get retries like any other task
 
     let entry = TaskEntry {
@@ -298,13 +298,18 @@ fn dispatch_entry(&mut self, task_id: LogTaskId, mut entry: TaskEntry) {
             let step = self.step_map.get(&task.step).expect("step must exist");
             // ... spawn thread, submit to pool or run command
         }
-        TaskKind::Finally { script, input } => {
-            // Finally task - run as shell command
-            let script = script.clone();
+        TaskKind::Finally { step, input } => {
+            // Finally task - look up script from config, run as shell command
+            let script = self.config.steps.iter()
+                .find(|s| &s.name == step)
+                .and_then(|s| s.finally_hook.as_ref())
+                .expect("finally task must have corresponding hook in config")
+                .clone();
+
             let input_json = serde_json::to_string(input).expect("input serializes");
             let working_dir = self.pool.working_dir.clone();
 
-            info!(task_id = ?task_id, "dispatching finally task");
+            info!(task_id = ?task_id, step = %step, "dispatching finally task");
 
             thread::spawn(move || {
                 let result = run_shell_command(script.as_str(), &input_json, None);
