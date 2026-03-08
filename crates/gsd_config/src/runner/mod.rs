@@ -7,31 +7,132 @@ mod hooks;
 mod response;
 mod shell;
 mod submit;
-mod types;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::num::NonZeroU16;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
+use agent_pool_cli::AgentPoolCli;
+use cli_invoker::Invoker;
 use tracing::{error, info, warn};
 
 use crate::docs::generate_step_docs;
 use crate::resolved::{Action, Config, Step};
-use crate::types::{HookScript, LogTaskId, StepName};
+use crate::types::{HookScript, LogTaskId, StepInputValue, StepName};
 use crate::value_schema::{CompiledSchemas, Task};
 
-use crate::types::StepInputValue;
-use dispatch::{TaskContext, dispatch_command_task, dispatch_finally_task, dispatch_pool_task};
-use hooks::{call_wake_script, run_post_hook};
-use response::{FailureKind, ProcessedSubmit, process_retry, process_submit_result};
-use types::{
-    InFlight, InFlightResult, PoolConnection, TaskEntry, TaskIdentity, TaskOutcome, TaskState,
+use dispatch::{
+    InFlightResult, TaskContext, TaskIdentity, dispatch_command_task, dispatch_finally_task,
+    dispatch_pool_task,
 };
+use hooks::{call_wake_script, run_post_hook};
+use response::{FailureKind, ProcessedSubmit, TaskOutcome, process_retry, process_submit_result};
 
-use types::TaskResult;
-pub use types::{PostHookInput, RunnerConfig};
+pub use hooks::PostHookInput;
+
+// ==================== Public API ====================
+
+/// Runner configuration (how to run, not what to run).
+pub struct RunnerConfig<'a> {
+    /// Path to the `agent_pool` root directory.
+    pub agent_pool_root: &'a Path,
+    /// Working directory for command actions (typically the config file's directory).
+    pub working_dir: &'a Path,
+    /// Optional wake script to call before starting.
+    pub wake_script: Option<&'a str>,
+    /// Invoker for the `agent_pool` CLI.
+    pub invoker: &'a Invoker<AgentPoolCli>,
+}
+
+// ==================== Internal Types ====================
+
+/// Connection details for the agent pool.
+struct PoolConnection {
+    root: PathBuf,
+    working_dir: PathBuf,
+    invoker: Invoker<AgentPoolCli>,
+}
+
+/// Result of task processing (for iterator).
+#[derive(Debug)]
+enum TaskResult {
+    /// Task completed successfully.
+    Completed,
+    /// Task will be retried.
+    Requeued,
+    /// Task was dropped after exhausting retries.
+    Dropped,
+}
+
+/// Entry in the unified task state map.
+struct TaskEntry {
+    /// The step this task is executing.
+    step: StepName,
+    /// Parent task waiting for this task to complete.
+    parent_id: Option<LogTaskId>,
+    /// **"Am I a finally task?"** (this task's type)
+    ///
+    /// - `None` = Step task (run pre-hook, then action)
+    /// - `Some` = Finally task with this script (no pre-hook, just run script)
+    ///
+    /// The script is looked up once when the finally is scheduled, not again at dispatch.
+    ///
+    /// **Not to be confused with `finally_data` in `WaitingForChildren`:**
+    /// - `finally_script`: "Am I a finally task?" (this task's type)
+    /// - `finally_data`:   "Do I have a finally hook to run after my children?" (step's config)
+    finally_script: Option<HookScript>,
+    /// Current state of this task.
+    state: TaskState,
+    /// Number of retries remaining for this task.
+    // TODO: Use this for finally task retries (currently uses Task.retries like other tasks)
+    #[expect(dead_code)]
+    retries_remaining: u32,
+}
+
+/// State of a task in the runner.
+enum TaskState {
+    /// Task waiting to be dispatched (queued due to concurrency limit).
+    Pending {
+        /// The step input value. For Step tasks, may be transformed by pre-hook.
+        /// For Finally tasks, comes from parent (already through pre-hook).
+        value: StepInputValue,
+    },
+    /// Task currently executing in a worker thread.
+    InFlight(InFlight),
+    /// Task completed its action, waiting for children to complete.
+    WaitingForChildren {
+        /// Number of children still pending.
+        pending_children_count: NonZeroU16,
+        /// **"Does this step have a finally hook to run after children?"** (step's config)
+        ///
+        /// Hook + value to schedule finally when all children complete.
+        /// - `Some` for Step tasks whose step config has a finally hook
+        /// - `None` for Finally tasks (no "finally of finally")
+        ///
+        /// The hook is looked up once when entering this state, not again when scheduling.
+        finally_data: Option<(HookScript, StepInputValue)>,
+    },
+}
+
+/// Zero-sized marker that a task is currently executing.
+///
+/// Only created when spawning a worker thread, enforcing that
+/// `InFlight` state means the task is actually running.
+struct InFlight(());
+
+impl InFlight {
+    /// Create an `InFlight` marker.
+    ///
+    /// # Safety (invariant)
+    ///
+    /// Only call this immediately after spawning a worker thread for the task.
+    const fn new() -> Self {
+        InFlight(())
+    }
+}
 
 /// Default maximum concurrent task submissions.
 ///

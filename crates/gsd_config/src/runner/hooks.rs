@@ -3,12 +3,51 @@
 use std::io;
 use std::path::Path;
 use std::process::Command;
+
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::types::HookScript;
+use crate::types::{HookScript, StepInputValue};
+use crate::value_schema::Task;
 
-use super::PostHookInput;
 use super::shell::run_shell_command;
+
+/// Input/output for post hooks.
+///
+/// Post hooks receive this JSON on stdin and must output (possibly modified)
+/// JSON on stdout. The `next` array can be filtered, added to, or transformed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum PostHookInput {
+    /// The action completed successfully.
+    Success {
+        /// The task's input value.
+        input: StepInputValue,
+        /// The agent's output.
+        output: serde_json::Value,
+        /// Tasks spawned by this completion. Post hook can modify this.
+        next: Vec<Task>,
+    },
+    /// The action timed out.
+    Timeout {
+        /// The task's input value.
+        input: StepInputValue,
+    },
+    /// The action failed with an error.
+    Error {
+        /// The task's input value.
+        input: StepInputValue,
+        /// Error message.
+        error: String,
+    },
+    /// The pre hook failed.
+    PreHookError {
+        /// The original input value (before pre hook).
+        input: StepInputValue,
+        /// Error message from pre hook.
+        error: String,
+    },
+}
 
 /// Run a pre hook and return the (possibly modified) value.
 pub fn run_pre_hook(

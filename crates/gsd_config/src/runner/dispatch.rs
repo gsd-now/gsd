@@ -1,18 +1,51 @@
 //! Task dispatch - spawns threads to execute pool and command tasks.
 
+use std::io;
 use std::path::Path;
 use std::sync::mpsc;
 
+use agent_pool::Response;
 use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
 use tracing::debug;
 
-use crate::types::{HookScript, StepInputValue};
+use crate::types::{HookScript, LogTaskId, StepInputValue};
+use crate::value_schema::Task;
 
 use super::hooks::{run_command_action, run_pre_hook};
 use super::shell::run_shell_command;
 use super::submit::{build_agent_payload, submit_via_cli};
-use super::types::{InFlightResult, SubmitResult, TaskIdentity};
+
+/// Identity of a task being processed.
+#[derive(Clone)]
+pub struct TaskIdentity {
+    pub task: Task,
+    pub task_id: LogTaskId,
+}
+
+/// Result of task execution, returned from dispatch threads.
+pub struct InFlightResult {
+    pub identity: TaskIdentity,
+    pub result: SubmitResult,
+}
+
+/// Result of task submission. Value only exists when pre-hook succeeded.
+pub enum SubmitResult {
+    Pool {
+        value: StepInputValue,
+        response: io::Result<Response>,
+    },
+    Command {
+        value: StepInputValue,
+        output: io::Result<String>,
+    },
+    /// Result from a finally task (no pre-hook, stdout parsed as task array).
+    Finally {
+        value: StepInputValue,
+        output: Result<String, String>,
+    },
+    PreHookError(String),
+}
 
 /// Context for dispatching a task.
 pub struct TaskContext {

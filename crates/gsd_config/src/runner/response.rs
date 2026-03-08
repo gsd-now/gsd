@@ -4,12 +4,29 @@ use agent_pool::Response;
 use tracing::{debug, error, info, warn};
 
 use crate::resolved::{Options, Step};
+use crate::types::StepInputValue;
 use crate::value_schema::{CompiledSchemas, Task, validate_response};
 
-use crate::types::StepInputValue;
+use super::dispatch::SubmitResult;
+use super::hooks::PostHookInput;
 
-use super::PostHookInput;
-use super::types::{SubmitResult, TaskOutcome};
+/// Outcome of processing a task submission.
+///
+/// Separates spawned children (from successful execution) from retries (failed execution).
+/// This distinction is crucial for finally hook tracking:
+/// - Spawned children are "descendants" that the parent waits for
+/// - Retries are continuations of the same logical task, not new descendants
+pub enum TaskOutcome {
+    /// Task succeeded, may have spawned children.
+    Success {
+        spawned: Vec<Task>,
+        finally_value: StepInputValue,
+    },
+    /// Task failed, should be retried.
+    Retry(Task),
+    /// Task failed permanently (max retries exceeded or retry disabled).
+    Dropped,
+}
 
 /// Why a task failed and needs retry consideration.
 #[derive(Debug, Clone, Copy)]
