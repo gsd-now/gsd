@@ -141,7 +141,7 @@ All `in_flight` counter modifications happen in these transition functions. No o
 /// Transition: Pending → InFlight (increments in_flight)
 fn transition_to_in_flight(&mut self, task_id: LogTaskId, step_name: StepName) {
     let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-    debug_assert!(matches!(entry.state, TaskState::Pending(_)));
+    assert!(matches!(entry.state, TaskState::Pending(_)));
     entry.state = TaskState::InFlight(step_name);
     self.in_flight += 1;
 }

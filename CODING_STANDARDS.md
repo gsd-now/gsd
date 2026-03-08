@@ -45,6 +45,8 @@
 
 - **Use `#[expect(...)]`, not `#[allow(...)]`.** Lint suppressions error when no longer needed.
 
+- **Use `assert!`, not `debug_assert!`.** If an invariant is worth checking, check it always. Debug-only assertions mask bugs in release builds.
+
 - **Pass Copy types by value, not reference.**
 
 - **Variable names default to snake_case of their type.** Prefer long descriptive names over short ones.
