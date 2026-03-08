@@ -13,6 +13,7 @@ use common::{
     setup_test_dir,
 };
 use gsd_config::{CompiledSchemas, ConfigFile, RunnerConfig, StepInputValue, Task};
+use rstest::rstest;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -33,7 +34,8 @@ use std::time::Duration;
 ///
 /// Correct behavior (after fix):
 /// - A's finally runs after B' succeeds
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_runs_too_early_on_retry() {
     let test_name = "finally_retry_bugs_too_early";
     let root = setup_test_dir(test_name);
@@ -165,7 +167,8 @@ echo "finally_ran" > "{}"
 /// This version uses a more robust detection mechanism:
 /// - Track total B agent calls at the moment finally runs
 /// - Assert finally ran after ALL B calls, not after the failure
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_timing_via_counters() {
     let test_name = "finally_retry_bugs_counters";
     let root = setup_test_dir(test_name);
@@ -315,8 +318,8 @@ echo "finally_executed" > "{}"
 /// 3. Parent's finally runs (TOO EARLY!)
 /// 4. Child retries and succeeds
 /// 5. Child's finally runs
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn nested_finally_with_retry_ordering() {
     let test_name = "finally_retry_bugs_nested";
     let root = setup_test_dir(test_name);
@@ -455,7 +458,8 @@ echo "child_finally" >> "{}"
 ///
 /// If Child exhausts all retries and is dropped, Parent's finally should
 /// still run (the descendant is "done" even though it failed).
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_runs_when_retries_exhausted() {
     let test_name = "finally_retry_bugs_exhausted";
     let root = setup_test_dir(test_name);
@@ -577,8 +581,8 @@ echo "finally_executed" > "{}"
 /// Bug behavior:
 /// - A's finally runs when B succeeds (before C completes, before B's finally)
 /// - Order is: `A_finally`, `C_done`, `B_finally` (wrong!)
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn subtree_finally_waits_for_grandchildren() {
     let test_name = "finally_subtree_grandchildren";
     let root = setup_test_dir(test_name);
@@ -736,8 +740,8 @@ cat  # pass through stdin to stdout
 /// - B's finally spawns C as a "new root" with `finally_origin_id: None`
 /// - A's finally runs when B's finally completes (before C runs)
 /// - Order is: `B_finally`, `A_finally`, `C_done` (wrong!)
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_waits_for_finally_spawned_tasks() {
     let test_name = "finally_spawned_tasks";
     let root = setup_test_dir(test_name);
@@ -884,8 +888,8 @@ cat  # pass through stdin to stdout
 /// (innermost to outermost)
 ///
 /// This is a more extreme version of Bug 1 - cascading grandchild issue.
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn deeply_nested_finally_chain() {
     let test_name = "finally_deeply_nested";
     let root = setup_test_dir(test_name);
@@ -1027,8 +1031,8 @@ fn deeply_nested_finally_chain() {
 /// Expected order: `D_done`, `B_finally`, `C_finally` (order of B/C flexible), `A_finally`
 ///
 /// Bug: A gets notified when B succeeds, before B's subtree (D, `B_finally`) completes.
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn multiple_children_with_finally() {
     let test_name = "finally_multiple_children";
     let root = setup_test_dir(test_name);
@@ -1186,8 +1190,8 @@ fn multiple_children_with_finally() {
 /// Expected order: `B_finally` (spawns C, D), `C_done`, `D_done` (order flexible), `A_finally`
 ///
 /// Bug: A's finally runs when B's finally completes, not when C and D complete.
-#[test]
-#[expect(clippy::too_many_lines)]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_spawns_multiple_tasks() {
     let test_name = "finally_spawns_multiple";
     let root = setup_test_dir(test_name);
@@ -1342,7 +1346,8 @@ fn finally_spawns_multiple_tasks() {
 ///
 /// Expected: `run()` succeeds (finally eventually succeeded after retries)
 /// Bug behavior: Finally failures are silently ignored, no retry attempted
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_retries_on_failure() {
     let test_name = "finally_retries_failure";
     let root = setup_test_dir(test_name);
@@ -1440,7 +1445,8 @@ exit 0
 ///
 /// Expected: `run()` returns error (finally failed after all retries)
 /// Bug behavior: Finally failures are silently ignored, `run()` succeeds
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_failure_propagates_after_retries_exhausted() {
     let test_name = "finally_failure_propagates";
     let root = setup_test_dir(test_name);
@@ -1517,7 +1523,8 @@ fn finally_failure_propagates_after_retries_exhausted() {
 ///
 /// Expected: `run()` returns error (child of finally failed)
 /// Bug behavior: Unknown - need to verify
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(20))]
 fn finally_child_failure_propagates() {
     let test_name = "finally_child_failure";
     let root = setup_test_dir(test_name);
