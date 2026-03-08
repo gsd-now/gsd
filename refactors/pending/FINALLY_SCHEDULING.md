@@ -179,8 +179,8 @@ pub enum TaskKind {
     Finally {
         /// The step whose finally hook this runs (used to look up the script)
         step: StepName,
-        /// Input value passed to the finally hook
-        input: serde_json::Value,
+        /// The effective value from the parent task (after pre-hook transformation)
+        input: EffectiveValue,
     },
 }
 
@@ -289,7 +289,7 @@ fn schedule_finally(
 ) {
     let id = self.next_task_id();
     // step is stored in TaskKind::Finally, accessible via entry.step_name()
-    let kind = TaskKind::Finally { step: step.clone(), input: effective_value.0 };
+    let kind = TaskKind::Finally { step: step.clone(), input: effective_value };
 
     // Get retry count from step config
     let retries_remaining = self.step_map.get(&step)
@@ -395,7 +395,7 @@ fn dispatch(&mut self, task_id: LogTaskId) {
                 .expect("finally task must have corresponding hook in config")
                 .clone();
 
-            let input_json = serde_json::to_string(input).expect("input serializes");
+            let input_json = serde_json::to_string(&input.0).expect("input serializes");
             let working_dir = self.pool.working_dir.clone();
 
             info!(task_id = ?task_id, step = %step, "dispatching finally task");
