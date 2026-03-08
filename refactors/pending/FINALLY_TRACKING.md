@@ -164,14 +164,11 @@ fn dispatch(&mut self, task_id: LogTaskId, task: Task, parent_id: Option<LogTask
 
 /// Pending → InFlight (for tasks that were queued while at max concurrency)
 fn dispatch_pending(&mut self, task_id: LogTaskId) {
-    let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-    let TaskState::Pending(task) = &entry.state else {
+    let entry = self.tasks.remove(&task_id).expect("task must exist");
+    let TaskState::Pending(task) = entry.state else {
         panic!("dispatch_pending called on non-Pending task");
     };
-    let task = task.clone();
-    let in_flight = InFlight::new(&self.tx, task_id, task);
-    entry.state = TaskState::InFlight(in_flight);
-    self.in_flight += 1;
+    self.dispatch(task_id, task, entry.parent_id);  // Reuse dispatch()
 }
 
 /// InFlight → Waiting
