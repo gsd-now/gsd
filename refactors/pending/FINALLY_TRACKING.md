@@ -86,13 +86,13 @@ struct TaskEntry {
 }
 
 /// Zero-sized proof that a task was dispatched to a worker.
-/// Can only be created via submit_to_worker(), enforcing the invariant
+/// Can only be created by submitting to the worker channel, enforcing
 /// that InFlight state means the task is actually running.
 struct InFlight(());
 
 impl InFlight {
-    fn new(runner: &TaskRunner, task_id: LogTaskId, task: Task) -> Self {
-        runner.submit_to_worker(task_id, task);
+    fn new(tx: &mpsc::Sender<WorkerTask>, task_id: LogTaskId, task: Task) -> Self {
+        tx.send(WorkerTask { task_id, task }).expect("worker channel closed");
         InFlight(())
     }
 }
@@ -154,7 +154,7 @@ Task created → [Pending] → [InFlight] ──┬── success with children 
 ```rust
 /// Create InFlight task - ZST constructor enforces dispatch
 fn dispatch(&mut self, task_id: LogTaskId, task: Task, parent_id: Option<LogTaskId>) {
-    let in_flight = InFlight::new(self, task_id, task);  // Submits to worker
+    let in_flight = InFlight::new(&self.tx, task_id, task);
     self.tasks.insert(task_id, TaskEntry {
         parent_id,
         state: TaskState::InFlight(in_flight),
@@ -169,7 +169,7 @@ fn dispatch_pending(&mut self, task_id: LogTaskId) {
         panic!("dispatch_pending called on non-Pending task");
     };
     let task = task.clone();
-    let in_flight = InFlight::new(self, task_id, task);  // Submits to worker
+    let in_flight = InFlight::new(&self.tx, task_id, task);
     entry.state = TaskState::InFlight(in_flight);
     self.in_flight += 1;
 }
