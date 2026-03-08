@@ -216,20 +216,14 @@ Note: `dispatch` is atomic - creating InFlight state and submitting to worker ha
 Only needed for initial bootstrap or when tasks were queued while at max concurrency.
 
 ```rust
-fn dispatch_pending(&mut self) {
+fn dispatch_all_pending(&mut self) {
     while self.in_flight < self.max_concurrency {
         let Some(task_id) = self.tasks.iter()
             .find_map(|(id, entry)| matches!(entry.state, TaskState::Pending(_)).then_some(*id))
         else {
             break;
         };
-
-        let entry = self.tasks.get_mut(&task_id).expect("task must exist");
-        let TaskState::Pending(task) = std::mem::replace(&mut entry.state, TaskState::InFlight) else {
-            panic!("expected Pending");
-        };
-        self.in_flight += 1;
-        self.submit_to_worker(task_id, task);
+        self.dispatch_pending(task_id);  // Reuse single-task dispatch
     }
 }
 ```
