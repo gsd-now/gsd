@@ -22,7 +22,6 @@ The runner module (`crates/gsd_config/src/runner/`) has these submodules:
 - `mod.rs` - TaskRunner struct, main loop, `run()` public function
 - `types.rs` - TaskEntry, TaskState, InFlight, TaskIdentity, InFlightResult, RunnerConfig, SubmitResult
 - `dispatch.rs` - TaskContext, dispatch_pool_task, dispatch_command_task, dispatch_finally_task
-- `finally.rs` - (empty after FINALLY_SCHEDULING - finally now goes through dispatch)
 - `hooks.rs` - run_pre_hook, run_post_hook
 - `shell.rs` - `run_shell_command()` helper
 - `response.rs` - Response processing and retry logic

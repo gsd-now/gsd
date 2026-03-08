@@ -3,7 +3,6 @@
 //! Executes tasks through `agent_pool`, validating transitions and handling timeouts.
 
 mod dispatch;
-mod finally;
 mod hooks;
 mod response;
 mod shell;
