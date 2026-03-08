@@ -199,8 +199,12 @@ pub(super) struct TaskEntry {
     pub state: TaskState,
     pub kind: TaskKind,           // NEW: replaces Task in Pending state
     pub retries_remaining: u32,   // NEW: for retry logic (finally tasks retry too)
-    /// For Step tasks: output value, stored until children complete (if has finally)
-    /// For Finally tasks: input value, passed to script at dispatch time
+    /// Meaning depends on TaskKind:
+    /// - Step with children + finally: output value, stored until children complete
+    /// - Step without finally: None (never set)
+    /// - Finally: input value, MUST be Some (passed to script at dispatch)
+    ///
+    /// Invariant: Finally tasks always have Some. Dispatch panics otherwise.
     pub effective_value: Option<EffectiveValue>,
 }
 
