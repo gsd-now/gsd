@@ -23,6 +23,15 @@ define_string_id! {
     pub struct HookScript;
 }
 
+/// A step's input value - the JSON payload passed to/from steps.
+///
+/// All step values in the system use this type, whether they've been
+/// through a pre-hook transformation or not. The transformation is optional,
+/// so there's no meaningful type distinction between "before" and "after".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StepInputValue(pub serde_json::Value);
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {

@@ -9,7 +9,7 @@ use agent_pool_cli::AgentPoolCli;
 use clap::{Parser, Subcommand};
 use cli_invoker::Invoker;
 use gsd_config::{
-    Action, CompiledSchemas, Config, ConfigFile, RunnerConfig, Task, config_schema,
+    Action, CompiledSchemas, Config, ConfigFile, RunnerConfig, StepInputValue, Task, config_schema,
     generate_full_docs, run,
 };
 use std::fs::File;
@@ -315,7 +315,7 @@ fn resolve_initial_tasks(
         // Config has entrypoint
         (Some(entrypoint), None, ev) => {
             // Parse entrypoint value (default to empty object)
-            let value: serde_json::Value = match ev {
+            let value = StepInputValue(match ev {
                 Some(v) => parse_json_input(v).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -323,7 +323,7 @@ fn resolve_initial_tasks(
                     )
                 })?,
                 None => serde_json::json!({}),
-            };
+            });
 
             // Validate the value against the entrypoint step's schema
             if let Err(e) = schemas.validate(entrypoint, &value) {

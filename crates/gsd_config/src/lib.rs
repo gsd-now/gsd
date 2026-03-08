@@ -30,5 +30,5 @@ pub use config::{ConfigFile, config_schema};
 pub use docs::generate_full_docs;
 pub use resolved::{Action, Config};
 pub use runner::{RunnerConfig, run};
-pub use types::StepName;
+pub use types::{StepInputValue, StepName};
 pub use value_schema::{CompiledSchemas, Task};

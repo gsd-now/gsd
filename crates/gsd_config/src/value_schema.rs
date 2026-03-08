@@ -3,9 +3,8 @@
 //! Loads schemas from config (inline or file) and validates task payloads.
 
 use crate::resolved::{Config, Step};
-use crate::types::StepName;
+use crate::types::{StepInputValue, StepName};
 use jsonschema::Validator;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
 
@@ -39,7 +38,11 @@ impl CompiledSchemas {
     /// # Errors
     ///
     /// Returns an error if the step doesn't exist or the value fails validation.
-    pub fn validate(&self, step_name: &StepName, value: &Value) -> Result<(), ValidationError> {
+    pub fn validate(
+        &self,
+        step_name: &StepName,
+        value: &StepInputValue,
+    ) -> Result<(), ValidationError> {
         let Some(maybe_validator) = self.validators.get(step_name.as_str()) else {
             return Err(ValidationError::UnknownStep(step_name.clone()));
         };
@@ -49,12 +52,12 @@ impl CompiledSchemas {
             return Ok(());
         };
 
-        if validator.is_valid(value) {
+        if validator.is_valid(&value.0) {
             Ok(())
         } else {
             // Collect validation errors
             let errors: Vec<String> = validator
-                .iter_errors(value)
+                .iter_errors(&value.0)
                 .map(|e| e.to_string())
                 .collect();
             Err(ValidationError::SchemaViolation {
@@ -65,7 +68,7 @@ impl CompiledSchemas {
     }
 }
 
-fn compile_schema(schema: &Value) -> io::Result<Validator> {
+fn compile_schema(schema: &serde_json::Value) -> io::Result<Validator> {
     Validator::new(schema).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -112,7 +115,7 @@ pub struct Task {
     #[serde(rename = "kind")]
     pub step: StepName,
     /// The task payload.
-    pub value: Value,
+    pub value: StepInputValue,
     /// Number of times this task has been retried (internal tracking, not serialized).
     #[serde(skip)]
     pub(crate) retries: u32,
@@ -121,7 +124,7 @@ pub struct Task {
 impl Task {
     /// Create a new task with the given step name and value.
     #[must_use]
-    pub fn new(step: impl Into<StepName>, value: Value) -> Self {
+    pub fn new(step: impl Into<StepName>, value: StepInputValue) -> Self {
         Self {
             step: step.into(),
             value,
@@ -142,11 +145,11 @@ impl Task {
 /// Returns an error if the response format is invalid, contains invalid
 /// transitions, or values fail schema validation.
 pub fn validate_response(
-    response: &Value,
+    response: &serde_json::Value,
     current_step: &Step,
     schemas: &CompiledSchemas,
 ) -> Result<Vec<Task>, ResponseValidationError> {
-    let Value::Array(items) = response else {
+    let serde_json::Value::Array(items) = response else {
         return Err(ResponseValidationError::NotAnArray);
     };
 
@@ -266,7 +269,7 @@ mod tests {
         let config = test_config();
         let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
-        let value = serde_json::json!({"x": 42});
+        let value = StepInputValue(serde_json::json!({"x": 42}));
         assert!(schemas.validate(&StepName::new("Start"), &value).is_ok());
     }
 
@@ -275,7 +278,7 @@ mod tests {
         let config = test_config();
         let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
-        let value = serde_json::json!({"x": "not a number"});
+        let value = StepInputValue(serde_json::json!({"x": "not a number"}));
         assert!(schemas.validate(&StepName::new("Start"), &value).is_err());
     }
 
@@ -285,7 +288,7 @@ mod tests {
         let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
 
         // End step has no schema
-        let value = serde_json::json!({"anything": "goes"});
+        let value = StepInputValue(serde_json::json!({"anything": "goes"}));
         assert!(schemas.validate(&StepName::new("End"), &value).is_ok());
     }
 

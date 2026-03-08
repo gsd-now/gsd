@@ -9,7 +9,7 @@ use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{LogTaskId, StepName};
+use crate::types::{LogTaskId, StepInputValue, StepName};
 use crate::value_schema::Task;
 
 /// Connection details for the agent pool.
@@ -28,8 +28,8 @@ pub(super) struct PoolConnection {
 pub enum PostHookInput {
     /// The action completed successfully.
     Success {
-        /// The input value (possibly modified by pre hook).
-        input: serde_json::Value,
+        /// The task's input value.
+        input: StepInputValue,
         /// The agent's output.
         output: serde_json::Value,
         /// Tasks spawned by this completion. Post hook can modify this.
@@ -37,20 +37,20 @@ pub enum PostHookInput {
     },
     /// The action timed out.
     Timeout {
-        /// The input value (possibly modified by pre hook).
-        input: serde_json::Value,
+        /// The task's input value.
+        input: StepInputValue,
     },
     /// The action failed with an error.
     Error {
-        /// The input value (possibly modified by pre hook).
-        input: serde_json::Value,
+        /// The task's input value.
+        input: StepInputValue,
         /// Error message.
         error: String,
     },
     /// The pre hook failed.
     PreHookError {
         /// The original input value (before pre hook).
-        input: serde_json::Value,
+        input: StepInputValue,
         /// Error message from pre hook.
         error: String,
     },
@@ -89,7 +89,7 @@ pub(super) enum TaskOutcome {
     /// Task succeeded, may have spawned children.
     Success {
         spawned: Vec<Task>,
-        finally_value: EffectiveValue,
+        finally_value: StepInputValue,
     },
     /// Task failed, should be retried.
     Retry(Task),
@@ -141,7 +141,7 @@ impl InFlight {
 /// queues any spawned tasks as children.
 pub(super) struct Continuation {
     pub step_name: StepName,
-    pub value: EffectiveValue,
+    pub value: StepInputValue,
 }
 
 /// Identity of a task being processed.
@@ -157,20 +157,14 @@ pub(super) struct InFlightResult {
     pub result: SubmitResult,
 }
 
-/// The task value after pre-hook transformation (or original if no pre-hook).
-///
-/// This is the value that was actually sent to the agent/command for processing.
-#[derive(Clone)]
-pub struct EffectiveValue(pub serde_json::Value);
-
-/// Result of task submission. `EffectiveValue` only exists when pre-hook succeeded.
+/// Result of task submission. Value only exists when pre-hook succeeded.
 pub(super) enum SubmitResult {
     Pool {
-        effective_value: EffectiveValue,
+        value: StepInputValue,
         response: io::Result<Response>,
     },
     Command {
-        effective_value: EffectiveValue,
+        value: StepInputValue,
         output: io::Result<String>,
     },
     PreHookError(String),

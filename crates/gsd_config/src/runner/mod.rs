@@ -23,13 +23,14 @@ use crate::resolved::{Action, Config, Step};
 use crate::types::{LogTaskId, StepName};
 use crate::value_schema::{CompiledSchemas, Task};
 
+use crate::types::StepInputValue;
 use dispatch::{TaskContext, dispatch_command_task, dispatch_pool_task};
 use finally::run_finally_hook_direct;
 use hooks::{call_wake_script, run_post_hook};
 use response::{FailureKind, ProcessedSubmit, process_retry, process_submit_result};
 use types::{
-    Continuation, EffectiveValue, InFlight, InFlightResult, PoolConnection, TaskEntry,
-    TaskIdentity, TaskOutcome, TaskState,
+    Continuation, InFlight, InFlightResult, PoolConnection, TaskEntry, TaskIdentity, TaskOutcome,
+    TaskState,
 };
 
 use types::TaskResult;
@@ -362,7 +363,7 @@ impl<'a> TaskRunner<'a> {
         task_id: LogTaskId,
         step_name: &StepName,
         spawned: Vec<Task>,
-        effective_value: EffectiveValue,
+        value: StepInputValue,
     ) {
         let finally_hook = self
             .config
@@ -372,7 +373,7 @@ impl<'a> TaskRunner<'a> {
             .and_then(|s| s.finally_hook.clone());
         let continuation = finally_hook.map(|_| Continuation {
             step_name: step_name.clone(),
-            value: effective_value,
+            value,
         });
 
         if spawned.is_empty() {

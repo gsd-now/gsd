@@ -175,11 +175,10 @@ pub(super) struct TaskEntry {
     /// The script is looked up once when the finally is scheduled, not again at dispatch.
     /// This avoids redundant config lookups.
     ///
-    /// Relationship to Pending.value (EffectiveValue concept):
-    /// - Step tasks (finally_script=None): Pending.value is INPUT (before pre-hook).
-    ///   Pre-hook transforms it to effective_value at dispatch time.
-    /// - Finally tasks (finally_script=Some): Pending.value IS the effective_value
-    ///   (already transformed by the parent step's pre-hook).
+    /// Relationship to Pending.value:
+    /// - Step tasks (finally_script=None): value may be transformed by pre-hook at dispatch.
+    /// - Finally tasks (finally_script=Some): value comes from parent (already transformed).
+    /// Either way, it's just "the value" - no meaningful type distinction.
     ///
     /// Relationship to finally_value in WaitingForChildren:
     /// - finally_script: "Am I a finally task?" (this task's identity)
@@ -193,8 +192,8 @@ pub(super) struct TaskEntry {
 
 pub(super) enum TaskState {
     /// Task is queued, waiting to be dispatched.
-    /// value: For Step tasks, this is the input (pre-pre-hook).
-    ///        For Finally tasks, this is the effective_value from parent.
+    /// value: The value to use for this task. For Step tasks, may be transformed
+    ///        by pre-hook at dispatch. For Finally tasks, comes from parent.
     Pending { value: serde_json::Value },
 
     /// Task is currently executing.
@@ -227,7 +226,7 @@ pub(super) enum TaskState {
 The key insight: when a task with finally completes, schedule its finally as a **sibling** (child of the same parent), not as making the completed task wait. The completed task is removed immediately.
 
 **Example:** A spawns B (which has finally)
-1. B completes with `effective_value`
+1. B completes with output value
 2. Schedule F (B's finally) as child of A → A's count: 1 → 2
 3. Remove B, decrement A → A's count: 2 → 1
 4. F completes → decrement A → A's count: 1 → 0
