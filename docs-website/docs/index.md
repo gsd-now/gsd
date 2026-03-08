@@ -34,7 +34,7 @@ For simple "keep trying until it works" loops, `/loop` is fine. For complex, mul
 The main command-line tool for running task queues:
 
 ```bash
-pnpm dlx @gsd-now/gsd@main run config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
+pnpm dlx @gsd-now/gsd@main run --config config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
 ```
 
 ### Agent Pool
