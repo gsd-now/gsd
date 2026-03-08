@@ -232,57 +232,42 @@ fn dispatch_all_pending(&mut self) {
 
 ```rust
 fn task_succeeded(&mut self, task_id: LogTaskId, step_name: StepName, spawned: Vec<Task>, effective_value: EffectiveValue) {
-    let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
     let finally_hook = self.config.steps.get(&step_name).and_then(|s| s.finally_hook.clone());
+    let continuation = finally_hook.map(|_| Continuation { step_name: step_name.clone(), value: effective_value });
 
     if !spawned.is_empty() {
         // Has children - wait for them
-        let continuation = finally_hook.map(|_| Continuation { step_name, value: effective_value });
         let count = NonZeroU16::new(spawned.len() as u16).unwrap();
         self.transition_to_waiting(task_id, count, continuation);
         for child in spawned {
             self.queue_task(child, Some(task_id));
         }
-    } else if let Some(hook) = finally_hook {
-        // No children, has finally - run it now (synchronously)
-        let spawned = run_finally_hook_direct(&hook, &effective_value.0);
-        if !spawned.is_empty() {
-            let count = NonZeroU16::new(spawned.len() as u16).unwrap();
-            self.transition_to_waiting(task_id, count, None);
-            for child in spawned {
-                self.queue_task(child, Some(task_id));
-            }
-        } else {
-            self.transition_to_done_and_notify(task_id);
-        }
     } else {
-        // No children, no finally - done
-        self.transition_to_done_and_notify(task_id);
-    }
-}
-
-fn transition_to_done_and_notify(&mut self, task_id: LogTaskId) {
-    if let Some(parent_id) = self.transition_to_done(task_id) {
-        self.decrement_parent(parent_id);
+        // No children - handle completion (may run continuation)
+        self.handle_completion(task_id, continuation);
     }
 }
 ```
 
-#### Task retries
+#### Task fails (with optional retry)
 
 ```rust
-fn task_retried(&mut self, task_id: LogTaskId, retry_task: Task) {
+fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>) {
     let parent_id = self.tasks.get(&task_id).expect("task must exist").parent_id;
-    self.queue_task(retry_task, parent_id);
-    self.transition_to_done(task_id);  // Don't notify parent
-}
-```
 
-#### Task fails permanently
-
-```rust
-fn task_failed(&mut self, task_id: LogTaskId) {
-    self.transition_to_done_and_notify(task_id);
+    if let Some(retry_task) = retry {
+        self.queue_task(retry_task, parent_id);
+        self.transition_to_done(task_id);  // Don't notify - retry takes over
+    } else {
+        // Permanent failure - remove and notify parent
+        let entry = self.tasks.remove(&task_id).expect("task must exist");
+        if matches!(entry.state, TaskState::InFlight(_)) {
+            self.in_flight -= 1;
+        }
+        if let Some(parent_id) = entry.parent_id {
+            self.decrement_parent(parent_id);
+        }
+    }
 }
 ```
 
@@ -290,44 +275,65 @@ fn task_failed(&mut self, task_id: LogTaskId) {
 
 ```rust
 fn decrement_parent(&mut self, parent_id: LogTaskId) {
-    let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
-    let TaskState::Waiting { pending_count, continuation } = &mut entry.state else {
-        panic!("parent not in Waiting state");
+    let (hit_zero, continuation) = {
+        let entry = self.tasks.get_mut(&parent_id).expect("parent must exist");
+        let TaskState::Waiting { pending_count, continuation } = &mut entry.state else {
+            panic!("parent not in Waiting state");
+        };
+
+        let new_count = pending_count.get() - 1;
+        if new_count == 0 {
+            (true, continuation.take())
+        } else {
+            *pending_count = NonZeroU16::new(new_count).unwrap();
+            (false, None)
+        }
     };
 
-    let new_count = pending_count.get() - 1;
-    if new_count == 0 {
-        // All children done - extract what we need before modifying
-        let continuation_data = continuation.take();
-        let grandparent_id = entry.parent_id;
+    if hit_zero {
+        self.handle_completion(parent_id, continuation);
+    }
+}
+```
 
-        if let Some(cont) = continuation_data {
-            // Run finally hook (synchronously)
-            let hook = self.config.steps.get(&cont.step_name)
-                .and_then(|s| s.finally_hook.as_ref())
-                .expect("continuation implies finally hook exists");
-            let spawned = run_finally_hook_direct(hook, &cont.value.0);
+#### Handle completion (shared logic)
 
-            if !spawned.is_empty() {
-                // Finally spawned tasks - update count, queue children
-                let entry = self.tasks.get_mut(&parent_id).expect("parent exists");
-                if let TaskState::Waiting { pending_count, .. } = &mut entry.state {
-                    *pending_count = NonZeroU16::new(spawned.len() as u16).unwrap();
-                }
-                for child in spawned {
-                    self.queue_task(child, Some(parent_id));
-                }
-                return;
-            }
+```rust
+/// Called when a task may be ready to finish. Runs continuation if present;
+/// if that spawns tasks, waits for them. Otherwise removes task and notifies parent.
+/// Task may be InFlight (success with no children) or Waiting (count hit 0).
+fn handle_completion(&mut self, task_id: LogTaskId, continuation: Option<Continuation>) {
+    let spawned = if let Some(cont) = continuation {
+        let hook = self.config.steps.get(&cont.step_name)
+            .and_then(|s| s.finally_hook.as_ref())
+            .expect("continuation implies finally hook exists");
+        run_finally_hook_direct(hook, &cont.value.0)
+    } else {
+        vec![]
+    };
+
+    if !spawned.is_empty() {
+        let count = NonZeroU16::new(spawned.len() as u16).unwrap();
+
+        // Transition to or update Waiting state
+        let entry = self.tasks.get_mut(&task_id).expect("task must exist");
+        if matches!(entry.state, TaskState::InFlight(_)) {
+            self.in_flight -= 1;
         }
+        entry.state = TaskState::Waiting { pending_count: count, continuation: None };
 
-        // No continuation or continuation spawned nothing - remove and notify grandparent
-        self.tasks.remove(&parent_id);
-        if let Some(gpid) = grandparent_id {
-            self.decrement_parent(gpid);
+        for child in spawned {
+            self.queue_task(child, Some(task_id));
         }
     } else {
-        *pending_count = NonZeroU16::new(new_count).unwrap();
+        // Remove and notify parent
+        let entry = self.tasks.remove(&task_id).expect("task must exist");
+        if matches!(entry.state, TaskState::InFlight(_)) {
+            self.in_flight -= 1;
+        }
+        if let Some(parent_id) = entry.parent_id {
+            self.decrement_parent(parent_id);
+        }
     }
 }
 ```
