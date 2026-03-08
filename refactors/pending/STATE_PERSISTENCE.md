@@ -304,8 +304,65 @@ Create the new crate with log types and comprehensive tests (no integration with
 
 #### Snapshot Tests (Demo-Based)
 
-Each demo produces a deterministic state log. We snapshot-test the log output.
+Each demo produces a deterministic state log. We snapshot-test the log output to catch regressions.
 
+**Storage location:** Snapshots live alongside each demo:
+```
+crates/gsd_cli/demos/
+├── linear/
+│   ├── config.jsonc
+│   ├── demo.sh
+│   └── snapshot.ndjson     # Expected state log output
+├── fan-out/
+│   ├── config.jsonc
+│   ├── demo.sh
+│   └── snapshot.ndjson
+├── hooks/
+│   ├── config.jsonc
+│   ├── demo.sh
+│   ├── pre-hook.sh
+│   ├── post-hook.sh
+│   ├── finally-hook.sh
+│   └── snapshot.ndjson
+└── ...
+```
+
+**How it works:**
+
+1. **Demo scripts write snapshots.** Each `demo.sh` runs gsd with `--state-log` pointing to a temp file, then copies to `snapshot.ndjson`:
+   ```bash
+   TEMP_LOG=$(mktemp)
+   $GSD run config.jsonc --pool "$POOL_ID" --state-log "$TEMP_LOG" ...
+
+   # Update snapshot (only when GSD_UPDATE_SNAPSHOTS=1)
+   if [ "$GSD_UPDATE_SNAPSHOTS" = "1" ]; then
+       cp "$TEMP_LOG" "$SCRIPT_DIR/snapshot.ndjson"
+   fi
+   ```
+
+2. **CI verifies no changes.** After running all demos, CI checks that working tree is clean:
+   ```yaml
+   # .github/workflows/ci.yml
+   - name: Run demos (generates snapshots)
+     run: ./scripts/run-all-demos.sh
+
+   - name: Verify snapshots unchanged
+     run: |
+       if ! git diff --quiet crates/gsd_cli/demos/*/snapshot.ndjson; then
+         echo "Snapshot files changed! Run demos locally and commit updated snapshots."
+         git diff crates/gsd_cli/demos/*/snapshot.ndjson
+         exit 1
+       fi
+   ```
+
+3. **Local update workflow.** When log format changes intentionally:
+   ```bash
+   GSD_UPDATE_SNAPSHOTS=1 ./scripts/run-all-demos.sh
+   git add crates/gsd_cli/demos/*/snapshot.ndjson
+   git commit -m "Update state log snapshots"
+   ```
+
+**Tests:**
 ```rust
 #[test] fn snapshot_demo_linear()
 #[test] fn snapshot_demo_fan_out()
@@ -314,49 +371,28 @@ Each demo produces a deterministic state log. We snapshot-test the log output.
 #[test] fn snapshot_demo_hooks()  // exercises pre/post/finally
 ```
 
-**Prerequisite: Deterministic Ordering**
+Each test:
+1. Runs the demo config with `OrderedAgentController` (deterministic completion order)
+2. Captures state log output
+3. Compares against `snapshot.ndjson` in the demo folder
+4. Fails if they differ
 
-For snapshots to be stable, task completion order must be deterministic. Options:
+**Prerequisite: Deterministic Ordering** [DONE - see ORDERED_MOCK_POOL refactor]
 
-1. **Sequential mode** (`max_concurrency: 1`) - tasks complete in submission order
-2. **Extend `GsdTestAgent` for ordered completion** - agent blocks on channel until test releases
-
-The existing test infrastructure (`GsdTestAgent` in `tests/common/mod.rs`) already handles Pool actions in Rust. Currently it uses `processing_delay` (time-based), which isn't deterministic for concurrent tasks.
-
-Extend `GsdTestAgent` to support channel-based completion:
+`OrderedAgentController` (in `crates/gsd_config/tests/common/mod.rs`) provides deterministic task completion:
 
 ```rust
-impl GsdTestAgent {
-    /// Start an agent that waits for explicit completion signals.
-    /// Returns (agent, controller) - test uses controller to complete tasks in order.
-    pub fn ordered(root: &Path) -> (Self, OrderedAgentController) {
-        let (tx, rx) = mpsc::channel::<String>();
-        let controller = OrderedAgentController { tx };
+let (agent, ctrl) = GsdTestAgent::ordered(&root);
 
-        let agent = Self::start(root, Duration::ZERO, move |_payload| {
-            // Block until test sends the response
-            rx.recv().unwrap_or_else(|_| "[]".to_string())
-        });
+// Start GSD in background thread
+let handle = thread::spawn(|| gsd.run(...));
 
-        (agent, controller)
-    }
-}
+// Wait for tasks, complete in controlled order
+ctrl.wait_for_tasks(1);  // Block until 1 task waiting
+let tasks = ctrl.waiting_tasks();  // Inspect (kind, payload)
+ctrl.complete_at(0, "[]");  // Complete task at index 0
 
-pub struct OrderedAgentController {
-    tx: mpsc::Sender<String>,
-}
-
-impl OrderedAgentController {
-    /// Complete the next waiting task with this response.
-    pub fn complete(&self, response: &str) {
-        self.tx.send(response.to_string()).unwrap();
-    }
-
-    /// Complete with empty array (terminate).
-    pub fn terminate(&self) {
-        self.complete("[]");
-    }
-}
+handle.join().unwrap();
 ```
 
 For Command actions (bash), order is already deterministic with `max_concurrency: 1`.
@@ -487,7 +523,7 @@ struct TaskRunner<'a> {
     tx: mpsc::Sender<InFlightResult>,
     rx: mpsc::Receiver<InFlightResult>,
     next_task_id: u32,
-    log_writer: Option<StateLogWriter>,  // NEW
+    log_writer: StateLogWriter,  // NEW
 }
 ```
 
@@ -516,15 +552,13 @@ fn queue_task(&mut self, task: Task, parent_id: Option<LogTaskId>, origin: TaskO
     let retries_remaining = self.step_map.get(&task.step).map_or(0, |s| s.options.max_retries);
 
     // LOG: TaskSubmitted
-    if let Some(writer) = &mut self.log_writer {
-        writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
-            task_id: id,
-            step: task.step.clone(),
-            value: task.value.0.clone(),
-            parent_id,
-            origin,
-        }));
-    }
+    self.log_writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
+        task_id: id,
+        step: task.step.clone(),
+        value: task.value.0.clone(),
+        parent_id,
+        origin,
+    }));
 
     if self.in_flight < self.max_concurrency {
         let prev = self.tasks.insert(id, TaskEntry { /* ... */ });
@@ -575,12 +609,10 @@ fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, value: Step
 
     if spawned.is_empty() {
         // LOG: TaskCompleted(Success) with no children
-        if let Some(writer) = &mut self.log_writer {
-            writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
-                task_id,
-                outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids: vec![] }),
-            }));
-        }
+        self.log_writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+            task_id,
+            outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids: vec![] }),
+        }));
 
         if let Some(hook) = finally_hook {
             self.schedule_finally(task_id, hook, value);
@@ -600,12 +632,10 @@ fn task_succeeded(&mut self, task_id: LogTaskId, spawned: Vec<Task>, value: Step
         let spawned_task_ids: Vec<LogTaskId> = (spawned_start_id.0..self.next_task_id)
             .map(LogTaskId)
             .collect();
-        if let Some(writer) = &mut self.log_writer {
-            writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
-                task_id,
-                outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids }),
-            }));
-        }
+        self.log_writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+            task_id,
+            outcome: TaskOutcome::Success(TaskSuccess { spawned_task_ids }),
+        }));
     }
 }
 ```
@@ -643,12 +673,10 @@ fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>, reason: Failu
     };
 
     // LOG: TaskCompleted(Failed)
-    if let Some(writer) = &mut self.log_writer {
-        writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
-            task_id,
-            outcome: TaskOutcome::Failed(TaskFailed { reason, retry_task_id }),
-        }));
-    }
+    self.log_writer.write(StateLogEntry::TaskCompleted(TaskCompleted {
+        task_id,
+        outcome: TaskOutcome::Failed(TaskFailed { reason, retry_task_id }),
+    }));
 }
 ```
 
@@ -689,15 +717,13 @@ fn schedule_finally(&mut self, task_id: LogTaskId, hook: HookScript, value: Step
     let id = self.next_task_id();
 
     // LOG: TaskSubmitted with Finally origin
-    if let Some(writer) = &mut self.log_writer {
-        writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
-            task_id: id,
-            step: step.clone(),
-            value: value.0.clone(),
-            parent_id,
-            origin: TaskOrigin::Finally { finally_for: task_id },
-        }));
-    }
+    self.log_writer.write(StateLogEntry::TaskSubmitted(TaskSubmitted {
+        task_id: id,
+        step: step.clone(),
+        value: value.0.clone(),
+        parent_id,
+        origin: TaskOrigin::Finally { finally_for: task_id },
+    }));
 
     let finally_entry = TaskEntry {
         step,
@@ -769,7 +795,7 @@ impl<'a> TaskRunner<'a> {
         schemas: &'a CompiledSchemas,
         runner_config: &RunnerConfig<'a>,
         initial_state: InitialState,
-        log_writer: Option<StateLogWriter>,
+        log_writer: StateLogWriter,
     ) -> io::Result<Self> {
         // ... setup ...
         match initial_state {
@@ -888,7 +914,7 @@ pub fn run(
     schemas: &CompiledSchemas,
     runner_config: &RunnerConfig<'_>,
     initial_state: InitialState,
-    log_writer: Option<StateLogWriter>,
+    log_writer: StateLogWriter,
 ) -> io::Result<()> {
     let mut runner = TaskRunner::new(config, schemas, runner_config, initial_state, log_writer)?;
     // ... run loop ...
@@ -911,7 +937,7 @@ pub fn resume(
     let schemas = CompiledSchemas::new(&config)?;
 
     // 4. Run with reconstructed state
-    run(&config, &schemas, runner_config, InitialState::Resumed(state), Some(writer))
+    run(&config, &schemas, runner_config, InitialState::Resumed(state), writer)
 }
 ```
 
