@@ -59,6 +59,7 @@ pub struct TaskContext {
 fn run_pre_hook_or_send_error(
     ctx: &TaskContext,
     original_value: &StepInputValue,
+    working_dir: &Path,
     tx: &mpsc::Sender<InFlightResult>,
 ) -> Option<StepInputValue> {
     let Some(hook) = &ctx.pre_hook else {
@@ -66,7 +67,7 @@ fn run_pre_hook_or_send_error(
         return Some(original_value.clone());
     };
 
-    match run_pre_hook(hook, &original_value.0) {
+    match run_pre_hook(hook, &original_value.0, working_dir) {
         Ok(v) => Some(StepInputValue(v)),
         Err(e) => {
             let _ = tx.send(InFlightResult {
@@ -84,12 +85,13 @@ pub fn dispatch_pool_task(
     docs: &str,
     timeout: Option<u64>,
     pool_root: &Path,
+    working_dir: &Path,
     invoker: &Invoker<AgentPoolCli>,
     tx: &mpsc::Sender<InFlightResult>,
 ) {
     let original_value = &ctx.identity.task.value;
 
-    let Some(value) = run_pre_hook_or_send_error(&ctx, original_value, tx) else {
+    let Some(value) = run_pre_hook_or_send_error(&ctx, original_value, working_dir, tx) else {
         return;
     };
 
@@ -112,7 +114,7 @@ pub fn dispatch_command_task(
 ) {
     let original_value = &ctx.identity.task.value;
 
-    let Some(value) = run_pre_hook_or_send_error(&ctx, original_value, tx) else {
+    let Some(value) = run_pre_hook_or_send_error(&ctx, original_value, working_dir, tx) else {
         return;
     };
 
@@ -136,12 +138,13 @@ pub fn dispatch_command_task(
 pub fn dispatch_finally_task(
     identity: TaskIdentity,
     script: &HookScript,
+    working_dir: &Path,
     tx: &mpsc::Sender<InFlightResult>,
 ) {
     let value = identity.task.value.clone();
     let input_json = serde_json::to_string(&value.0).unwrap_or_default();
 
-    let output = run_shell_command(script.as_str(), &input_json, None);
+    let output = run_shell_command(script.as_str(), &input_json, Some(working_dir));
     let _ = tx.send(InFlightResult {
         identity,
         result: SubmitResult::Finally { value, output },

@@ -295,11 +295,12 @@ impl<'a> TaskRunner<'a> {
         if let Some(script) = &entry.finally_script {
             let script = script.clone();
             let identity = TaskIdentity { task, task_id };
+            let working_dir = self.pool.working_dir.clone();
 
             info!(step = %identity.task.step, "dispatching finally task");
 
             thread::spawn(move || {
-                dispatch_finally_task(identity, &script, &tx);
+                dispatch_finally_task(identity, &script, &working_dir, &tx);
             });
             return;
         }
@@ -318,12 +319,21 @@ impl<'a> TaskRunner<'a> {
                 let timeout = step.options.timeout;
                 let docs = generate_step_docs(step, self.config);
                 let pool_root = self.pool.root.clone();
+                let working_dir = self.pool.working_dir.clone();
                 let invoker = self.pool.invoker.clone();
 
                 info!(step = %ctx.identity.task.step, "submitting task to pool");
 
                 thread::spawn(move || {
-                    dispatch_pool_task(ctx, &docs, timeout, &pool_root, &invoker, &tx);
+                    dispatch_pool_task(
+                        ctx,
+                        &docs,
+                        timeout,
+                        &pool_root,
+                        &working_dir,
+                        &invoker,
+                        &tx,
+                    );
                 });
             }
             Action::Command { script } => {
@@ -574,7 +584,7 @@ impl<'a> TaskRunner<'a> {
 
         // Post hook can modify the outcome (e.g., filter spawned tasks)
         let outcome = if let Some(hook) = &step.post {
-            match run_post_hook(hook, &post_input) {
+            match run_post_hook(hook, &post_input, &self.pool.working_dir) {
                 Ok(modified) => match outcome {
                     TaskOutcome::Success { finally_value, .. } => {
                         let tasks = extract_next_tasks(&modified);

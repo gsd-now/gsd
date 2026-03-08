@@ -53,12 +53,13 @@ pub enum PostHookInput {
 pub fn run_pre_hook(
     script: &HookScript,
     value: &serde_json::Value,
+    working_dir: &Path,
 ) -> Result<serde_json::Value, String> {
     info!(script = %script, "running pre hook");
 
     let input = serde_json::to_string(value).unwrap_or_default();
-    let stdout =
-        run_shell_command(script.as_str(), &input, None).map_err(|e| format!("pre hook {e}"))?;
+    let stdout = run_shell_command(script.as_str(), &input, Some(working_dir))
+        .map_err(|e| format!("pre hook {e}"))?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("pre hook output is not valid JSON: {e}"))
@@ -70,11 +71,15 @@ pub fn run_pre_hook(
 /// Run a post hook synchronously and return the (possibly modified) result.
 ///
 /// Post hooks can modify the `next` array to filter, add, or transform tasks.
-pub fn run_post_hook(script: &HookScript, input: &PostHookInput) -> Result<PostHookInput, String> {
+pub fn run_post_hook(
+    script: &HookScript,
+    input: &PostHookInput,
+    working_dir: &Path,
+) -> Result<PostHookInput, String> {
     info!(script = %script, kind = ?std::mem::discriminant(input), "running post hook");
 
     let input_json = serde_json::to_string(&input).unwrap_or_default();
-    let stdout = run_shell_command(script.as_str(), &input_json, None)
+    let stdout = run_shell_command(script.as_str(), &input_json, Some(working_dir))
         .map_err(|e| format!("post hook {e}"))?;
 
     serde_json::from_str(&stdout)
