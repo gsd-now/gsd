@@ -435,8 +435,8 @@ These tests currently have `#[should_panic]` because they document bugs. After t
 1. **Deeply nested finally chains** - A→B→C→D all with finally hooks
    - Verify order: D_finally, C_finally, B_finally, A_finally
 
-2. **Retry with finally** - Task with finally that retries
-   - Verify finally runs only once after final success/drop
+2. **Retry with finally** - Task with finally that retries then succeeds
+   - Verify finally runs only once after final success
    - Verify parent waits for retry to complete
 
 3. **Multiple children with finally** - A spawns B and C, both with finally
@@ -444,6 +444,14 @@ These tests currently have `#[should_panic]` because they document bugs. After t
 
 4. **Finally spawns multiple tasks** - A's finally spawns B and C
    - Verify parent (if any) waits for all finally-spawned tasks
+
+5. **Child fails, parent finally still runs** - A (with finally) spawns B, B fails
+   - Verify A's finally runs (child failure counts as "done")
+   - Verify B's finally does NOT run (B never succeeded)
+
+6. **Task drops after max retries, no finally** - Task with finally exceeds retry limit
+   - Verify finally does NOT run (task never succeeded)
+   - Verify parent is still notified (child is "done")
 
 ### Test Execution Notes
 
