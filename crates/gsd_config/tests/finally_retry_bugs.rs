@@ -578,6 +578,7 @@ echo "finally_executed" > "{}"
 /// - A's finally runs when B succeeds (before C completes, before B's finally)
 /// - Order is: `A_finally`, `C_done`, `B_finally` (wrong!)
 #[test]
+#[should_panic(expected = "wrong order")]
 #[expect(clippy::too_many_lines)]
 fn subtree_finally_waits_for_grandchildren() {
     let test_name = "finally_subtree_grandchildren";
@@ -737,6 +738,7 @@ cat  # pass through stdin to stdout
 /// - A's finally runs when B's finally completes (before C runs)
 /// - Order is: `B_finally`, `A_finally`, `C_done` (wrong!)
 #[test]
+#[should_panic(expected = "wrong order")]
 #[expect(clippy::too_many_lines)]
 fn finally_waits_for_finally_spawned_tasks() {
     let test_name = "finally_spawned_tasks";
@@ -1329,6 +1331,286 @@ fn finally_spawns_multiple_tasks() {
     assert!(
         valid,
         "Finally hooks ran in wrong order. B_finally first, C_done and D_done before A_finally, A_finally last, got: {lines:?}"
+    );
+
+    cleanup_test_dir(test_name);
+}
+
+/// Test that finally hooks retry on failure.
+///
+/// Setup:
+/// - `StepA` has a finally hook that fails twice, succeeds on third try
+/// - `max_retries`: 3
+///
+/// Expected: `run()` succeeds (finally eventually succeeded after retries)
+/// Bug behavior: Finally failures are silently ignored, no retry attempted
+#[test]
+#[should_panic(expected = "finally did not retry")]
+fn finally_retries_on_failure() {
+    let test_name = "finally_retries_failure";
+    let root = setup_test_dir(test_name);
+
+    if !is_ipc_available(&root) {
+        eprintln!("SKIP: IPC not available");
+        cleanup_test_dir(test_name);
+        return;
+    }
+
+    let pool = AgentPoolHandle::start(&root);
+
+    // Agent just returns empty (no children)
+    let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
+
+    // Finally hook that fails first 2 times, succeeds on 3rd
+    let call_count_file = root.join("finally_calls.txt");
+    let finally_script = root.join("finally.sh");
+    let script = format!(
+        r#"#!/bin/bash
+count=$(cat "{}" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo $count > "{}"
+if [ $count -lt 3 ]; then
+    exit 1
+fi
+exit 0
+"#,
+        call_count_file.display(),
+        call_count_file.display()
+    );
+    fs::write(&finally_script, &script).expect("write finally script");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&finally_script, fs::Permissions::from_mode(0o755))
+            .expect("chmod finally script");
+    }
+
+    let config_json = format!(
+        r#"{{
+        "steps": [
+            {{
+                "name": "StepA",
+                "action": {{"kind": "Pool", "instructions": {{"inline": ""}}}},
+                "next": [],
+                "finally": "{}",
+                "options": {{"max_retries": 3}}
+            }}
+        ]
+    }}"#,
+        finally_script.display()
+    );
+
+    let config_file: ConfigFile = serde_json::from_str(&config_json).expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+
+    let runner_config = RunnerConfig {
+        agent_pool_root: pool.pool_path(),
+        working_dir: Path::new("."),
+        wake_script: None,
+        invoker: &create_test_invoker(),
+    };
+
+    let result = gsd_config::run(
+        &config,
+        &schemas,
+        &runner_config,
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
+    );
+
+    // Check that finally was called 3 times (2 failures + 1 success)
+    let call_count: i32 = fs::read_to_string(&call_count_file)
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    assert!(result.is_ok(), "run should succeed after finally retries");
+    assert_eq!(
+        call_count, 3,
+        "finally did not retry: expected 3 calls, got {call_count}"
+    );
+
+    cleanup_test_dir(test_name);
+}
+
+/// Test that finally failure propagates after retries are exhausted.
+///
+/// Setup:
+/// - `StepA` has a finally hook that always fails
+/// - `max_retries`: 2
+///
+/// Expected: `run()` returns error (finally failed after all retries)
+/// Bug behavior: Finally failures are silently ignored, `run()` succeeds
+#[test]
+#[should_panic(expected = "finally failure not propagated")]
+fn finally_failure_propagates_after_retries_exhausted() {
+    let test_name = "finally_failure_propagates";
+    let root = setup_test_dir(test_name);
+
+    if !is_ipc_available(&root) {
+        eprintln!("SKIP: IPC not available");
+        cleanup_test_dir(test_name);
+        return;
+    }
+
+    let pool = AgentPoolHandle::start(&root);
+
+    // Agent just returns empty (no children)
+    let _agent = GsdTestAgent::terminator(&root, Duration::from_millis(10));
+
+    // Finally hook that always fails
+    let finally_script = root.join("finally.sh");
+    fs::write(&finally_script, "#!/bin/bash\nexit 1\n").expect("write finally script");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&finally_script, fs::Permissions::from_mode(0o755))
+            .expect("chmod finally script");
+    }
+
+    let config_json = format!(
+        r#"{{
+        "steps": [
+            {{
+                "name": "StepA",
+                "action": {{"kind": "Pool", "instructions": {{"inline": ""}}}},
+                "next": [],
+                "finally": "{}",
+                "options": {{"max_retries": 2}}
+            }}
+        ]
+    }}"#,
+        finally_script.display()
+    );
+
+    let config_file: ConfigFile = serde_json::from_str(&config_json).expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+
+    let runner_config = RunnerConfig {
+        agent_pool_root: pool.pool_path(),
+        working_dir: Path::new("."),
+        wake_script: None,
+        invoker: &create_test_invoker(),
+    };
+
+    let result = gsd_config::run(
+        &config,
+        &schemas,
+        &runner_config,
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
+    );
+
+    // Should fail because finally exhausted retries
+    assert!(
+        result.is_err(),
+        "finally failure not propagated: run() should return error when finally fails"
+    );
+
+    cleanup_test_dir(test_name);
+}
+
+/// Test that failure of a task spawned by finally propagates.
+///
+/// Setup:
+/// - `StepA` has a finally hook that spawns Cleanup task
+/// - Cleanup task always fails
+///
+/// Expected: `run()` returns error (child of finally failed)
+/// Bug behavior: Unknown - need to verify
+#[test]
+#[should_panic(expected = "finally child failure not propagated")]
+fn finally_child_failure_propagates() {
+    let test_name = "finally_child_failure";
+    let root = setup_test_dir(test_name);
+
+    if !is_ipc_available(&root) {
+        eprintln!("SKIP: IPC not available");
+        cleanup_test_dir(test_name);
+        return;
+    }
+
+    let pool = AgentPoolHandle::start(&root);
+
+    // Agent: StepA returns empty, Cleanup always fails
+    let _agent = GsdTestAgent::start(&root, Duration::from_millis(10), |payload| {
+        let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+        let kind = parsed
+            .get("task")
+            .and_then(|t| t.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or("");
+
+        if kind == "Cleanup" {
+            "INVALID JSON - FAIL".to_string() // Invalid response = failure
+        } else {
+            "[]".to_string()
+        }
+    });
+
+    // Finally hook that spawns a Cleanup task
+    let finally_script = root.join("finally.sh");
+    fs::write(
+        &finally_script,
+        r#"#!/bin/bash
+echo '[{"kind": "Cleanup", "value": {}}]'
+"#,
+    )
+    .expect("write finally script");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&finally_script, fs::Permissions::from_mode(0o755))
+            .expect("chmod finally script");
+    }
+
+    let config_json = format!(
+        r#"{{
+        "steps": [
+            {{
+                "name": "StepA",
+                "action": {{"kind": "Pool", "instructions": {{"inline": ""}}}},
+                "next": [],
+                "finally": "{}",
+                "options": {{"max_retries": 0}}
+            }},
+            {{
+                "name": "Cleanup",
+                "action": {{"kind": "Pool", "instructions": {{"inline": ""}}}},
+                "next": [],
+                "options": {{"max_retries": 0}}
+            }}
+        ]
+    }}"#,
+        finally_script.display()
+    );
+
+    let config_file: ConfigFile = serde_json::from_str(&config_json).expect("parse config");
+    let config = config_file.resolve(Path::new(".")).expect("resolve config");
+    let schemas = CompiledSchemas::compile(&config).expect("compile schemas");
+
+    let runner_config = RunnerConfig {
+        agent_pool_root: pool.pool_path(),
+        working_dir: Path::new("."),
+        wake_script: None,
+        invoker: &create_test_invoker(),
+    };
+
+    let result = gsd_config::run(
+        &config,
+        &schemas,
+        &runner_config,
+        vec![Task::new("StepA", StepInputValue(serde_json::json!({})))],
+    );
+
+    // Should fail because Cleanup (child of finally) failed
+    assert!(
+        result.is_err(),
+        "finally child failure not propagated: run() should return error when finally's child fails"
     );
 
     cleanup_test_dir(test_name);
