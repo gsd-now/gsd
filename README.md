@@ -16,6 +16,18 @@ For example, if an agent is asked to list all the files in a folder and analyze 
 
 See [crates/gsd_cli/demos](crates/gsd_cli/demos) for example workflows.
 
+### Why isn't /loop sufficient?
+
+Tools like Claude's `/loop` command are great for simple, iterative tasks. But for complex refactors and multi-step workflows, they fall short:
+
+- **Predictability**: With GSD, you know exactly what states your workflow can be in and what transitions are valid. You can reason about the decision tree before running it.
+- **Guaranteed Structure**: The state machine enforces that agents follow the defined workflow. Invalid transitions are rejected and retried.
+- **Separation of Concerns**: Each step has its own instructions, schema, and retry policy. Agents don't need to remember the entire workflow—they just handle their current task.
+- **Parallelism**: GSD naturally supports fan-out patterns where multiple tasks run concurrently, then aggregate results.
+- **Auditability**: Every state transition is explicit and logged. You can trace exactly how the workflow progressed.
+
+For simple "keep trying until it works" loops, `/loop` is fine. For complex, multi-agent workflows where you need guarantees about behavior, GSD provides the structure that makes ambitious automation possible.
+
 ## Quick Start
 
 ```bash
