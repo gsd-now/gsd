@@ -71,9 +71,9 @@ RECONNECT_DELAY=2
 CLI_GLOBAL_ARGS=""
 if [ -n "$POOL_ROOT" ]; then
     CLI_GLOBAL_ARGS="--root $POOL_ROOT"
-    POOL_DIR="$POOL_ROOT/$POOL_ID"
+    POOL_DIR="$POOL_ROOT/pools/$POOL_ID"
 else
-    POOL_DIR="/tmp/agent_pool/$POOL_ID"
+    POOL_DIR="/tmp/agent_pool/pools/$POOL_ID"
 fi
 
 # Track the daemon PID we're connected to (to detect daemon restarts)
@@ -88,7 +88,7 @@ while true; do
     fi
 
     # Check daemon PID - if it changed, a new daemon started, we should exit
-    CURRENT_PID=$(cat "$POOL_DIR/lock" 2>/dev/null || echo "")
+    CURRENT_PID=$(cat "$POOL_DIR/daemon.lock" 2>/dev/null || echo "")
     if [ -n "$DAEMON_PID" ] && [ "$CURRENT_PID" != "$DAEMON_PID" ]; then
         echo "[$NAME] Daemon restarted (PID changed from $DAEMON_PID to $CURRENT_PID), exiting." >&2
         exit 0
