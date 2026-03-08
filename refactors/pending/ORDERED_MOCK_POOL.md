@@ -42,36 +42,115 @@ Add `OrderedAgentController` that lets tests explicitly control when each task c
 ### New Types
 
 ```rust
-/// Controller for releasing tasks in a specific order.
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// A waiting task that hasn't been completed yet.
+pub struct WaitingTask {
+    /// The task kind (e.g., "Worker", "Analyze")
+    pub kind: String,
+    /// The full payload JSON
+    pub payload: String,
+    /// Channel to send the response
+    response_tx: oneshot::Sender<String>,
+}
+
+/// Controller for completing tasks in any order.
+///
+/// Tasks register themselves when they arrive, and tests can complete
+/// them in any order by specifying which task to complete.
 pub struct OrderedAgentController {
-    /// Channel to send responses to waiting tasks.
-    /// Each send() releases one waiting task.
-    tx: mpsc::Sender<String>,
+    /// Tasks waiting for completion, keyed by arrival order.
+    waiting: Arc<Mutex<Vec<WaitingTask>>>,
+    /// Notifier for when new tasks arrive.
+    task_arrived: Arc<(Mutex<()>, Condvar)>,
 }
 
 impl OrderedAgentController {
-    /// Complete the next waiting task with this response JSON.
-    pub fn complete(&self, response: &str) {
-        self.tx.send(response.to_string()).expect("agent dropped");
+    /// Wait for a task with the given kind to arrive.
+    /// Returns the index of the task in the waiting queue.
+    pub fn wait_for(&self, kind: &str) -> usize {
+        loop {
+            {
+                let waiting = self.waiting.lock().unwrap();
+                if let Some(idx) = waiting.iter().position(|t| t.kind == kind) {
+                    return idx;
+                }
+            }
+            // Wait for notification that a new task arrived
+            let (lock, cvar) = &*self.task_arrived;
+            let guard = lock.lock().unwrap();
+            let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
+        }
     }
 
-    /// Complete with empty array (terminate task, no children).
-    pub fn terminate(&self) {
-        self.complete("[]");
+    /// Wait for any task to arrive. Returns its index.
+    pub fn wait_for_any(&self) -> usize {
+        loop {
+            {
+                let waiting = self.waiting.lock().unwrap();
+                if !waiting.is_empty() {
+                    return waiting.len() - 1;  // Most recent
+                }
+            }
+            let (lock, cvar) = &*self.task_arrived;
+            let guard = lock.lock().unwrap();
+            let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
+        }
     }
 
-    /// Complete with a single child task.
-    pub fn spawn_one(&self, kind: &str) {
-        self.complete(&format!(r#"[{{"kind": "{kind}", "value": {{}}}}]"#));
+    /// Get list of currently waiting tasks (kind, payload).
+    pub fn waiting_tasks(&self) -> Vec<(String, String)> {
+        let waiting = self.waiting.lock().unwrap();
+        waiting.iter().map(|t| (t.kind.clone(), t.payload.clone())).collect()
     }
 
-    /// Complete with multiple child tasks.
-    pub fn spawn(&self, kinds: &[&str]) {
-        let tasks: Vec<String> = kinds
+    /// Complete a specific waiting task by index.
+    pub fn complete_at(&self, index: usize, response: &str) {
+        let task = {
+            let mut waiting = self.waiting.lock().unwrap();
+            waiting.remove(index)
+        };
+        let _ = task.response_tx.send(response.to_string());
+    }
+
+    /// Complete the first waiting task with the given kind.
+    pub fn complete(&self, kind: &str, response: &str) {
+        let idx = self.wait_for(kind);
+        self.complete_at(idx, response);
+    }
+
+    /// Complete a task with empty array (terminate, no children).
+    pub fn terminate(&self, kind: &str) {
+        self.complete(kind, "[]");
+    }
+
+    /// Complete a task, spawning child tasks.
+    pub fn spawn(&self, kind: &str, children: &[&str]) {
+        let tasks: Vec<String> = children
             .iter()
             .map(|k| format!(r#"{{"kind": "{k}", "value": {{}}}}"#))
             .collect();
-        self.complete(&format!("[{}]", tasks.join(", ")));
+        self.complete(kind, &format!("[{}]", tasks.join(", ")));
+    }
+
+    /// Complete all waiting tasks of a given kind with the same response.
+    pub fn complete_all(&self, kind: &str, response: &str) {
+        loop {
+            let idx = {
+                let waiting = self.waiting.lock().unwrap();
+                waiting.iter().position(|t| t.kind == kind)
+            };
+            match idx {
+                Some(i) => self.complete_at(i, response),
+                None => break,
+            }
+        }
+    }
+
+    /// Terminate all waiting tasks of a given kind.
+    pub fn terminate_all(&self, kind: &str) {
+        self.complete_all(kind, "[]");
     }
 }
 ```
@@ -82,18 +161,52 @@ impl OrderedAgentController {
 impl GsdTestAgent {
     /// Start an agent that waits for explicit completion signals.
     ///
-    /// Tasks block until `controller.complete()` is called.
-    /// Tasks are released in FIFO order (first to arrive, first to complete).
+    /// Tasks register with the controller when they arrive and block
+    /// until the test explicitly completes them. Tests can complete
+    /// tasks in any order, not just FIFO.
     ///
     /// Returns (agent, controller).
     pub fn ordered(root: &Path) -> (Self, OrderedAgentController) {
-        let (tx, rx) = mpsc::channel::<String>();
-        let controller = OrderedAgentController { tx };
+        let waiting: Arc<Mutex<Vec<WaitingTask>>> = Arc::new(Mutex::new(Vec::new()));
+        let task_arrived = Arc::new((Mutex::new(()), Condvar::new()));
 
-        let agent = Self::start(root, Duration::ZERO, move |_payload| {
+        let waiting_clone = waiting.clone();
+        let task_arrived_clone = task_arrived.clone();
+
+        let agent = Self::start(root, Duration::ZERO, move |payload| {
+            // Parse task kind from payload
+            let kind = serde_json::from_str::<serde_json::Value>(payload)
+                .ok()
+                .and_then(|v| v.get("task")?.get("kind")?.as_str().map(String::from))
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            // Create oneshot channel for this task's response
+            let (tx, rx) = oneshot::channel();
+
+            // Register as waiting
+            {
+                let mut waiting = waiting_clone.lock().unwrap();
+                waiting.push(WaitingTask {
+                    kind,
+                    payload: payload.to_string(),
+                    response_tx: tx,
+                });
+            }
+
+            // Notify controller that a task arrived
+            {
+                let (_, cvar) = &*task_arrived_clone;
+                cvar.notify_all();
+            }
+
             // Block until test sends response
             rx.recv().unwrap_or_else(|_| "[]".to_string())
         });
+
+        let controller = OrderedAgentController {
+            waiting,
+            task_arrived,
+        };
 
         (agent, controller)
     }
@@ -122,16 +235,39 @@ fn fan_out_deterministic_order() {
         gsd.run(config, r#"[{"kind": "Distribute", "value": {}}]"#, &root.join("pool"))
     });
 
-    // Distribute task arrives, complete it with 3 workers
-    ctrl.spawn(&["Worker", "Worker", "Worker"]);
+    // Wait for Distribute task, complete it with 3 workers
+    ctrl.spawn("Distribute", &["Worker", "Worker", "Worker"]);
 
-    // Workers arrive (order may vary), complete in specific order
-    ctrl.terminate();  // Worker 1
-    ctrl.terminate();  // Worker 2
-    ctrl.terminate();  // Worker 3
+    // Wait for all 3 workers to arrive
+    ctrl.wait_for("Worker");
+    ctrl.wait_for("Worker");
+    ctrl.wait_for("Worker");
+
+    // Now we have 3 Worker tasks waiting - complete them in reverse order!
+    // (or any order we want for testing)
+    let tasks = ctrl.waiting_tasks();
+    assert_eq!(tasks.len(), 3);
+
+    // Complete in specific order (e.g., by index)
+    ctrl.complete_at(2, "[]");  // Third worker first
+    ctrl.complete_at(1, "[]");  // Second worker
+    ctrl.complete_at(0, "[]");  // First worker last
 
     let output = handle.join().unwrap();
-    // State log now has deterministic ordering
+    // State log has deterministic ordering based on completion order
+}
+
+#[test]
+fn fan_out_complete_by_kind() {
+    // ... setup ...
+
+    // Simpler API when you don't care about specific ordering within a kind
+    ctrl.spawn("Distribute", &["Worker", "Worker", "Worker"]);
+
+    // Complete all workers (order within kind is FIFO)
+    ctrl.terminate("Worker");
+    ctrl.terminate("Worker");
+    ctrl.terminate("Worker");
 }
 ```
 
@@ -148,8 +284,12 @@ fn fan_out_deterministic_order() {
 **Tests:**
 ```rust
 #[test] fn ordered_agent_single_task()
-#[test] fn ordered_agent_multiple_tasks_fifo()
-#[test] fn ordered_agent_fan_out()
+#[test] fn ordered_agent_complete_by_kind()
+#[test] fn ordered_agent_complete_at_index()
+#[test] fn ordered_agent_wait_for_specific_kind()
+#[test] fn ordered_agent_complete_out_of_order()
+#[test] fn ordered_agent_complete_all_of_kind()
+#[test] fn ordered_agent_waiting_tasks_query()
 ```
 
 ### Phase 2: Add Payload-Aware Completion
