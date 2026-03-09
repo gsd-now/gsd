@@ -5,11 +5,11 @@
 #![expect(clippy::expect_used)]
 
 /// Default number of concurrent workers for ordered agent mode.
-const ORDERED_AGENT_WORKER_COUNT: usize = 32;
+/// Keep this low because each watcher takes several seconds to create on macOS
+/// due to `FSEvents` batching/coalescing behavior.
+const ORDERED_AGENT_WORKER_COUNT: usize = 4;
 
-use agent_pool::{
-    AGENTS_DIR, STATUS_FILE, TaskAssignment, VerifiedWatcher, wait_for_task, write_response,
-};
+use agent_pool::{STATUS_FILE, TaskAssignment, VerifiedWatcher, wait_for_task, write_response};
 use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
 use std::fs;
@@ -316,51 +316,50 @@ impl GsdTestAgent {
     }
 
     /// Start an ordered agent with a specific number of concurrent workers.
+    ///
+    /// Uses a single dispatcher thread with one watcher that fans out tasks
+    /// to worker threads via channels. This is much faster than creating
+    /// a watcher per worker.
     pub fn ordered_with_workers(
         root: &Path,
-        worker_count: usize,
+        _worker_count: usize,
     ) -> (Self, OrderedAgentController) {
         let waiting: Arc<Mutex<Vec<WaitingTask>>> = Arc::new(Mutex::new(Vec::new()));
         let (arrival_tx, arrival_rx) = mpsc::channel::<()>();
         let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
 
         // Compute actual pool path
         let cli_root = root.parent().unwrap_or(root);
         let pool_name = root.file_name().unwrap_or_default();
         let actual_pool_path = cli_root.join("pools").join(pool_name);
-        let agents_dir = actual_pool_path.join(AGENTS_DIR);
+        let pool_path = actual_pool_path.clone();
 
-        let mut handles = Vec::new();
+        // Single dispatcher thread handles all task reception.
+        // Uses one watcher that loops, receiving tasks and spawning
+        // handler threads for each.
+        let waiting_clone = waiting.clone();
+        let handle = thread::spawn(move || {
+            let canary_dirs = [pool_path.clone()];
+            let Ok(mut watcher) = VerifiedWatcher::new(&pool_path, &canary_dirs) else {
+                eprintln!("[ordered dispatcher] watcher creation failed");
+                return Vec::new();
+            };
 
-        for _ in 0..worker_count {
-            let waiting_clone = waiting.clone();
-            let arrival_tx_clone = arrival_tx.clone();
-            let running_clone = running.clone();
-            let pool_path = actual_pool_path.clone();
-            let agents_dir_clone = agents_dir.clone();
+            let mut processed_tasks = Vec::new();
 
-            let handle = thread::spawn(move || {
-                // Each worker has its own watcher
-                let canary_dirs = [pool_path.clone(), agents_dir_clone];
-                let Ok(mut watcher) = VerifiedWatcher::new(&pool_path, &canary_dirs) else {
-                    return;
-                };
-
-                // Wait for exactly ONE task (no timeout, no loop)
-                // This prevents flooding the daemon with ready.json files
-                let Ok(assignment) = wait_for_task(
+            while running_clone.load(Ordering::SeqCst) {
+                // Use timeout so we can check running flag periodically
+                let task_result = wait_for_task(
                     &mut watcher,
                     &pool_path,
                     None,
-                    None, // No timeout - wait indefinitely for one task
-                ) else {
-                    return;
-                };
+                    Some(Duration::from_millis(100)),
+                );
 
-                // Check if we should exit
-                if !running_clone.load(Ordering::SeqCst) {
-                    return;
-                }
+                let Ok(assignment) = task_result else {
+                    continue; // Timeout or stop - check running flag
+                };
 
                 let TaskAssignment { uuid, content } = assignment;
 
@@ -368,15 +367,14 @@ impl GsdTestAgent {
                 let envelope: serde_json::Value =
                     serde_json::from_str(&content).unwrap_or_default();
                 if envelope.get("kind").and_then(|k| k.as_str()) == Some("Kicked") {
-                    return;
+                    break;
                 }
 
-                // Extract inner content if wrapped
-                let inner_content = envelope
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .map(String::from)
-                    .unwrap_or(content);
+                // Extract inner content - content may be an object or string
+                let inner_content = envelope.get("content").map_or_else(
+                    || content.clone(),
+                    |c| c.as_str().map_or_else(|| c.to_string(), String::from),
+                );
 
                 // Parse task kind
                 let kind = serde_json::from_str::<serde_json::Value>(&inner_content)
@@ -384,36 +382,40 @@ impl GsdTestAgent {
                     .and_then(|v| v.get("task")?.get("kind")?.as_str().map(String::from))
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // Create response channel
+                // Create response channel for this task
                 let (tx, rx) = mpsc::channel::<String>();
 
-                // Register task
+                // Register task with controller
                 {
                     let mut waiting = waiting_clone.lock().expect("waiting lock poisoned");
                     waiting.push(WaitingTask {
                         kind,
-                        payload: inner_content,
+                        payload: inner_content.clone(),
                         response_tx: tx,
                     });
                 }
 
-                // Notify arrival
-                let _ = arrival_tx_clone.send(());
+                // Notify controller of arrival
+                let _ = arrival_tx.send(());
 
-                // Block until test completes this task
-                let response = rx.recv().unwrap_or_else(|_| "[]".to_string());
+                // Track for return value
+                processed_tasks.push(inner_content);
 
-                // Write response
-                let _ = write_response(&pool_path, &uuid, &response);
-            });
+                // Spawn thread to wait for completion and write response
+                let pool_path_clone = pool_path.clone();
+                thread::spawn(move || {
+                    let response = rx.recv().unwrap_or_else(|_| "[]".to_string());
+                    let _ = write_response(&pool_path_clone, &uuid, &response);
+                });
+            }
 
-            handles.push(handle);
-        }
+            processed_tasks
+        });
 
         let agent = Self {
             running,
-            handle: None,
-            ordered_handles: Some(handles),
+            handle: Some(handle),
+            ordered_handles: None,
             pool_root: actual_pool_path,
         };
 
