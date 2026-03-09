@@ -4,6 +4,11 @@
 #![allow(dead_code)]
 #![expect(clippy::expect_used)]
 
+/// Default number of concurrent workers for ordered agent mode.
+/// Keep this low because each watcher takes several seconds to create on macOS
+/// due to `FSEvents` batching/coalescing behavior.
+const ORDERED_AGENT_WORKER_COUNT: usize = 4;
+
 use agent_pool::{STATUS_FILE, TaskAssignment, VerifiedWatcher, wait_for_task, write_response};
 use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
@@ -121,6 +126,8 @@ fn extract_task_envelope(raw: &str) -> TaskEnvelope {
 pub struct GsdTestAgent {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<Vec<String>>>,
+    /// Handles for ordered mode workers (when using `ordered()`).
+    ordered_handles: Option<Vec<thread::JoinHandle<()>>>,
     pool_root: PathBuf,
 }
 
@@ -202,6 +209,7 @@ impl GsdTestAgent {
         Self {
             running,
             handle: Some(handle),
+            ordered_handles: None,
             pool_root: actual_pool_path,
         }
     }
@@ -277,6 +285,16 @@ impl GsdTestAgent {
             .arg("--pool")
             .arg(pool_name)
             .output();
+
+        // Handle ordered mode (multiple worker handles, no return value)
+        if let Some(handles) = self.ordered_handles.take() {
+            for handle in handles {
+                let _ = handle.join();
+            }
+            return Vec::new();
+        }
+
+        // Handle normal mode (single handle with return value)
         self.handle
             .take()
             .expect("Agent already stopped")
@@ -290,39 +308,116 @@ impl GsdTestAgent {
     /// until the test explicitly completes them. Tests can complete
     /// tasks in any order by index.
     ///
+    /// Spawns multiple concurrent worker threads to handle multiple tasks in parallel.
+    ///
     /// Returns (agent, controller).
     pub fn ordered(root: &Path) -> (Self, OrderedAgentController) {
+        Self::ordered_with_workers(root, ORDERED_AGENT_WORKER_COUNT)
+    }
+
+    /// Start an ordered agent with a specific number of concurrent workers.
+    ///
+    /// Uses a single dispatcher thread with one watcher that fans out tasks
+    /// to worker threads via channels. This is much faster than creating
+    /// a watcher per worker.
+    pub fn ordered_with_workers(
+        root: &Path,
+        _worker_count: usize,
+    ) -> (Self, OrderedAgentController) {
         let waiting: Arc<Mutex<Vec<WaitingTask>>> = Arc::new(Mutex::new(Vec::new()));
         let (arrival_tx, arrival_rx) = mpsc::channel::<()>();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
 
+        // Compute actual pool path
+        let cli_root = root.parent().unwrap_or(root);
+        let pool_name = root.file_name().unwrap_or_default();
+        let actual_pool_path = cli_root.join("pools").join(pool_name);
+        let pool_path = actual_pool_path.clone();
+
+        // Single dispatcher thread handles all task reception.
+        // Uses one watcher that loops, receiving tasks and spawning
+        // handler threads for each.
         let waiting_clone = waiting.clone();
+        let handle = thread::spawn(move || {
+            let canary_dirs = [pool_path.clone()];
+            let Ok(mut watcher) = VerifiedWatcher::new(&pool_path, &canary_dirs) else {
+                eprintln!("[ordered dispatcher] watcher creation failed");
+                return Vec::new();
+            };
 
-        let agent = Self::start(root, Duration::ZERO, move |payload| {
-            // Parse task kind from payload
-            let kind = serde_json::from_str::<serde_json::Value>(payload)
-                .ok()
-                .and_then(|v| v.get("task")?.get("kind")?.as_str().map(String::from))
-                .unwrap_or_else(|| "Unknown".to_string());
+            let mut processed_tasks = Vec::new();
 
-            // Create channel for this task's response (send once, then drop)
-            let (tx, rx) = mpsc::channel::<String>();
+            while running_clone.load(Ordering::SeqCst) {
+                // Use timeout so we can check running flag periodically
+                let task_result = wait_for_task(
+                    &mut watcher,
+                    &pool_path,
+                    None,
+                    Some(Duration::from_millis(100)),
+                );
 
-            // Register as waiting
-            {
-                let mut waiting = waiting_clone.lock().expect("waiting lock poisoned");
-                waiting.push(WaitingTask {
-                    kind,
-                    payload: payload.to_string(),
-                    response_tx: tx,
+                let Ok(assignment) = task_result else {
+                    continue; // Timeout or stop - check running flag
+                };
+
+                let TaskAssignment { uuid, content } = assignment;
+
+                // Parse envelope and check for Kicked
+                let envelope: serde_json::Value =
+                    serde_json::from_str(&content).unwrap_or_default();
+                if envelope.get("kind").and_then(|k| k.as_str()) == Some("Kicked") {
+                    break;
+                }
+
+                // Extract inner content - content may be an object or string
+                let inner_content = envelope.get("content").map_or_else(
+                    || content.clone(),
+                    |c| c.as_str().map_or_else(|| c.to_string(), String::from),
+                );
+
+                // Parse task kind
+                let kind = serde_json::from_str::<serde_json::Value>(&inner_content)
+                    .ok()
+                    .and_then(|v| v.get("task")?.get("kind")?.as_str().map(String::from))
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                // Create response channel for this task
+                let (tx, rx) = mpsc::channel::<String>();
+
+                // Register task with controller
+                {
+                    let mut waiting = waiting_clone.lock().expect("waiting lock poisoned");
+                    waiting.push(WaitingTask {
+                        kind,
+                        payload: inner_content.clone(),
+                        response_tx: tx,
+                    });
+                }
+
+                // Notify controller of arrival
+                let _ = arrival_tx.send(());
+
+                // Track for return value
+                processed_tasks.push(inner_content);
+
+                // Spawn thread to wait for completion and write response
+                let pool_path_clone = pool_path.clone();
+                thread::spawn(move || {
+                    let response = rx.recv().unwrap_or_else(|_| "[]".to_string());
+                    let _ = write_response(&pool_path_clone, &uuid, &response);
                 });
             }
 
-            // Notify controller that a task arrived
-            let _ = arrival_tx.send(());
-
-            // Block until test sends response
-            rx.recv().unwrap_or_else(|_| "[]".to_string())
+            processed_tasks
         });
+
+        let agent = Self {
+            running,
+            handle: Some(handle),
+            ordered_handles: None,
+            pool_root: actual_pool_path,
+        };
 
         let controller = OrderedAgentController {
             waiting,
