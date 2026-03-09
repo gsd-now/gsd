@@ -34,7 +34,11 @@ Priority weights on steps affecting dispatch order. Higher priority tasks get pr
 
 ### Runtime Workflow Graph
 
-Visualize workflow execution in real-time, similar to Temporal's UI. Shows which steps ran, parent-child relationships, timing, and agent assignments.
+Visualize workflow execution in real-time. Shows which steps ran, parent-child relationships, timing, and agent assignments.
+
+### Temporal Integration
+
+Integrate with Temporal for durable workflow orchestration, enabling GSD workflows to leverage Temporal's reliability and observability features.
 
 ### Claude CLI Integration
 
