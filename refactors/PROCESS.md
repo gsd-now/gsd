@@ -127,23 +127,23 @@ When implementing a refactor:
 
 1. **Create a feature branch** for the refactor (e.g., `refactor/crossbeam-channels`)
 2. **Make atomic commits where CI passes on every commit** - each commit should be a complete, working state
-3. **Push and verify CI is green** before moving to the next commit
-4. **When the branch is fully ready, merge to master without squashing** - preserve the atomic commit history
+3. **Push branches and verify CI is green** before moving to the next commit
+4. **When the branch is fully ready, squash merge to master** - one clean commit per branch
 
 ### Stacked branches for CI verification
 
-**Use one branch per commit to verify CI passes at each step.** This is especially important for multi-commit refactors.
+**Push branches to verify CI passes at each step.** You don't need to create PRs for every commit - just push the branch and check CI. This is especially important for multi-commit refactors.
 
 Example workflow for a 3-commit refactor:
-1. Create `refactor/foo-step-1` with the first commit, push, verify CI
-2. Create `refactor/foo-step-2` on top with the second commit, push, verify CI
-3. Create `refactor/foo` (main branch) on top with the final commit, push, verify CI
-4. When all green, merge the main branch to master
+1. Create `refactor/foo-step-1` with the first commit, push branch, verify CI
+2. Create `refactor/foo-step-2` on top with the second commit, push branch, verify CI
+3. Create `refactor/foo` (main branch) on top with the final commit, push branch, verify CI
+4. When all green, squash merge the main branch to master
 
 This ensures:
 - Each commit passes CI independently
-- You can identify exactly which commit breaks CI
-- Bisecting is meaningful at every point in the stack
+- You can identify exactly which commit breaks CI during development
+- Master has a clean, linear history of squashed commits
 
 When rebasing the stack, rebase from bottom to top:
 ```bash
@@ -197,7 +197,6 @@ This approach:
 
 - Commits that break CI (even temporarily)
 - "WIP" or "fixup" commits in the final history
-- Squashing - we want the atomic commits preserved on master
 - Large commits that do multiple unrelated things
 
 ### While working on the branch
@@ -213,25 +212,31 @@ The branch is your workspace for experimentation. Push wild changes, figure out 
 
 ### Before merging to master
 
-Do a final pass to restructure the branch into clean atomic commits:
+Do a final pass to make sure the branch is ready:
 
 1. Review the full diff from master
-2. Use `git rebase -i` to reorganize commits
-3. Each commit should be one logical change that passes CI
-4. Push the cleaned-up branch and verify CI passes on all commits
-5. Only then merge to master
+2. Clean up commits if needed (rebase -i to reorganize)
+3. Each commit on the branch should pass CI independently
+4. Push the cleaned-up branch and verify CI passes
+5. Only then squash merge to master
 
 ### Merging to master
 
-When the branch is complete and CI is green on all commits:
+**Every commit on master must pass CI. Squash merge feature branches.**
+
+The workflow:
+1. Every commit on your branch passes CI independently
+2. The branch as a whole passes CI
+3. Squash merge to master → one commit per branch
 
 ```bash
 git checkout master
-git merge --no-ff feature-branch  # or fast-forward if linear
+git merge --squash feature-branch
+git commit -m "Description of the change"
 git push
 ```
 
-Do NOT squash. The atomic commits are the value - they make master bisectable and each change understandable in isolation.
+Atomic commits live on the branch for development and debugging. Master gets a clean, linear history where each commit is a complete, self-contained change that passes CI.
 
 ## Extract independent work (after approval)
 
