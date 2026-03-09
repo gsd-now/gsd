@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'reference/config-schema',
       ],
     },
+    'roadmap',
   ],
 };
 
