@@ -1,25 +1,33 @@
 # Quick Start
 
-This guide will get you up and running with GSD in a few minutes.
+This guide walks you through running your first GSD workflow with Claude agents.
+
+## What is GSD?
+
+GSD orchestrates AI agents through type-safe workflows. You define a state machine in JSON, and GSD dispatches tasks to long-lived Claude agents. Each agent only sees the instructions for its current task—no context overload, no confusion about what to do next.
+
+**The key insight:** By breaking complex work into discrete steps with clear instructions, agents can reliably tackle ambitious refactoring and codebase changes.
 
 ## Prerequisites
 
-- Node.js 18+ (for running via `pnpm dlx` or `npx`)
-- One or more Claude instances (or other LLM agents)
+- Node.js 18+ (for `pnpm dlx`)
+- A Claude instance (Claude Code, claude.ai, or API)
 
 ## Step 1: Start the Agent Pool
 
-In one terminal, start the agent pool daemon:
+The agent pool is a daemon that coordinates work between your agents. In a terminal:
 
 ```bash
 pnpm dlx @gsd-now/agent-pool@main start --pool agents
 ```
 
-This creates a pool named "agents" that will coordinate work between your agents.
+This creates a pool named "agents". The pool manages task dispatch—when GSD submits a task, the pool routes it to an available agent.
 
-## Step 2: Set Up Your Agents
+**Keep this terminal running.** The pool stays active until you stop it.
 
-Pass this information to one or more Claude instances:
+## Step 2: Start a Claude Agent
+
+Open Claude (Claude Code, claude.ai, or another instance) and paste these instructions:
 
 ```
 You are an AI agent in a task pool. You will be given a pool name, an agent name, and an optional pool root. Your tasks are part of a larger coordinated refactor or codebase change—an orchestrator is managing the overall effort and assigning work to multiple agents.
@@ -35,9 +43,11 @@ pnpm dlx @gsd-now/agent-pool@main protocol
 Your name is c1. The pool name is agents.
 ```
 
-Each agent should have a unique name (c1, c2, c3, etc.) for debugging purposes.
+Claude will run the protocol command and start listening for tasks. **It will wait until GSD sends work.**
 
-## Step 3: Get a Config File
+You can start multiple Claude agents with different names (c1, c2, c3) for parallel processing.
+
+## Step 3: Run a Simple Workflow
 
 Download a demo config:
 
@@ -45,24 +55,113 @@ Download a demo config:
 curl -O https://raw.githubusercontent.com/rbalicki2/gsd/main/crates/gsd_cli/demos/linear/config.jsonc
 ```
 
-Or create your own. Run this to see the JSON schema:
-
-```bash
-pnpm dlx @gsd-now/gsd@main config schema
-```
-
-## Step 4: Run the Workflow
-
-Start the GSD workflow:
+Now run it:
 
 ```bash
 pnpm dlx @gsd-now/gsd@main run --config config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
 ```
 
-GSD will dispatch tasks to your agents, and they'll work through the state machine you defined.
+**What happens:**
+1. GSD reads the config and validates the workflow
+2. It submits the initial task (`Start`) to the pool
+3. The pool dispatches the task to your waiting Claude agent
+4. Claude follows the instructions and returns the next task(s)
+5. GSD repeats until no tasks remain
+
+Watch your Claude—it will receive tasks and respond automatically.
+
+## Step 4: Create Your Own Refactoring Workflow
+
+Now for something useful. Ask another Claude instance to help you create a config for refactoring a codebase:
+
+```
+I want to create a GSD workflow config that:
+1. Lists all files in a folder
+2. Analyzes each file for refactoring opportunities (fan-out)
+3. Applies the refactors
+4. Commits the changes to each file
+
+First, run `pnpm dlx @gsd-now/gsd@main config schema` to see the config format.
+
+Then look at this example for reference:
+https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow
+```
+
+A simple refactoring workflow might look like:
+
+```
+ListFiles → AnalyzeAndRefactor (per file) → CommitFile
+```
+
+Each step has focused instructions. The agent analyzing files doesn't need to know how to commit—it just does the refactor and passes the file to the next step.
+
+## Example: A Simple Refactor Workflow
+
+Here's what a basic refactor config looks like:
+
+```json
+{
+  "steps": [
+    {
+      "name": "ListFiles",
+      "value_schema": {
+        "type": "object",
+        "required": ["folder"],
+        "properties": { "folder": { "type": "string" } }
+      },
+      "action": {
+        "kind": "Pool",
+        "instructions": "List all source files in the given folder. Return an array of AnalyzeAndRefactor tasks, one per file:\n\n```json\n[{\"kind\": \"AnalyzeAndRefactor\", \"value\": {\"file\": \"src/main.rs\"}}, ...]\n```"
+      },
+      "next": ["AnalyzeAndRefactor"]
+    },
+    {
+      "name": "AnalyzeAndRefactor",
+      "value_schema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": { "file": { "type": "string" } }
+      },
+      "action": {
+        "kind": "Pool",
+        "instructions": "Read the file and identify ONE refactoring opportunity (rename a variable, extract a function, etc). Apply the refactor. Then return:\n\n```json\n[{\"kind\": \"CommitFile\", \"value\": {\"file\": \"src/main.rs\"}}]\n```\n\nIf no refactoring needed, return `[]`."
+      },
+      "next": ["CommitFile"]
+    },
+    {
+      "name": "CommitFile",
+      "value_schema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": { "file": { "type": "string" } }
+      },
+      "action": {
+        "kind": "Pool",
+        "instructions": "Commit the changes to this file with a descriptive message. Return `[]` when done."
+      },
+      "next": []
+    }
+  ]
+}
+```
+
+**The flow:**
+- `ListFiles` scans a folder and fans out to `AnalyzeAndRefactor` tasks (one per file)
+- Each `AnalyzeAndRefactor` finds and applies one refactor, then emits a `CommitFile` task
+- `CommitFile` commits the changes and terminates
+
+Save this as `refactor.jsonc` and run:
+
+```bash
+pnpm dlx @gsd-now/gsd@main run --config refactor.jsonc --pool agents \
+  --initial-state '[{"kind": "ListFiles", "value": {"folder": "./src"}}]'
+```
+
+For a more complete example, see the [refactor-workflow demo](https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow).
 
 ## Next Steps
 
-- Explore the [demo configs](https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos) for more examples
-- Read about [creating config files](/docs/)
-- Check out the [Rust API documentation](/docs/) for advanced usage
+- [Recipes](/docs/recipes) — Common patterns like fan-out, branching, and hooks
+- [CLI Reference](/docs/reference/cli) — All GSD and agent_pool commands
+- [Config Schema](/docs/reference/config-schema) — Full configuration options
+- [Demo Configs](https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos) — Working examples to learn from
