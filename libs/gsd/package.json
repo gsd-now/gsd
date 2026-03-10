@@ -10,7 +10,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rbalicki2/gsd.git"
+    "url": "git+https://github.com/gsd-now/gsd.git"
   },
   "publishConfig": {
     "access": "public",

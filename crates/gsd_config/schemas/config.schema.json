@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/rbalicki2/gsd/blob/master/crates/gsd_config/schemas/config.schema.json",
+  "$id": "https://github.com/gsd-now/gsd/blob/master/crates/gsd_config/schemas/config.schema.json",
   "title": "GSD Config",
   "description": "Configuration for GSD task orchestration task queues",
   "type": "object",
