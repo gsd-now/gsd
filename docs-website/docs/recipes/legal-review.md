@@ -9,18 +9,18 @@ Legal contracts require expertise across multiple domains. Rather than asking on
 ## The Pattern
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  AnalyzeContract (with finally)                              │
-│                                                              │
-│  AnalyzeContract ──┬──→ CourtCaseReferences                  │
-│                    ├──→ FinancialClaims                       │
-│                    └──→ LiabilityAnalysis                     │
-│                                                              │
-│  ═══════════════════════════════════════════════════════════  │
-│  After ALL descendants complete:                             │
-│                                                              │
-│  finally ──→ SynthesizeReview ──→ Done                       │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  AnalyzeContract (with finally)                            │
+│                                                            │
+│  AnalyzeContract ──┬──→ CourtCaseReferences                │
+│                    ├──→ FinancialClaims                     │
+│                    └──→ LiabilityAnalysis                   │
+│                                                            │
+│  ════════════════════════════════════════════════════════   │
+│  After ALL descendants complete:                           │
+│                                                            │
+│  finally ──→ SynthesizeReview ──→ Done                     │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ## Example: Contract due diligence
