@@ -2,7 +2,9 @@
 
 ## Most Important
 
-0. **String Interning** - Consider interning strings (StepName, HookScript, etc.) to reduce memory usage and enable cheap equality checks. Could use a crate like `lasso` or `string-interner`.
+0. **Parse Agent/Command Responses as JSONC** - Parse the return value from agents and commands as JSONC (JSON with comments) instead of strict JSON. This allows agents and command scripts to include comments in their responses for debugging purposes (e.g., `// chose this path because...`). Useful during development and when inspecting logs of agent responses. Libraries like `json_comments` or manual comment stripping before `serde_json::from_str` would work.
+
+1. **String Interning** - Consider interning strings (StepName, HookScript, etc.) to reduce memory usage and enable cheap equality checks. Could use a crate like `lasso` or `string-interner`.
 
 
 1. ~~**Command Steps**~~ ✓ COMPLETE - Steps can use `action.kind = "Command"` with a `script` field to execute bash locally instead of dispatching to an agent pool.
