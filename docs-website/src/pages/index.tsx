@@ -214,30 +214,33 @@ function HowItWorks() {
       <div className="container padding-vert--lg">
         <div className={styles.centeredIntro}>
           <h2>How it works</h2>
+          <p>
+            GSD distributes work across a pool of agents running in parallel.
+            Start a pool, connect your agents, and hand GSD a workflow —
+            it handles the rest.
+          </p>
         </div>
         <div className="row">
           <div className="col col--4">
             <h3>1. Define</h3>
             <p>
-              Write a JSON config with steps, transitions, and schemas.
+              Write a workflow config with steps, transitions, and schemas.
               Each step is either an agent task or a shell command.
-              GSD validates the config before anything runs.
             </p>
           </div>
           <div className="col col--4">
-            <h3>2. Run</h3>
+            <h3>2. Prepare the pool</h3>
             <p>
-              Start an agent pool, then run your workflow. GSD dispatches
-              tasks to agents, enforces valid transitions, retries failures,
+              Start an agent pool and connect agents to it. The more
+              agents you add, the more work runs in parallel.
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>3. Run</h3>
+            <p>
+              Pass the workflow to GSD. It distributes tasks across
+              your agents, enforces valid transitions, retries failures,
               and respects concurrency limits.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>3. Scale</h3>
-            <p>
-              Add more agents to the pool for parallel throughput.
-              The same config works whether you have 1 agent or 20.
-              Each agent only sees its current task — context stays clean.
             </p>
           </div>
         </div>
