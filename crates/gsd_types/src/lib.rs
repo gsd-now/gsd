@@ -29,7 +29,7 @@ define_string_id! {
 /// All step values in the system use this type, whether they've been
 /// through a pre-hook transformation or not. The transformation is optional,
 /// so there's no meaningful type distinction between "before" and "after".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct StepInputValue(pub serde_json::Value);
 

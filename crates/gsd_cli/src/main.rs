@@ -134,65 +134,7 @@ fn main() -> io::Result<()> {
             &root,
         )?,
 
-        Command::Config { command } => match command {
-            ConfigCommand::Docs { config } => {
-                let (config_file, config_dir) = parse_config(&config)?;
-                let cfg = config_file.resolve(&config_dir)?;
-                let docs = generate_full_docs(&cfg);
-                print!("{docs}");
-            }
-
-            ConfigCommand::Validate { config } => {
-                let (config_file, config_dir) = parse_config(&config)?;
-                match config_file.validate() {
-                    Ok(()) => {
-                        // Also try to resolve to catch file read errors
-                        let cfg = config_file.resolve(&config_dir)?;
-                        println!("Config is valid.");
-                        println!("Steps: {}", cfg.steps.len());
-                        for step in &cfg.steps {
-                            println!(
-                                "  {} -> {}",
-                                step.name,
-                                if step.next.is_empty() {
-                                    "(terminal)".to_string()
-                                } else {
-                                    step.next.join(", ")
-                                }
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Config validation failed: {e}");
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("[E052] config validation failed: {e}"),
-                        ));
-                    }
-                }
-            }
-
-            ConfigCommand::Graph { config } => {
-                let (config_file, config_dir) = parse_config(&config)?;
-                config_file.validate().map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("[E053] config validation failed: {e}"),
-                    )
-                })?;
-                let cfg = config_file.resolve(&config_dir)?;
-                let dot = generate_graphviz(&cfg);
-                print!("{dot}");
-            }
-
-            ConfigCommand::Schema => {
-                let schema = config_schema();
-                let json = serde_json::to_string_pretty(&schema).map_err(|e| {
-                    io::Error::other(format!("[E059] failed to serialize schema: {e}"))
-                })?;
-                println!("{json}");
-            }
-        },
+        Command::Config { command } => handle_config_command(command)?,
 
         Command::Version { json } => {
             if json {
@@ -206,6 +148,66 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn handle_config_command(command: ConfigCommand) -> io::Result<()> {
+    match command {
+        ConfigCommand::Docs { config } => {
+            let (config_file, config_dir) = parse_config(&config)?;
+            let cfg = config_file.resolve(&config_dir)?;
+            let docs = generate_full_docs(&cfg);
+            print!("{docs}");
+        }
+
+        ConfigCommand::Validate { config } => {
+            let (config_file, config_dir) = parse_config(&config)?;
+            match config_file.validate() {
+                Ok(()) => {
+                    let cfg = config_file.resolve(&config_dir)?;
+                    println!("Config is valid.");
+                    println!("Steps: {}", cfg.steps.len());
+                    for step in &cfg.steps {
+                        println!(
+                            "  {} -> {}",
+                            step.name,
+                            if step.next.is_empty() {
+                                "(terminal)".to_string()
+                            } else {
+                                step.next.join(", ")
+                            }
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Config validation failed: {e}");
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("[E052] config validation failed: {e}"),
+                    ));
+                }
+            }
+        }
+
+        ConfigCommand::Graph { config } => {
+            let (config_file, config_dir) = parse_config(&config)?;
+            config_file.validate().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("[E053] config validation failed: {e}"),
+                )
+            })?;
+            let cfg = config_file.resolve(&config_dir)?;
+            let dot = generate_graphviz(&cfg);
+            print!("{dot}");
+        }
+
+        ConfigCommand::Schema => {
+            let schema = config_schema();
+            let json = serde_json::to_string_pretty(&schema)
+                .map_err(|e| io::Error::other(format!("[E059] failed to serialize schema: {e}")))?;
+            println!("{json}");
+        }
+    }
+    Ok(())
+}
 #[expect(clippy::too_many_arguments)]
 fn run_command(
     config: &str,
