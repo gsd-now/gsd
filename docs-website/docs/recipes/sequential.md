@@ -1,6 +1,8 @@
 # Sequential Processing
 
-Enforce single-threaded execution by having a step loop back to itself, processing one item at a time.
+Process items one at a time by having a step loop back to itself. This is particularly useful when **multiple changes need to happen to the same file** in a specific order — each step sees the result of the previous one.
+
+> **Note:** The self-looping pattern works but is a bit awkward. Future versions of GSD will include better primitives for sequential workflows.
 
 ## The Pattern
 

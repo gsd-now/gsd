@@ -12,6 +12,7 @@ This directory contains example configurations for common task queue patterns.
 | [Fan-Out with Finally](fan-out-finally.md) | Parallel changes with commit on completion |
 | [Sequential Processing](sequential.md) | Enforce single-threaded task execution |
 | [Adversarial Review](adversarial-review.md) | Implement → judge → revise loop |
+| [Branching Refactor](branching-refactor.md) | Route to specialized agents based on analysis |
 | [Pre/Post/Finally Hooks](hooks.md) | Transform data, aggregate results, cleanup |
 | [Validation](validation.md) | Schema validation for inputs and outputs |
 | [Local Commands](commands.md) | Run shell scripts instead of agents |
