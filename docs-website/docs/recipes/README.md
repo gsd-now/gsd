@@ -9,10 +9,11 @@ This directory contains example configurations for common task queue patterns.
 | [Linear Pipeline](linear-pipeline.md) | Step-by-step processing (A → B → C) |
 | [Branching](branching.md) | Conditional paths based on output |
 | [Fan-Out](fan-out.md) | Split one task into many parallel tasks |
-| [Fan-Out with Finally](fan-out-finally.md) | Fan-out → aggregate → continue |
+| [Fan-Out with Finally](fan-out-finally.md) | Parallel changes with commit on completion |
+| [Sequential Processing](sequential.md) | Enforce single-threaded task execution |
+| [Adversarial Review](adversarial-review.md) | Implement → judge → revise loop |
 | [Pre/Post/Finally Hooks](hooks.md) | Transform data, aggregate results, cleanup |
 | [Validation](validation.md) | Schema validation for inputs and outputs |
-| [Retry Policies](retry.md) | Handle failures gracefully |
 | [Local Commands](commands.md) | Run shell scripts instead of agents |
 
 ## Config Structure

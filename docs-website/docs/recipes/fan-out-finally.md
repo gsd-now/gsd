@@ -1,93 +1,78 @@
 # Fan-Out with Finally
 
-Use `finally` to aggregate results or trigger follow-up work after a fan-out completes.
+Use `finally` to run a follow-up step after all parallel work completes.
 
 ## The Pattern
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Outer Task (with finally)                                       │
-│                                                                   │
-│  Coordinate ──┬──→ AnalyzeFile(1) ──→ (writes to tmpdir)        │
-│               ├──→ AnalyzeFile(2) ──→ (writes to tmpdir)        │
-│               └──→ AnalyzeFile(3) ──→ (writes to tmpdir)        │
-│                                                                   │
-│  ════════════════════════════════════════════════════════════    │
-│  After ALL descendants complete:                                 │
-│                                                                   │
-│  finally ──→ Categorize ──→ Prioritize ──→ Done                  │
-│  (reads tmpdir, spawns follow-up)                                │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  ListFiles (with finally)                                │
+│                                                          │
+│  ListFiles ──┬──→ Refactor(main.rs)                      │
+│              ├──→ Refactor(lib.rs)                        │
+│              └──→ Refactor(utils.rs)                      │
+│                                                          │
+│  ═══════════════════════════════════════════════════════  │
+│  After ALL descendants complete:                         │
+│                                                          │
+│  finally ──→ Commit ──→ Done                             │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## Example: Code Analysis Pipeline
+## Example: Parallel Refactoring with Commit
 
-Analyze files, collect findings, then categorize and prioritize.
+List files, refactor them all in parallel, then commit the changes.
 
 ```jsonc
 {
-  "entrypoint": "Coordinate",
+  "entrypoint": "ListFiles",
   "steps": [
     {
-      "name": "Coordinate",
+      "name": "ListFiles",
       "value_schema": {
         "type": "object",
-        "required": ["files"],
+        "required": ["directory"],
         "properties": {
-          "files": { "type": "array", "items": { "type": "string" } }
+          "directory": { "type": "string" }
         }
       },
       "action": {
         "kind": "Command",
-        "script": "./scripts/setup-and-split.sh"
+        // Find all Rust files and emit one Refactor task per file.
+        "script": "jq -r '.value.directory' | xargs -I{} find {} -name '*.rs' | jq -R -s 'split(\"\\n\") | map(select(length > 0)) | map({kind: \"Refactor\", value: {file: .}})'"
       },
-      "finally": "./scripts/aggregate-and-continue.sh",
-      "next": ["AnalyzeFile"]
+      // After all Refactor tasks finish, transition to Commit.
+      "finally": "echo '[{\"kind\": \"Commit\", \"value\": {\"message\": \"Apply refactors\"}}]'",
+      "next": ["Refactor"]
     },
     {
-      "name": "AnalyzeFile",
+      "name": "Refactor",
       "value_schema": {
         "type": "object",
-        "required": ["file", "tmpdir"],
+        "required": ["file"],
         "properties": {
-          "file": { "type": "string" },
-          "tmpdir": { "type": "string" }
+          "file": { "type": "string" }
         }
       },
-      "post": "./scripts/save-findings.sh",
       "action": {
         "kind": "Pool",
-        "instructions": { "inline": "Analyze this file for refactoring opportunities. Return findings as JSON. Return `[]`." }
+        "instructions": { "inline": "Read the file at the path provided. Refactor it to improve readability and remove dead code. Write the changes back to disk. Return `[]`." }
       },
       "next": []
     },
     {
-      "name": "Categorize",
+      "name": "Commit",
       "value_schema": {
         "type": "object",
-        "required": ["findings"],
+        "required": ["message"],
         "properties": {
-          "findings": { "type": "array" }
+          "message": { "type": "string" }
         }
       },
       "action": {
-        "kind": "Pool",
-        "instructions": { "inline": "Read all findings and categorize them by type (performance, readability, security, etc.). Return `[{\"kind\": \"Prioritize\", \"value\": {\"categorized\": [{\"type\": \"performance\", \"items\": []}]}}]`" }
-      },
-      "next": ["Prioritize"]
-    },
-    {
-      "name": "Prioritize",
-      "value_schema": {
-        "type": "object",
-        "required": ["categorized"],
-        "properties": {
-          "categorized": { "type": "array" }
-        }
-      },
-      "action": {
-        "kind": "Pool",
-        "instructions": { "inline": "Select the top 5 highest-impact refactoring opportunities. Return `[]`." }
+        "kind": "Command",
+        // Stage all changes and commit.
+        "script": "MSG=$(jq -r '.value.message') && git add -A && git commit -m \"$MSG\" && echo '[]'"
       },
       "next": []
     }
@@ -98,73 +83,20 @@ Analyze files, collect findings, then categorize and prioritize.
 ## Running
 
 ```bash
-gsd run --config config.json --pool agents --entrypoint-value '{"files": ["src/main.rs", "src/lib.rs"]}'
+gsd run --config config.json --pool agents --entrypoint-value '{"directory": "src"}'
 ```
 
-**./scripts/setup-and-split.sh:**
-```bash
-#!/bin/bash
-set -e
-INPUT=$(cat)
+## How It Works
 
-# Create temp directory for results
-TMPDIR=$(mktemp -d)
-FILES=$(echo "$INPUT" | jq -r '.value.files[]')
-
-# Fan out to analyze each file, passing tmpdir in value
-echo "$FILES" | jq -R -s --arg tmpdir "$TMPDIR" '
-  split("\n") | map(select(. != "")) |
-  map({kind: "AnalyzeFile", value: {file: ., tmpdir: $tmpdir}})
-'
-```
-
-**./scripts/save-findings.sh** (post hook):
-```bash
-#!/bin/bash
-INPUT=$(cat)
-KIND=$(echo "$INPUT" | jq -r '.kind')
-
-if [ "$KIND" = "Success" ]; then
-  TMPDIR=$(echo "$INPUT" | jq -r '.input.tmpdir')
-  FILE=$(echo "$INPUT" | jq -r '.input.file')
-
-  # Save findings to tmpdir
-  echo "$INPUT" | jq '.output' > "$TMPDIR/$(basename "$FILE").json"
-fi
-
-# Pass through (AnalyzeFile is terminal, no next tasks)
-echo "$INPUT"
-```
-
-**./scripts/aggregate-and-continue.sh** (finally hook):
-```bash
-#!/bin/bash
-INPUT=$(cat)
-TMPDIR=$(echo "$INPUT" | jq -r '.tmpdir')
-
-# Aggregate all findings
-FINDINGS=$(cat "$TMPDIR"/*.json | jq -s '.')
-
-# Clean up
-rm -rf "$TMPDIR"
-
-# Spawn follow-up work
-echo "[{\"kind\": \"Categorize\", \"value\": {\"findings\": $FINDINGS}}]"
-```
-
-## When to Use This Pattern
-
-Use fan-out with finally when:
-
-- You need to process items in parallel, then aggregate
-- Results should be collected before follow-up work starts
-- Cleanup must happen after all parallel work completes
-- You want to spawn different follow-up work based on aggregated results
+1. **ListFiles** runs `find` to discover `.rs` files and fans out one `Refactor` task per file.
+2. **Refactor** tasks run in parallel (up to `max_concurrency`). Each agent reads a file, makes changes, and writes it back.
+3. **finally** fires after every `Refactor` descendant completes. It emits a single `Commit` task.
+4. **Commit** stages and commits all the changes.
 
 ## Key Points
 
 - `finally` runs after ALL descendants complete (not just direct children)
-- `finally` receives the original task's value (useful for tmpdir paths)
-- `finally` outputs an array of next tasks to spawn follow-up work
-- Post hooks can save results to a shared location
-- The pattern enables: fan-out → collect → continue
+- `finally` receives the original task's value on stdin
+- `finally` outputs a JSON array of next tasks to spawn follow-up work
+- The finally hook here is an inline script — no external file needed
+- The pattern enables: fan-out → parallel work → single follow-up action
