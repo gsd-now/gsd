@@ -4,8 +4,9 @@ A linear pipeline processes data through a sequence of steps.
 
 ## Example: Code Review Pipeline
 
-```json
+```jsonc
 {
+  "entrypoint": "Analyze",
   "steps": [
     {
       "name": "Analyze",
@@ -19,7 +20,7 @@ A linear pipeline processes data through a sequence of steps.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze this code for potential issues. Return `[{\"kind\": \"Review\", \"value\": {\"issues\": [\"unused variable\", \"missing error handling\"]}}]`"
+        "instructions": { "inline": "Analyze this code for potential issues. Return `[{\"kind\": \"Review\", \"value\": {\"issues\": [\"unused variable\", \"missing error handling\"]}}]`" }
       },
       "next": ["Review"]
     },
@@ -34,7 +35,7 @@ A linear pipeline processes data through a sequence of steps.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Review these issues and suggest fixes. Return `[{\"kind\": \"Implement\", \"value\": {\"fixes\": [\"remove unused var x\", \"add try-catch\"]}}]`"
+        "instructions": { "inline": "Review these issues and suggest fixes. Return `[{\"kind\": \"Implement\", \"value\": {\"fixes\": [\"remove unused var x\", \"add try-catch\"]}}]`" }
       },
       "next": ["Implement"]
     },
@@ -49,7 +50,7 @@ A linear pipeline processes data through a sequence of steps.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Implement these fixes. Return `[]` when done."
+        "instructions": { "inline": "Implement these fixes. Return `[]` when done." }
       },
       "next": []
     }
@@ -57,12 +58,10 @@ A linear pipeline processes data through a sequence of steps.
 }
 ```
 
-## Initial Tasks
-
-To start the pipeline:
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Analyze", "value": {"file": "src/main.rs", "contents": "fn main() { println!(\"hello\"); }"}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"file": "src/main.rs", "contents": "fn main() { println!(\"hello\"); }"}'
 ```
 
 ## Flow

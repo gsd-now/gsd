@@ -24,8 +24,9 @@ Use `finally` to aggregate results or trigger follow-up work after a fan-out com
 
 Analyze files, collect findings, then categorize and prioritize.
 
-```json
+```jsonc
 {
+  "entrypoint": "Coordinate",
   "steps": [
     {
       "name": "Coordinate",
@@ -38,9 +39,9 @@ Analyze files, collect findings, then categorize and prioritize.
       },
       "action": {
         "kind": "Command",
-        "script": "scripts/setup-and-split.sh"
+        "script": "./scripts/setup-and-split.sh"
       },
-      "finally": "scripts/aggregate-and-continue.sh",
+      "finally": "./scripts/aggregate-and-continue.sh",
       "next": ["AnalyzeFile"]
     },
     {
@@ -53,10 +54,10 @@ Analyze files, collect findings, then categorize and prioritize.
           "tmpdir": { "type": "string" }
         }
       },
-      "post": "scripts/save-findings.sh",
+      "post": "./scripts/save-findings.sh",
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze this file for refactoring opportunities. Return findings as JSON. Return `[]`."
+        "instructions": { "inline": "Analyze this file for refactoring opportunities. Return findings as JSON. Return `[]`." }
       },
       "next": []
     },
@@ -71,7 +72,7 @@ Analyze files, collect findings, then categorize and prioritize.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Read all findings and categorize them by type (performance, readability, security, etc.). Return `[{\"kind\": \"Prioritize\", \"value\": {\"categorized\": [{\"type\": \"performance\", \"items\": []}]}}]`"
+        "instructions": { "inline": "Read all findings and categorize them by type (performance, readability, security, etc.). Return `[{\"kind\": \"Prioritize\", \"value\": {\"categorized\": [{\"type\": \"performance\", \"items\": []}]}}]`" }
       },
       "next": ["Prioritize"]
     },
@@ -86,7 +87,7 @@ Analyze files, collect findings, then categorize and prioritize.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Select the top 5 highest-impact refactoring opportunities. Return `[]`."
+        "instructions": { "inline": "Select the top 5 highest-impact refactoring opportunities. Return `[]`." }
       },
       "next": []
     }
@@ -94,13 +95,13 @@ Analyze files, collect findings, then categorize and prioritize.
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Coordinate", "value": {"files": ["src/main.rs", "src/lib.rs"]}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"files": ["src/main.rs", "src/lib.rs"]}'
 ```
 
-**scripts/setup-and-split.sh:**
+**./scripts/setup-and-split.sh:**
 ```bash
 #!/bin/bash
 set -e
@@ -117,7 +118,7 @@ echo "$FILES" | jq -R -s --arg tmpdir "$TMPDIR" '
 '
 ```
 
-**scripts/save-findings.sh** (post hook):
+**./scripts/save-findings.sh** (post hook):
 ```bash
 #!/bin/bash
 INPUT=$(cat)
@@ -135,7 +136,7 @@ fi
 echo "$INPUT"
 ```
 
-**scripts/aggregate-and-continue.sh** (finally hook):
+**./scripts/aggregate-and-continue.sh** (finally hook):
 ```bash
 #!/bin/bash
 INPUT=$(cat)
@@ -159,10 +160,6 @@ Use fan-out with finally when:
 - Results should be collected before follow-up work starts
 - Cleanup must happen after all parallel work completes
 - You want to spawn different follow-up work based on aggregated results
-
-## Alternative: Nested GSD
-
-For more complex scenarios (separate retry policies, isolated configs), consider [nested-gsd.md](nested-gsd.md). The `finally` pattern is simpler when you just need aggregation within a single workflow.
 
 ## Key Points
 

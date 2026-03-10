@@ -4,8 +4,9 @@ Branching allows agents to choose different paths based on their analysis.
 
 ## Example: Approval Workflow
 
-```json
+```jsonc
 {
+  "entrypoint": "Review",
   "steps": [
     {
       "name": "Review",
@@ -18,7 +19,7 @@ Branching allows agents to choose different paths based on their analysis.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Review this PR. If it looks good, return `[{\"kind\": \"Approve\", \"value\": {\"pr_number\": 123}}]`. If changes are needed, return `[{\"kind\": \"RequestChanges\", \"value\": {\"pr_number\": 123, \"comments\": [\"fix typo\"]}}]`."
+        "instructions": { "inline": "Review this PR. If it looks good, return `[{\"kind\": \"Approve\", \"value\": {\"pr_number\": 123}}]`. If changes are needed, return `[{\"kind\": \"RequestChanges\", \"value\": {\"pr_number\": 123, \"comments\": [\"fix typo\"]}}]`." }
       },
       "next": ["Approve", "RequestChanges"]
     },
@@ -33,7 +34,7 @@ Branching allows agents to choose different paths based on their analysis.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Merge the PR. Return `[]`."
+        "instructions": { "inline": "Merge the PR. Return `[]`." }
       },
       "next": []
     },
@@ -49,7 +50,7 @@ Branching allows agents to choose different paths based on their analysis.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Comment on the PR with requested changes. Return `[]`."
+        "instructions": { "inline": "Comment on the PR with requested changes. Return `[]`." }
       },
       "next": []
     }
@@ -57,10 +58,10 @@ Branching allows agents to choose different paths based on their analysis.
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Review", "value": {"pr_number": 123}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"pr_number": 123}'
 ```
 
 ## Flow

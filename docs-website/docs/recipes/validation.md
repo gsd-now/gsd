@@ -6,8 +6,9 @@ Use JSON Schema to validate task inputs and ensure agents return valid transitio
 
 Validate the value payload for each step:
 
-```json
+```jsonc
 {
+  "entrypoint": "ProcessOrder",
   "steps": [
     {
       "name": "ProcessOrder",
@@ -29,7 +30,10 @@ Validate the value payload for each step:
           }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Process this order and prepare for shipping. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Process this order and prepare for shipping. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" }
+      },
       "next": ["Ship"]
     },
     {
@@ -41,36 +45,46 @@ Validate the value payload for each step:
           "order_id": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Ship the order. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Ship the order. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "ProcessOrder", "value": {"order_id": "ORD-12345", "items": [{"sku": "WIDGET-A", "quantity": 2}]}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"order_id": "ORD-12345", "items": [{"sku": "WIDGET-A", "quantity": 2}]}'
 ```
 
 ## External Schema Files
 
 Reference schemas from files using `{"link": "path"}`:
 
-```json
+```jsonc
 {
+  "entrypoint": "ProcessOrder",
   "steps": [
     {
       "name": "ProcessOrder",
-      "value_schema": {"link": "schemas/order.json"},
-      "action": { "kind": "Pool", "instructions": "Process the order. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" },
+      "value_schema": { "link": "./schemas/order.json" },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Process the order. Return `[{\"kind\": \"Ship\", \"value\": {\"order_id\": \"ORD-12345\"}}]`" }
+      },
       "next": ["Ship"]
     },
     {
       "name": "Ship",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Ship it. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Ship it. Return `[]`." }
+      },
       "next": []
     }
   ]

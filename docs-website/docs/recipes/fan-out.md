@@ -4,8 +4,9 @@ Fan-out splits one task into multiple parallel tasks.
 
 ## Example: Parallel File Processing
 
-```json
+```jsonc
 {
+  "entrypoint": "ListFiles",
   "steps": [
     {
       "name": "ListFiles",
@@ -32,7 +33,7 @@ Fan-out splits one task into multiple parallel tasks.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze this file. Return `[]` when done."
+        "instructions": { "inline": "Analyze this file. Return `[]` when done." }
       },
       "next": []
     }
@@ -40,10 +41,10 @@ Fan-out splits one task into multiple parallel tasks.
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value": {}}]'
+gsd run --config config.json --pool agents
 ```
 
 ## Flow
@@ -60,8 +61,9 @@ ListFiles ────┼─→ ProcessFile (file2.rs)
 
 Agents can also fan out by returning multiple tasks:
 
-```json
+```jsonc
 {
+  "entrypoint": "Analyze",
   "steps": [
     {
       "name": "Analyze",
@@ -74,7 +76,7 @@ Agents can also fan out by returning multiple tasks:
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Find all functions that need refactoring. Return one task per function: `[{\"kind\": \"Refactor\", \"value\": {\"function\": \"parse_config\"}}, {\"kind\": \"Refactor\", \"value\": {\"function\": \"validate_input\"}}]`"
+        "instructions": { "inline": "Find all functions that need refactoring. Return one task per function: `[{\"kind\": \"Refactor\", \"value\": {\"function\": \"parse_config\"}}, {\"kind\": \"Refactor\", \"value\": {\"function\": \"validate_input\"}}]`" }
       },
       "next": ["Refactor"]
     },
@@ -89,7 +91,7 @@ Agents can also fan out by returning multiple tasks:
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Refactor this function. Return `[]`."
+        "instructions": { "inline": "Refactor this function. Return `[]`." }
       },
       "next": []
     }
@@ -97,10 +99,10 @@ Agents can also fan out by returning multiple tasks:
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Analyze", "value": {"file": "src/main.rs"}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"file": "src/main.rs"}'
 ```
 
 ## Key Points

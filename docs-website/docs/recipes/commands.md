@@ -4,8 +4,9 @@ Use shell commands instead of agents for deterministic or system-level operation
 
 ## Basic Command
 
-```json
+```jsonc
 {
+  "entrypoint": "ListFiles",
   "steps": [
     {
       "name": "ListFiles",
@@ -25,17 +26,20 @@ Use shell commands instead of agents for deterministic or system-level operation
           "file": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Analyze this file. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Analyze this file. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value": {}}]'
+gsd run --config config.json --pool agents
 ```
 
 ## Command Contract
@@ -48,7 +52,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ## Use Cases
 
 **File operations:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "jq -r '.value.path' | xargs cat | jq -Rs '{kind: \"Process\", value: {contents: .}}'"
@@ -56,7 +60,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ```
 
 **API calls:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "jq -r '.value.url' | xargs curl -s | jq '{kind: \"Parse\", value: .}' | jq -s"
@@ -64,7 +68,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ```
 
 **Build/test:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "cargo test --json 2>&1 | jq -s 'map(select(.type == \"test\")) | map({kind: \"Report\", value: .})'"
@@ -75,8 +79,9 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 
 Commands and agents work together naturally:
 
-```json
+```jsonc
 {
+  "entrypoint": "Plan",
   "steps": [
     {
       "name": "Plan",
@@ -87,7 +92,10 @@ Commands and agents work together naturally:
           "task": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"echo hello\"}}]`" },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"echo hello\"}}]`" }
+      },
       "next": ["Execute"]
     },
     {
@@ -108,17 +116,20 @@ Commands and agents work together naturally:
     {
       "name": "Verify",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Verify the changes. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Verify the changes. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Plan", "value": {"task": "Add logging"}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"task": "Add logging"}'
 ```
 
 ## Key Points
