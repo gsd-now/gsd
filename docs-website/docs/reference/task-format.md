@@ -1,6 +1,8 @@
-# Action Protocols
+# Task Format
 
-GSD steps have two action types: **Pool** (dispatched to an agent) and **Command** (executed locally as a shell script). Both must return a JSON array of next tasks.
+GSD steps have two action types: **Pool** (dispatched to an agent) and **Command** (executed locally as a shell script). This document describes the JSON each receives and what it must return.
+
+For how agents interact with the pool (get_task, heartbeat, response files), see [Agent Protocol](agent-protocol.md). For how tasks get submitted to the pool, see [Submission Protocol](submission-protocol.md).
 
 ## Response Format (Both Protocols)
 
