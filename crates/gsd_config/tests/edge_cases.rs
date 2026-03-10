@@ -52,6 +52,7 @@ fn empty_initial_tasks_completes() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Should complete immediately without error
@@ -117,6 +118,7 @@ fn large_fan_out() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -168,6 +170,7 @@ fn command_action_executes() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Should complete without error
@@ -217,6 +220,7 @@ fn rapid_task_completion() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -249,6 +253,7 @@ fn unknown_step_in_initial_tasks_returns_error() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Should return an error for unknown step
@@ -298,6 +303,7 @@ fn invalid_value_schema_in_initial_tasks_returns_error() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Should return an error for invalid value schema

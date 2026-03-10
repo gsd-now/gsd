@@ -88,6 +88,7 @@ fn valid_schema_passes() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -153,6 +154,7 @@ fn invalid_response_causes_retry() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped after all retries

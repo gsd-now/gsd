@@ -138,6 +138,7 @@ echo "finally_ran" > "{}"
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run the task queue
@@ -269,6 +270,7 @@ echo "finally_executed" > "{}"
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -426,6 +428,7 @@ echo "child_finally" >> "{}"
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -539,6 +542,7 @@ echo "finally_executed" > "{}"
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // This should fail because Child is dropped after max retries
@@ -694,6 +698,7 @@ cat  # pass through stdin to stdout
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -854,6 +859,7 @@ cat  # pass through stdin to stdout
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -998,6 +1004,7 @@ fn deeply_nested_finally_chain() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -1143,6 +1150,7 @@ fn multiple_children_with_finally() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -1298,6 +1306,7 @@ fn finally_spawns_multiple_tasks() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -1412,6 +1421,7 @@ exit 0
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -1497,6 +1507,7 @@ fn finally_failure_propagates_after_retries_exhausted() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(
@@ -1600,6 +1611,7 @@ echo '[{"kind": "Cleanup", "value": {}}]'
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     let result = gsd_config::run(

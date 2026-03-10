@@ -541,6 +541,7 @@ dependencies = [
  "agent_pool",
  "agent_pool_cli",
  "cli_invoker",
+ "gsd_state",
  "gsd_types",
  "interprocess",
  "jsonschema",

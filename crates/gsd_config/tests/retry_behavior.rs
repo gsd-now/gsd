@@ -78,6 +78,7 @@ fn retry_on_invalid_response_false_drops_task() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped
@@ -149,6 +150,7 @@ fn retry_on_invalid_response_true_retries() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped after all retries
@@ -215,6 +217,7 @@ fn malformed_json_triggers_retry() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped after all retries
@@ -294,6 +297,7 @@ fn per_step_options_override_global() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped
@@ -366,6 +370,7 @@ fn recovery_on_nth_attempt() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -429,6 +434,7 @@ fn max_retries_zero_no_retries() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped

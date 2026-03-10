@@ -78,6 +78,7 @@ fn branch_to_path_a() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -124,6 +125,7 @@ fn branch_to_path_b() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -184,6 +186,7 @@ fn fan_out_multiple_tasks() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");

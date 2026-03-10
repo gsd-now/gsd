@@ -17,6 +17,10 @@ use std::thread;
 
 use agent_pool_cli::AgentPoolCli;
 use cli_invoker::Invoker;
+use gsd_state::{
+    FailureReason, StateLogConfig, StateLogEntry, TaskCompleted, TaskFailed, TaskOrigin,
+    TaskSubmitted,
+};
 use tracing::{error, info, warn};
 
 use crate::docs::generate_step_docs;
@@ -45,6 +49,8 @@ pub struct RunnerConfig<'a> {
     pub wake_script: Option<&'a str>,
     /// Invoker for the `agent_pool` CLI.
     pub invoker: &'a Invoker<AgentPoolCli>,
+    /// Optional path for state log (NDJSON file for persistence/resume).
+    pub state_log_path: Option<&'a Path>,
 }
 
 // ==================== Internal Types ====================
@@ -158,6 +164,8 @@ struct TaskRunner<'a> {
     rx: mpsc::Receiver<InFlightResult>,
     /// Counter for assigning unique task IDs.
     next_task_id: u32,
+    /// Optional state log writer for persistence/resume.
+    state_log: Option<io::BufWriter<std::fs::File>>,
 }
 
 impl<'a> TaskRunner<'a> {
@@ -190,6 +198,15 @@ impl<'a> TaskRunner<'a> {
             invoker: Clone::clone(runner_config.invoker),
         };
 
+        // Open state log file if path is provided
+        let state_log = runner_config
+            .state_log_path
+            .map(|path| -> io::Result<io::BufWriter<std::fs::File>> {
+                let file = std::fs::File::create(path)?;
+                Ok(io::BufWriter::new(file))
+            })
+            .transpose()?;
+
         let mut runner = Self {
             config,
             schemas,
@@ -201,7 +218,15 @@ impl<'a> TaskRunner<'a> {
             tx,
             rx,
             next_task_id: 0,
+            state_log,
         };
+
+        // Write config entry to state log
+        let config_json = serde_json::to_value(config)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        runner.write_log(&StateLogEntry::Config(StateLogConfig {
+            config: config_json,
+        }));
 
         for task in initial_tasks {
             // Validate step exists
@@ -220,6 +245,14 @@ impl<'a> TaskRunner<'a> {
                 ));
             }
 
+            let task_id = LogTaskId(runner.next_task_id);
+            runner.write_log(&StateLogEntry::TaskSubmitted(TaskSubmitted {
+                task_id,
+                step: task.step.clone(),
+                value: task.value.clone(),
+                parent_id: None,
+                origin: TaskOrigin::Initial,
+            }));
             runner.queue_task(task, None, None);
         }
 
@@ -239,6 +272,28 @@ impl<'a> TaskRunner<'a> {
         let id = LogTaskId(self.next_task_id);
         self.next_task_id += 1;
         id
+    }
+
+    // ==================== State Log ====================
+
+    /// Write an entry to the state log (no-op if logging is disabled).
+    fn write_log(&mut self, entry: &StateLogEntry) {
+        if let Some(ref mut writer) = self.state_log
+            && let Err(e) = gsd_state::write_entry(writer, entry)
+        {
+            error!(error = %e, "failed to write state log entry");
+        }
+    }
+
+    /// Map the runner's `FailureKind` to the state log's `FailureReason`.
+    fn map_failure(kind: FailureKind) -> FailureReason {
+        match kind {
+            FailureKind::Timeout => FailureReason::Timeout,
+            FailureKind::InvalidResponse => FailureReason::InvalidResponse {
+                message: "invalid response".to_string(),
+            },
+            FailureKind::SubmitError => FailureReason::AgentLost,
+        }
     }
 
     // ==================== State Transitions ====================
@@ -432,6 +487,17 @@ impl<'a> TaskRunner<'a> {
             .get(&step)
             .map_or(0, |s| s.options.max_retries);
 
+        // Log the finally task submission
+        self.write_log(&StateLogEntry::TaskSubmitted(TaskSubmitted {
+            task_id: id,
+            step: step.clone(),
+            value: value.clone(),
+            parent_id,
+            origin: TaskOrigin::Finally {
+                finally_for: task_id,
+            },
+        }));
+
         let finally_entry = TaskEntry {
             step,
             parent_id,
@@ -526,12 +592,34 @@ impl<'a> TaskRunner<'a> {
         let finally_hook = self.lookup_finally_hook(entry);
 
         if spawned.is_empty() {
+            // Log completion with no children
+            self.write_log(&StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: gsd_state::TaskOutcome::Success(gsd_state::TaskSuccess {
+                    spawned_task_ids: vec![],
+                }),
+            }));
+
             // No children - schedule finally (if any) as sibling, then remove
             if let Some(hook) = finally_hook {
                 self.schedule_finally(task_id, hook, value);
             }
             self.remove_and_notify_parent(task_id);
         } else {
+            // Compute child IDs before queuing (IDs are monotonically assigned)
+            let first_child_id = self.next_task_id;
+            let spawned_task_ids: Vec<LogTaskId> = (0..spawned.len())
+                .map(|i| LogTaskId(first_child_id + i as u32))
+                .collect();
+
+            // Log completion with spawned child IDs
+            self.write_log(&StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: gsd_state::TaskOutcome::Success(gsd_state::TaskSuccess {
+                    spawned_task_ids,
+                }),
+            }));
+
             // Has children - wait for them, storing finally_data
             let count = NonZeroU16::new(spawned.len() as u16).unwrap();
             let finally_data = finally_hook.map(|hook| (hook, value));
@@ -545,6 +633,15 @@ impl<'a> TaskRunner<'a> {
                 finally_data,
             };
             for child in spawned {
+                // Log each spawned child
+                let child_id = LogTaskId(self.next_task_id);
+                self.write_log(&StateLogEntry::TaskSubmitted(TaskSubmitted {
+                    task_id: child_id,
+                    step: child.step.clone(),
+                    value: child.value.clone(),
+                    parent_id: Some(task_id),
+                    origin: TaskOrigin::Spawned,
+                }));
                 self.queue_task(child, Some(task_id), None);
             }
         }
@@ -552,15 +649,45 @@ impl<'a> TaskRunner<'a> {
 
     /// Handle task failure (with optional retry).
     #[expect(clippy::expect_used)] // Invariant: task must exist
-    fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>) {
+    fn task_failed(&mut self, task_id: LogTaskId, retry: Option<Task>, failure_kind: FailureKind) {
         let entry = self.tasks.get(&task_id).expect("[P026] task must exist");
         let parent_id = entry.parent_id;
         let finally_script = entry.finally_script.clone();
 
         if let Some(retry_task) = retry {
+            // Compute retry task ID before logging
+            let retry_task_id = LogTaskId(self.next_task_id);
+
+            // Log failure with retry
+            self.write_log(&StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: gsd_state::TaskOutcome::Failed(TaskFailed {
+                    reason: Self::map_failure(failure_kind),
+                    retry_task_id: Some(retry_task_id),
+                }),
+            }));
+
+            // Log the retry task submission
+            self.write_log(&StateLogEntry::TaskSubmitted(TaskSubmitted {
+                task_id: retry_task_id,
+                step: retry_task.step.clone(),
+                value: retry_task.value.clone(),
+                parent_id,
+                origin: TaskOrigin::Retry { replaces: task_id },
+            }));
+
             self.queue_task(retry_task, parent_id, finally_script);
             self.transition_to_done(task_id); // Don't notify - retry takes over
         } else {
+            // Log permanent failure
+            self.write_log(&StateLogEntry::TaskCompleted(TaskCompleted {
+                task_id,
+                outcome: gsd_state::TaskOutcome::Failed(TaskFailed {
+                    reason: Self::map_failure(failure_kind),
+                    retry_task_id: None,
+                }),
+            }));
+
             // Permanent failure - remove and notify parent
             let entry = self.tasks.remove(&task_id).expect("[P027] task must exist");
             if matches!(entry.state, TaskState::InFlight(_)) {
@@ -618,13 +745,13 @@ impl<'a> TaskRunner<'a> {
                 TaskResult::Completed
             }
 
-            TaskOutcome::Retry(retry_task) => {
-                self.task_failed(task_id, Some(retry_task));
+            TaskOutcome::Retry(retry_task, failure_kind) => {
+                self.task_failed(task_id, Some(retry_task), failure_kind);
                 TaskResult::Requeued
             }
 
-            TaskOutcome::Dropped => {
-                self.task_failed(task_id, None);
+            TaskOutcome::Dropped(failure_kind) => {
+                self.task_failed(task_id, None, failure_kind);
                 TaskResult::Dropped
             }
         }

@@ -71,6 +71,7 @@ fn run_gsd_background(
             working_dir: Path::new("."),
             wake_script: None,
             invoker: &invoker,
+            state_log_path: None,
         };
         gsd_config::run(&config, &schemas, &runner_config, initial_tasks)
     })

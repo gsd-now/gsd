@@ -76,6 +76,7 @@ fn invalid_transition_causes_retry() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped after retries exhausted
@@ -117,6 +118,7 @@ fn unknown_step_causes_retry() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     // Run should return error because task is dropped after retries exhausted
@@ -177,6 +179,7 @@ fn recovery_after_invalid_then_valid() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &create_test_invoker(),
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");

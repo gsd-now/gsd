@@ -23,9 +23,9 @@ pub enum TaskOutcome {
         finally_value: StepInputValue,
     },
     /// Task failed, should be retried.
-    Retry(Task),
+    Retry(Task, FailureKind),
     /// Task failed permanently (max retries exceeded or retry disabled).
-    Dropped,
+    Dropped(FailureKind),
 }
 
 /// Why a task failed and needs retry consideration.
@@ -259,7 +259,7 @@ pub fn process_retry(task: &Task, options: &Options, failure_kind: FailureKind) 
 
     if !retry_allowed {
         warn!(step = %task.step, failure = ?failure_kind, "retry disabled, dropping task");
-        return TaskOutcome::Dropped;
+        return TaskOutcome::Dropped(failure_kind);
     }
 
     let mut retry_task = task.clone();
@@ -273,9 +273,9 @@ pub fn process_retry(task: &Task, options: &Options, failure_kind: FailureKind) 
             failure = ?failure_kind,
             "requeuing task"
         );
-        TaskOutcome::Retry(retry_task)
+        TaskOutcome::Retry(retry_task, failure_kind)
     } else {
         error!(step = %task.step, retries = retry_task.retries, "max retries exceeded");
-        TaskOutcome::Dropped
+        TaskOutcome::Dropped(failure_kind)
     }
 }

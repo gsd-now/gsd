@@ -61,6 +61,10 @@ enum Command {
         /// Log file path (logs emitted in addition to stderr)
         #[arg(long)]
         log_file: Option<PathBuf>,
+
+        /// State log file path (NDJSON file for persistence/resume)
+        #[arg(long)]
+        state_log: Option<PathBuf>,
     },
 
     /// Config file operations (docs, validate, graph, schema)
@@ -118,6 +122,7 @@ fn main() -> io::Result<()> {
             pool,
             wake,
             log_file,
+            state_log,
         } => run_command(
             &config,
             initial_state.as_deref(),
@@ -125,6 +130,7 @@ fn main() -> io::Result<()> {
             pool.as_deref(),
             wake.as_deref(),
             log_file.as_ref(),
+            state_log.as_ref(),
             &root,
         )?,
 
@@ -200,6 +206,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_command(
     config: &str,
     initial_state: Option<&str>,
@@ -207,6 +214,7 @@ fn run_command(
     pool: Option<&str>,
     wake: Option<&str>,
     log_file: Option<&PathBuf>,
+    state_log: Option<&PathBuf>,
     root: &std::path::Path,
 ) -> io::Result<()> {
     // Initialize tracing with optional log file
@@ -246,6 +254,7 @@ fn run_command(
         working_dir: &config_dir,
         wake_script: wake,
         invoker: &invoker,
+        state_log_path: state_log.map(PathBuf::as_path),
     };
 
     run(&cfg, &schemas, &runner_config, initial_tasks)

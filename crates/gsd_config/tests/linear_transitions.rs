@@ -72,6 +72,7 @@ fn three_step_linear_machine() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &invoker,
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -117,6 +118,7 @@ fn instructions_included_in_payload() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &invoker,
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");

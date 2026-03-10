@@ -57,6 +57,7 @@ fn single_step_terminates() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &invoker,
+        state_log_path: None,
     };
 
     gsd_config::run(&config, &schemas, &runner_config, initial_tasks).expect("run failed");
@@ -87,6 +88,7 @@ fn empty_initial_tasks_does_nothing() {
         working_dir: Path::new("."),
         wake_script: None,
         invoker: &invoker,
+        state_log_path: None,
     };
 
     // Should complete immediately without error
