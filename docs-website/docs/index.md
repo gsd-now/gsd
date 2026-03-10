@@ -60,5 +60,6 @@ Check out the [Quick Start guide](./quickstart) to get up and running, or browse
 - **[Branching](./recipes/branching.md)** — Conditional paths based on output
 - **[Branching Refactor](./recipes/branching-refactor.md)** — Route to specialized agents based on analysis
 - **[Adversarial Review](./recipes/adversarial-review.md)** — Implement → judge → revise loop
+- **[Error Recovery](./recipes/error-recovery.md)** — Catch failures and route to recovery steps
 - **[Hooks](./recipes/hooks.md)** — Pre/post/finally hooks for data transformation and cleanup
 - **[Commands](./recipes/commands.md)** — Run shell scripts instead of agents

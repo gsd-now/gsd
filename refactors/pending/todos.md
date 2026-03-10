@@ -4,6 +4,10 @@
 
 0. **Parse Agent/Command Responses as JSONC** - Parse the return value from agents and commands as JSONC (JSON with comments) instead of strict JSON. This allows agents and command scripts to include comments in their responses for debugging purposes (e.g., `// chose this path because...`). Useful during development and when inspecting logs of agent responses. Libraries like `json_comments` or manual comment stripping before `serde_json::from_str` would work.
 
+0.5. **Pre-Hook Output Not Re-Validated Against Schema** - When a pre hook transforms the task value, the modified value is passed directly to the agent/command without re-validating against the step's `value_schema`. This means a pre hook can add fields (fine — JSON Schema allows extra properties by default), but it can also silently remove required fields or change types. Current recipe examples only add fields so this isn't a problem today, but it's a correctness gap. Options: (a) re-validate after pre hook, (b) document that pre hooks must preserve schema compliance, (c) add a separate `pre_output_schema` field. Related: the task model needs better types for each stage — see below.
+
+0.6. **Better Types for Each Task Stage** - The current task model uses `StepInputValue(serde_json::Value)` throughout the entire lifecycle: initial input, pre-hook output, agent payload, agent response. Each stage actually has different guarantees and constraints. A refactor could introduce distinct types (e.g., `ValidatedInput`, `PreHookOutput`, `AgentPayload`) that encode what validation has been performed. This would make the pre-hook validation gap impossible to forget about and simplify reasoning about the pipeline. Might also be simplified if we had a better primitive for "value that has been validated against schema X" vs "arbitrary JSON."
+
 1. **String Interning** - Consider interning strings (StepName, HookScript, etc.) to reduce memory usage and enable cheap equality checks. Could use a crate like `lasso` or `string-interner`.
 
 

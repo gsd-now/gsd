@@ -13,6 +13,7 @@ This directory contains example configurations for common task queue patterns.
 | [Sequential Processing](sequential.md) | Enforce single-threaded task execution |
 | [Adversarial Review](adversarial-review.md) | Implement → judge → revise loop |
 | [Branching Refactor](branching-refactor.md) | Route to specialized agents based on analysis |
+| [Error Recovery](error-recovery.md) | Catch failures and route to recovery steps |
 | [Pre/Post/Finally Hooks](hooks.md) | Transform data, aggregate results, cleanup |
 | [Validation](validation.md) | Schema validation for inputs and outputs |
 | [Local Commands](commands.md) | Run shell scripts instead of agents |
