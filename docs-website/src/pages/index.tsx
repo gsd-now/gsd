@@ -142,22 +142,20 @@ function WhyGSD() {
   return (
     <section>
       <div className="container padding-vert--lg">
-        <div className={styles.centeredIntro}>
-          <h2>Why GSD?</h2>
-          <p>
-            A single agent with a markdown plan can handle simple tasks. But
-            real work — migrating 50 files, refactoring across a codebase,
-            running multi-step pipelines — breaks that model fast. Context
-            fills up, the agent loses track, and you can't predict what it
-            will do before you run it.
-          </p>
-          <p>
-            GSD is like a build system for agents. You declare the full graph of
-            steps and valid transitions upfront — it's statically analyzable
-            before anything runs. At runtime, agents choose which path through the
-            graph to take, but they can never leave the rails.
-          </p>
-        </div>
+        <h2 className={styles.centeredHeading}>Why GSD?</h2>
+        <p>
+          A single agent with a markdown plan can handle simple tasks. But
+          real work — migrating 50 files, refactoring across a codebase,
+          running multi-step pipelines — breaks that model fast. Context
+          fills up, the agent loses track, and you can't predict what it
+          will do before you run it.
+        </p>
+        <p>
+          GSD is like a build system for agents. You declare the full graph of
+          steps and valid transitions upfront — it's statically analyzable
+          before anything runs. At runtime, agents choose which path through the
+          graph to take, but they can never leave the rails.
+        </p>
         <h3>What GSD gives you</h3>
         <div className={`row ${styles.patternList}`}>
           <div className="col col--6">

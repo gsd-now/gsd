@@ -4,6 +4,10 @@
   margin: 0 auto;
 }
 
+.centeredHeading {
+  text-align: center;
+}
+
 .patternList {
   margin-top: 1rem;
 }
