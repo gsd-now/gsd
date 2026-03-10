@@ -10,11 +10,11 @@ const config: Config = {
   tagline: 'Get Sh*** Done — Task queues for LLM agents',
   favicon: 'img/favicon.ico',
 
-  url: 'https://rbalicki2.github.io/',
+  url: 'https://gsd-now.github.io/',
   baseUrl: '/gsd/',
   trailingSlash: true,
 
-  organizationName: 'rbalicki2',
+  organizationName: 'gsd-now',
   projectName: 'gsd',
   deploymentBranch: 'gh-pages',
 
@@ -61,7 +61,7 @@ const config: Config = {
           label: 'Documentation',
         },
         {
-          href: 'https://github.com/rbalicki2/gsd',
+          href: 'https://github.com/gsd-now/gsd',
           label: 'GitHub',
           position: 'right',
         },
@@ -88,7 +88,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/rbalicki2/gsd',
+              href: 'https://github.com/gsd-now/gsd',
             },
           ],
         },

@@ -34,7 +34,7 @@ For simple "keep trying until it works" loops, `/loop` is fine. For complex, mul
 The main command-line tool for running task queues:
 
 ```bash
-pnpm dlx @gsd-now/gsd@main run --config config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
+gsd run --config config.jsonc --pool agents --entrypoint-value '{}'
 ```
 
 ### Agent Pool
@@ -42,7 +42,7 @@ pnpm dlx @gsd-now/gsd@main run --config config.jsonc --pool agents --initial-sta
 A daemon that manages a pool of long-running agents:
 
 ```bash
-pnpm dlx @gsd-now/agent-pool@main start --pool agents
+agent_pool start --pool agents
 ```
 
 ### Task Queue Library
@@ -51,4 +51,15 @@ A Rust library for defining task queues as type-safe state machines with compile
 
 ## Getting Started
 
-Check out the [Quick Start guide](./quickstart) to get up and running.
+Check out the [Quick Start guide](./quickstart) to get up and running, or browse the [recipes](./recipes/) for common workflow patterns:
+
+- **[Linear Pipeline](./recipes/linear-pipeline.md)** — Step-by-step processing
+- **[Fan-Out](./recipes/fan-out.md)** — Split one task into many parallel tasks
+- **[Fan-Out with Finally](./recipes/fan-out-finally.md)** — Parallel work with aggregation on completion
+- **[Sequential Processing](./recipes/sequential.md)** — Ordered, one-at-a-time execution
+- **[Branching](./recipes/branching.md)** — Conditional paths based on output
+- **[Branching Refactor](./recipes/branching-refactor.md)** — Route to specialized agents based on analysis
+- **[Adversarial Review](./recipes/adversarial-review.md)** — Implement → judge → revise loop
+- **[Error Recovery](./recipes/error-recovery.md)** — Catch failures and route to recovery steps
+- **[Hooks](./recipes/hooks.md)** — Pre/post/finally hooks for data transformation and cleanup
+- **[Commands](./recipes/commands.md)** — Run shell scripts instead of agents

@@ -52,7 +52,7 @@ You can start multiple Claude agents with different names (c1, c2, c3) for paral
 Download a demo config:
 
 ```bash
-curl -O https://raw.githubusercontent.com/rbalicki2/gsd/main/crates/gsd_cli/demos/linear/config.jsonc
+curl -O https://raw.githubusercontent.com/gsd-now/gsd/main/crates/gsd_cli/demos/linear/config.jsonc
 ```
 
 Now run it:
@@ -84,7 +84,7 @@ I want to create a GSD workflow config that:
 First, run `pnpm dlx @gsd-now/gsd@main config schema` to see the config format.
 
 Then look at this example for reference:
-https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow
+https://github.com/gsd-now/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow
 ```
 
 A simple refactoring workflow might look like:
@@ -157,11 +157,11 @@ pnpm dlx @gsd-now/gsd@main run --config refactor.jsonc --pool agents \
   --initial-state '[{"kind": "ListFiles", "value": {"folder": "./src"}}]'
 ```
 
-For a more complete example, see the [refactor-workflow demo](https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow).
+For a more complete example, see the [refactor-workflow demo](https://github.com/gsd-now/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow).
 
 ## Next Steps
 
 - [Recipes](/docs/recipes) — Common patterns like fan-out, branching, and hooks
 - [CLI Reference](/docs/reference/cli) — All GSD and agent_pool commands
 - [Config Schema](/docs/reference/config-schema) — Full configuration options
-- [Demo Configs](https://github.com/rbalicki2/gsd/tree/main/crates/gsd_cli/demos) — Working examples to learn from
+- [Demo Configs](https://github.com/gsd-now/gsd/tree/main/crates/gsd_cli/demos) — Working examples to learn from

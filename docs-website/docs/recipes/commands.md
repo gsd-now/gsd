@@ -2,10 +2,23 @@
 
 Use shell commands instead of agents for deterministic or system-level operations.
 
+## When to Use Commands
+
+An agent *can* do anything a command does — list files, call APIs, run builds. But agents are expensive: they consume an LLM call, need time to reason, and can hallucinate. Commands are instant, deterministic, and free.
+
+Use commands when:
+
+- **The logic is deterministic** — listing files, parsing JSON, calling an API with known parameters. There's no judgment involved, so there's nothing for an LLM to add.
+- **Precision matters more than flexibility** — a `jq` pipeline that reshapes data will get it right every time. An agent doing the same transformation might subtly alter values or miss edge cases.
+- **The operation is a building block, not a decision** — fan-out (splitting a list into tasks), fan-in (aggregating results), and data plumbing are mechanical. Save the agent for the step that requires reasoning.
+
+Use agents when the task requires judgment, creativity, or understanding natural language. A good workflow mixes both: commands handle the plumbing, agents handle the thinking.
+
 ## Basic Command
 
-```json
+```jsonc
 {
+  "entrypoint": "ListFiles",
   "steps": [
     {
       "name": "ListFiles",
@@ -25,17 +38,20 @@ Use shell commands instead of agents for deterministic or system-level operation
           "file": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Analyze this file. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Analyze this file. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value": {}}]'
+gsd run --config config.json --pool agents
 ```
 
 ## Command Contract
@@ -48,7 +64,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ## Use Cases
 
 **File operations:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "jq -r '.value.path' | xargs cat | jq -Rs '{kind: \"Process\", value: {contents: .}}'"
@@ -56,7 +72,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ```
 
 **API calls:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "jq -r '.value.url' | xargs curl -s | jq '{kind: \"Parse\", value: .}' | jq -s"
@@ -64,7 +80,7 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 ```
 
 **Build/test:**
-```json
+```jsonc
 {
   "kind": "Command",
   "script": "cargo test --json 2>&1 | jq -s 'map(select(.type == \"test\")) | map({kind: \"Report\", value: .})'"
@@ -75,8 +91,9 @@ gsd run config.json --pool agents --initial-state '[{"kind": "ListFiles", "value
 
 Commands and agents work together naturally:
 
-```json
+```jsonc
 {
+  "entrypoint": "Plan",
   "steps": [
     {
       "name": "Plan",
@@ -87,7 +104,10 @@ Commands and agents work together naturally:
           "task": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"echo hello\"}}]`" },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Plan the implementation. Return `[{\"kind\": \"Execute\", \"value\": {\"command\": \"echo hello\"}}]`" }
+      },
       "next": ["Execute"]
     },
     {
@@ -108,17 +128,20 @@ Commands and agents work together naturally:
     {
       "name": "Verify",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Verify the changes. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Verify the changes. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Plan", "value": {"task": "Add logging"}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"task": "Add logging"}'
 ```
 
 ## Key Points

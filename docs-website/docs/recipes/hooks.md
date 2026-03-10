@@ -24,8 +24,9 @@ All phases respect `max_concurrency` - a task holds its slot for the entire life
 
 Pre hooks transform the input before it reaches the agent.
 
-```json
+```jsonc
 {
+  "entrypoint": "Analyze",
   "steps": [
     {
       "name": "Analyze",
@@ -36,10 +37,11 @@ Pre hooks transform the input before it reaches the agent.
           "file": { "type": "string" }
         }
       },
-      "pre": "scripts/enrich-context.sh",
+      // Add git context to the task value before the agent sees it.
+      "pre": "jq '. + {git_branch: env.BRANCH, git_sha: env.SHA}'",
       "action": {
         "kind": "Pool",
-        "instructions": "Analyze this code with the enriched context. Return `[]`."
+        "instructions": { "inline": "Analyze this code with the enriched context. Return `[]`." }
       },
       "next": []
     }
@@ -47,10 +49,10 @@ Pre hooks transform the input before it reaches the agent.
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run config.json --pool agents --initial-state '[{"kind": "Analyze", "value": {"file": "src/main.rs"}}]'
+gsd run --config config.json --pool agents --entrypoint-value '{"file": "src/main.rs"}'
 ```
 
 **Pre hook contract:**
@@ -59,19 +61,15 @@ gsd run config.json --pool agents --initial-state '[{"kind": "Analyze", "value":
 - **exit 0**: Continue with modified value
 - **exit non-zero**: Skip action, run post hook with `PreHookError`, then apply retry policy
 
-Example pre hook (`scripts/enrich-context.sh`):
-```bash
-#!/bin/bash
-# Read input, add git context, output enriched JSON
-jq '. + {git_branch: $ENV.BRANCH, git_sha: $ENV.SHA}'
-```
+> **Note:** Pre hook output is **not** re-validated against the step's `value_schema`. Adding fields is safe (JSON Schema allows extra properties by default), but removing required fields or changing types will pass silently. Keep pre hooks additive — enrich the value, don't reshape it.
 
 ## Post Hooks
 
 Post hooks run after the action completes and can modify the results.
 
-```json
+```jsonc
 {
+  "entrypoint": "Deploy",
   "steps": [
     {
       "name": "Deploy",
@@ -84,9 +82,10 @@ Post hooks run after the action completes and can modify the results.
       },
       "action": {
         "kind": "Pool",
-        "instructions": "Deploy the application. Return `[]`."
+        "instructions": { "inline": "Deploy the application. Return `[]`." }
       },
-      "post": "scripts/process-result.sh",
+      // Log the deployment result to an external endpoint.
+      "post": "INPUT=$(cat) && curl -s -X POST \"$LOG_ENDPOINT\" -d \"$INPUT\" > /dev/null && echo \"$INPUT\"",
       "next": []
     }
   ]
@@ -102,7 +101,7 @@ Post hooks run after the action completes and can modify the results.
 Post hooks receive and can modify:
 
 **Success** - can modify next tasks:
-```json
+```jsonc
 {
   "kind": "Success",
   "input": {"file": "main.rs"},
@@ -112,7 +111,7 @@ Post hooks receive and can modify:
 ```
 
 **Timeout** - runs even on timeout:
-```json
+```jsonc
 {
   "kind": "Timeout",
   "input": {"file": "main.rs"}
@@ -120,7 +119,7 @@ Post hooks receive and can modify:
 ```
 
 **Error** - runs even on error:
-```json
+```jsonc
 {
   "kind": "Error",
   "input": {"file": "main.rs"},
@@ -129,7 +128,7 @@ Post hooks receive and can modify:
 ```
 
 **PreHookError** - pre hook failed:
-```json
+```jsonc
 {
   "kind": "PreHookError",
   "input": {"file": "main.rs"},
@@ -197,8 +196,9 @@ Hooks follow the same retry policy as actions:
 
 The `finally` hook runs after ALL descendants of a task complete (not just direct children).
 
-```json
+```jsonc
 {
+  "entrypoint": "AnalyzeAll",
   "steps": [
     {
       "name": "AnalyzeAll",
@@ -209,9 +209,13 @@ The `finally` hook runs after ALL descendants of a task complete (not just direc
           "files": { "type": "array", "items": { "type": "string" } }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Fan out to analyze each file. Return `[{\"kind\": \"AnalyzeFile\", \"value\": {\"file\": \"src/main.rs\"}}]`" },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Fan out to analyze each file. Return `[{\"kind\": \"AnalyzeFile\", \"value\": {\"file\": \"src/main.rs\"}}]`" }
+      },
       "next": ["AnalyzeFile"],
-      "finally": "scripts/aggregate-results.sh"
+      // After all analyses complete, emit a summary task.
+      "finally": "echo '[{\"kind\": \"Summarize\", \"value\": {\"status\": \"all files analyzed\"}}]'"
     },
     {
       "name": "AnalyzeFile",
@@ -222,7 +226,25 @@ The `finally` hook runs after ALL descendants of a task complete (not just direc
           "file": { "type": "string" }
         }
       },
-      "action": { "kind": "Pool", "instructions": "Analyze this file. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Analyze this file. Return `[]`." }
+      },
+      "next": []
+    },
+    {
+      "name": "Summarize",
+      "value_schema": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string" }
+        }
+      },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Summarize the analysis results. Return `[]`." }
+      },
       "next": []
     }
   ]
@@ -245,7 +267,7 @@ See [fan-out-finally.md](fan-out-finally.md) for a complete pattern.
 
 ## Key Points
 
-- Each phase has its own timeout (up to 3× total)
+- Each phase has its own timeout (up to 3x total)
 - All phases respect `max_concurrency`
 - Post hooks can modify `next` tasks
 - Post hooks run even on timeout/error

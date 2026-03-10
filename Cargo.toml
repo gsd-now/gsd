@@ -6,7 +6,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/rbalicki2/gsd"
+repository = "https://github.com/gsd-now/gsd"
 authors = ["Robert Balicki <robert.balicki@gmail.com>"]
 
 [workspace.dependencies]

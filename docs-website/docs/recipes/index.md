@@ -9,20 +9,22 @@ This directory contains example configurations for common task queue patterns.
 | [Linear Pipeline](linear-pipeline.md) | Step-by-step processing (A → B → C) |
 | [Branching](branching.md) | Conditional paths based on output |
 | [Fan-Out](fan-out.md) | Split one task into many parallel tasks |
-| [Fan-In](fan-in.md) | Collect results from multiple tasks |
-| [Fan-Out with Finally](fan-out-finally.md) | Fan-out → aggregate → continue |
+| [Fan-Out with Finally](fan-out-finally.md) | Parallel changes with commit on completion |
+| [Sequential Processing](sequential.md) | Enforce single-threaded task execution |
+| [Adversarial Review](adversarial-review.md) | Implement → judge → revise loop |
+| [Branching Refactor](branching-refactor.md) | Route to specialized agents based on analysis |
+| [Error Recovery](error-recovery.md) | Catch failures and route to recovery steps |
 | [Pre/Post/Finally Hooks](hooks.md) | Transform data, aggregate results, cleanup |
 | [Validation](validation.md) | Schema validation for inputs and outputs |
-| [Retry Policies](retry.md) | Handle failures gracefully |
 | [Local Commands](commands.md) | Run shell scripts instead of agents |
-| [Nested GSD](nested-gsd.md) | Launch sub-workflows from commands |
 
 ## Config Structure
 
 Every GSD config has this structure:
 
-```json
+```jsonc
 {
+  "entrypoint": "StepName",
   "options": {
     "timeout": 60,
     "max_retries": 3,
@@ -32,22 +34,22 @@ Every GSD config has this structure:
     {
       "name": "StepName",
       "value_schema": { "type": "object" },
-      "pre": "optional-pre-hook.sh",
-      "action": { "kind": "Pool", "instructions": "Do something. Return `[]`." },
-      "post": "optional-post-hook.sh",
-      "finally": "optional-finally-hook.sh",
+      "pre": "./optional-pre-hook.sh",
+      "action": { "kind": "Pool", "instructions": { "inline": "Do something. Return `[]`." } },
+      "post": "./optional-post-hook.sh",
+      "finally": "./optional-finally-hook.sh",
       "next": ["NextStep1", "NextStep2"]
     },
     {
       "name": "NextStep1",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Continue. Return `[]`." },
+      "action": { "kind": "Pool", "instructions": { "inline": "Continue. Return `[]`." } },
       "next": []
     },
     {
       "name": "NextStep2",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Alternative path. Return `[]`." },
+      "action": { "kind": "Pool", "instructions": { "inline": "Alternative path. Return `[]`." } },
       "next": []
     }
   ]

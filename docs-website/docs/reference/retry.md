@@ -4,8 +4,9 @@ Configure how GSD handles failures and retries.
 
 ## Global Options
 
-```json
+```jsonc
 {
+  "entrypoint": "Process",
   "options": {
     "timeout": 120,
     "max_retries": 3,
@@ -16,7 +17,10 @@ Configure how GSD handles failures and retries.
     {
       "name": "Process",
       "value_schema": { "type": "object" },
-      "action": { "kind": "Pool", "instructions": "Process the task. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Process the task. Return `[]`." }
+      },
       "next": []
     }
   ]
@@ -27,8 +31,9 @@ Configure how GSD handles failures and retries.
 
 Override global settings for specific steps:
 
-```json
+```jsonc
 {
+  "entrypoint": "QuickCheck",
   "options": {
     "timeout": 60,
     "max_retries": 2
@@ -41,8 +46,11 @@ Override global settings for specific steps:
         "timeout": 10,
         "max_retries": 0
       },
-      "action": { "kind": "Pool", "instructions": "Quick validation. Return `[]`." },
-      "next": []
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Quick validation. Return `[]`." }
+      },
+      "next": ["ExpensiveAnalysis"]
     },
     {
       "name": "ExpensiveAnalysis",
@@ -51,17 +59,20 @@ Override global settings for specific steps:
         "timeout": 300,
         "max_retries": 5
       },
-      "action": { "kind": "Pool", "instructions": "Deep analysis. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Deep analysis. Return `[]`." }
+      },
       "next": []
     }
   ]
 }
 ```
 
-## Initial Tasks
+## Running
 
 ```bash
-gsd run --config config.json --pool agents --initial-state '[{"kind": "QuickCheck", "value": {}}]'
+gsd run --config config.json --pool agents
 ```
 
 ## Retry Triggers
@@ -78,8 +89,9 @@ gsd run --config config.json --pool agents --initial-state '[{"kind": "QuickChec
 
 For idempotent-sensitive operations:
 
-```json
+```jsonc
 {
+  "entrypoint": "SendEmail",
   "steps": [
     {
       "name": "SendEmail",
@@ -96,7 +108,10 @@ For idempotent-sensitive operations:
         "retry_on_invalid_response": false,
         "max_retries": 0
       },
-      "action": { "kind": "Pool", "instructions": "Send the email. Return `[]`." },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Send the email. Return `[]`." }
+      },
       "next": []
     }
   ]
