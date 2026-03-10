@@ -125,7 +125,7 @@ function AgentAuthoring() {
           GSD configs are just JSON with a{' '}
           <a href="/gsd/docs/reference/config-schema">published schema</a>.
           Point your agent at{' '}
-          <code>pnpm dlx @gsd-now/gsd@main config schema</code> to get
+          <code>pnpm dlx @gsd-now/gsd config schema</code> to get
           the full JSON Schema, show it the{' '}
           <a href="/gsd/docs/recipes">recipes page</a> for common
           patterns, and tell it what you want. It'll write a working

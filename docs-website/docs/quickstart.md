@@ -18,7 +18,7 @@ GSD orchestrates AI agents through type-safe workflows. You define a state machi
 The agent pool is a daemon that coordinates work between your agents. In a terminal:
 
 ```bash
-pnpm dlx @gsd-now/agent-pool@main start --pool agents
+pnpm dlx @gsd-now/agent-pool start --pool agents
 ```
 
 This creates a pool named "agents". The pool manages task dispatch—when GSD submits a task, the pool routes it to an available agent.
@@ -36,7 +36,7 @@ You are an AI agent in a task pool. You will be given a pool name, an agent name
 
 Run this to see the full protocol:
 
-pnpm dlx @gsd-now/agent-pool@main protocol
+pnpm dlx @gsd-now/agent-pool protocol
 
 ---
 
@@ -58,7 +58,7 @@ curl -O https://raw.githubusercontent.com/gsd-now/gsd/main/crates/gsd_cli/demos/
 Now run it:
 
 ```bash
-pnpm dlx @gsd-now/gsd@main run --config config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
+pnpm dlx @gsd-now/gsd run --config config.jsonc --pool agents --initial-state '[{"kind": "Start", "value": {}}]'
 ```
 
 **What happens:**
@@ -81,7 +81,7 @@ I want to create a GSD workflow config that:
 3. Applies the refactors
 4. Commits the changes to each file
 
-First, run `pnpm dlx @gsd-now/gsd@main config schema` to see the config format.
+First, run `pnpm dlx @gsd-now/gsd config schema` to see the config format.
 
 Then look at this example for reference:
 https://github.com/gsd-now/gsd/tree/main/crates/gsd_cli/demos/refactor-workflow
@@ -153,7 +153,7 @@ Here's what a basic refactor config looks like:
 Save this as `refactor.jsonc` and run:
 
 ```bash
-pnpm dlx @gsd-now/gsd@main run --config refactor.jsonc --pool agents \
+pnpm dlx @gsd-now/gsd run --config refactor.jsonc --pool agents \
   --initial-state '[{"kind": "ListFiles", "value": {"folder": "./src"}}]'
 ```
 
