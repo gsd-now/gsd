@@ -52,7 +52,8 @@ the comments below (JSONC) are for explanation only.
       // next tasks. Exit 0 = success, non-zero = error (triggers retry).
       "action": {
         "kind": "Command",
-        "script": "./scripts/setup-and-split.sh"
+        // Fan out: emit one AnalyzeFile task per file in the input array.
+        "script": "jq -c '.value.files[] | {kind: \"AnalyzeFile\", value: {file: .}}' | jq -s"
       },
 
       // Valid next steps this action can transition to.
@@ -61,7 +62,7 @@ the comments below (JSONC) are for explanation only.
       // Finally hook: runs after ALL descendants of this task complete
       // (not just direct children). Receives the original task's value on
       // stdin and outputs a JSON array of follow-up tasks on stdout.
-      "finally": "./scripts/aggregate.sh"
+      "finally": "echo '[]'"
     },
     {
       "name": "AnalyzeFile",
@@ -77,7 +78,7 @@ the comments below (JSONC) are for explanation only.
       // Pre hook: runs before the action. Receives the task value on stdin,
       // outputs the (possibly transformed) value on stdout. Use it to enrich
       // context, read files, or validate input.
-      "pre": "./scripts/enrich-context.sh",
+      "pre": "jq '. + {timestamp: now | todate}'",
 
       // Action kind "Pool" sends the task to an agent pool for processing.
       // Instructions are markdown shown to the agent.
@@ -93,7 +94,7 @@ the comments below (JSONC) are for explanation only.
       // a result JSON on stdin with kind "Success", "Timeout", "Error", or
       // "PreHookError". Can modify the `next` tasks in the result. Outputs
       // the (possibly modified) result on stdout.
-      "post": "./scripts/save-findings.sh",
+      "post": "cat",
 
       // Per-step options override the global defaults.
       "options": {

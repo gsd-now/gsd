@@ -37,7 +37,8 @@ Pre hooks transform the input before it reaches the agent.
           "file": { "type": "string" }
         }
       },
-      "pre": "./scripts/enrich-context.sh",
+      // Add git context to the task value before the agent sees it.
+      "pre": "jq '. + {git_branch: env.BRANCH, git_sha: env.SHA}'",
       "action": {
         "kind": "Pool",
         "instructions": { "inline": "Analyze this code with the enriched context. Return `[]`." }
@@ -60,13 +61,6 @@ gsd run --config config.json --pool agents --entrypoint-value '{"file": "src/mai
 - **exit 0**: Continue with modified value
 - **exit non-zero**: Skip action, run post hook with `PreHookError`, then apply retry policy
 
-Example pre hook (`./scripts/enrich-context.sh`):
-```bash
-#!/bin/bash
-# Read input, add git context, output enriched JSON
-jq '. + {git_branch: $ENV.BRANCH, git_sha: $ENV.SHA}'
-```
-
 ## Post Hooks
 
 Post hooks run after the action completes and can modify the results.
@@ -88,7 +82,8 @@ Post hooks run after the action completes and can modify the results.
         "kind": "Pool",
         "instructions": { "inline": "Deploy the application. Return `[]`." }
       },
-      "post": "./scripts/process-result.sh",
+      // Log the deployment result to an external endpoint.
+      "post": "INPUT=$(cat) && curl -s -X POST \"$LOG_ENDPOINT\" -d \"$INPUT\" > /dev/null && echo \"$INPUT\"",
       "next": []
     }
   ]
@@ -217,7 +212,8 @@ The `finally` hook runs after ALL descendants of a task complete (not just direc
         "instructions": { "inline": "Fan out to analyze each file. Return `[{\"kind\": \"AnalyzeFile\", \"value\": {\"file\": \"src/main.rs\"}}]`" }
       },
       "next": ["AnalyzeFile"],
-      "finally": "./scripts/aggregate-results.sh"
+      // After all analyses complete, emit a summary task.
+      "finally": "echo '[{\"kind\": \"Summarize\", \"value\": {\"status\": \"all files analyzed\"}}]'"
     },
     {
       "name": "AnalyzeFile",
@@ -231,6 +227,21 @@ The `finally` hook runs after ALL descendants of a task complete (not just direc
       "action": {
         "kind": "Pool",
         "instructions": { "inline": "Analyze this file. Return `[]`." }
+      },
+      "next": []
+    },
+    {
+      "name": "Summarize",
+      "value_schema": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string" }
+        }
+      },
+      "action": {
+        "kind": "Pool",
+        "instructions": { "inline": "Summarize the analysis results. Return `[]`." }
       },
       "next": []
     }
