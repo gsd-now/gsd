@@ -69,9 +69,27 @@ See your claude.local.md.
 
 When GitHub CI runs show as "cancelled", that means they **timed out** - not that someone manually cancelled them. Treat cancelled runs as failures that need investigation.
 
-## Commit incrementally
+## Commit discipline
 
-**Commit your changes as you go.** Don't wait until the end of a task to commit. After completing a logical unit of work, commit it. This applies to documentation changes, code changes, refactor documents - everything.
+**Commits should be small, always.** Don't wait until the end of a task to commit. After completing a logical unit of work, commit it. This applies to documentation changes, code changes, refactor documents - everything.
+
+### Landing on master
+
+Every commit that lands on master should have initially been a branch that passed CI, unless it's trivial changes to markdown files (planning documents, etc.).
+
+### Extract independent work
+
+Before landing changes on master, review the commit and extract any independent work that can land separately. Examples:
+- Extracting functionality into separate files
+- Adding trait derives to existing types
+- Cleanup refactors (renaming, restructuring)
+- Moving code between modules
+
+Each of these becomes its own branch, passes CI, and merges independently. This keeps commits focused and makes review/bisection easier.
+
+### Type wrappers
+
+All newtype wrappers should derive all applicable standard traits (`Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`, `Serialize`, `Deserialize`) - except `Clone` if the inner type is `Copy`. Only omit traits that the inner type doesn't support.
 
 ## Autonomous operation
 
